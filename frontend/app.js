@@ -11,7 +11,7 @@
 // ---------------------------------------------------------------
 
 /** Reemplaza con la URL del Web App (Implementar > Nueva implementación > Aplicación web), termina en /exec. */
-const API_WEBHOOK_URL = "URL_DE_APPS_SCRIPT_AQUI";
+const API_WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbz1frJeBe7KpN83DQaVjtPBfzWtdujl6mngBAmAe3XCLRBW6_5cEShkVPRwgk98UtbKAw/exec";
 
 /** Acciones que no requieren tenant_slug todavía (ver PUBLIC_ACTIONS en Código.gs). */
 const PUBLIC_CLIENT_ACTIONS = { createClient: true };
