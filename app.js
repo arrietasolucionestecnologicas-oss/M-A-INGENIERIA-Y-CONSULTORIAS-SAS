@@ -223,14 +223,16 @@ function showView(name) {
     removeAdminNavAndPanel();
   }
 
-  ['sites', 'dashboard', 'detail', 'ttr-form', 'winding-form', 'admin'].forEach(function (v) {
+  ['sites', 'dashboard', 'detail', 'ttr-form', 'winding-form', 'oil-form', 'pcb-form', 'admin'].forEach(function (v) {
     var el = document.getElementById('view-' + v);
     if (el) el.hidden = (name !== v);
   });
 
-  document.querySelectorAll('.nav-item[data-view]').forEach(function (el) {
+  document.querySelectorAll('.nav-item[data-view], .bottom-nav-item[data-view]').forEach(function (el) {
     el.classList.toggle('active', el.dataset.view === name);
   });
+  closeActionSheet_('testActionSheet');
+  closeActionSheet_('moreActionSheet');
   window.scrollTo(0, 0);
 
   // Jerarquía obligatoria: Fase 2 (Equipos) exige Fase 1 (Cliente/Proyecto);
@@ -239,7 +241,7 @@ function showView(name) {
     alert('Selecciona primero un Cliente/Proyecto (Fase 1).');
     return showView('sites');
   }
-  if ((name === 'ttr-form' || name === 'winding-form') && !state.currentTransformer) {
+  if ((name === 'ttr-form' || name === 'winding-form' || name === 'oil-form' || name === 'pcb-form') && !state.currentTransformer) {
     alert('Selecciona primero un equipo desde Fase 2.');
     return showView(state.currentSiteId ? 'dashboard' : 'sites');
   }
@@ -380,42 +382,68 @@ function loadDashboardAndShow_() {
     });
 }
 
+/** Lee un <input type=file> como base64 (sin el prefijo data:...;base64,) para enviarlo al backend. */
+function readFileAsBase64_(fileInput) {
+  var file = fileInput.files && fileInput.files[0];
+  if (!file) return Promise.resolve(null);
+  return new Promise(function (resolve, reject) {
+    var reader = new FileReader();
+    reader.onload = function () {
+      var result = reader.result;
+      var base64 = result.substring(result.indexOf(',') + 1);
+      resolve({ base64: base64, mimeType: file.type || 'application/octet-stream' });
+    };
+    reader.onerror = function () { reject(new Error('No se pudo leer el archivo')); };
+    reader.readAsDataURL(file);
+  });
+}
+
 function handleCreateTransformerSubmit(e) {
   e.preventDefault();
   if (!state.currentSiteId) { alert('Selecciona primero un Cliente/Proyecto (Fase 1).'); return; }
 
   var hv = parseDecimal_(document.getElementById('newTrfHv').value);
   var lv = parseDecimal_(document.getElementById('newTrfLv').value);
+  var year = document.getElementById('newTrfYear').value.trim();
+  var power = parseDecimal_(document.getElementById('newTrfPower').value);
   var btn = document.getElementById('createTransformerBtn');
   var status = document.getElementById('createTransformerStatus');
   btn.disabled = true;
   setStatus_(status, 'Creando…', false);
 
   var nominalForTaps = isNaN(hv) ? 0 : hv;
-  callApi('createTransformer', 'POST', {
-    site_id: state.currentSiteId,
-    serial_number: document.getElementById('newTrfSerial').value.trim(),
-    manufacturer: document.getElementById('newTrfManufacturer').value.trim(),
-    phase_type: document.getElementById('newTrfPhaseType').value,
-    vector_group: document.getElementById('newTrfVectorGroup').value.trim() || null,
-    hv_nominal_voltage: isNaN(hv) ? null : hv,
-    lv_nominal_voltage: isNaN(lv) ? null : lv,
-    is_special_design: false,
-    tap_config: {
-      nominalVoltage: nominalForTaps,
-      stepPercentage: 2.5,
-      numPositions: 5,
-      neutralPosition: 3,
-      positions: buildDefaultTapPositions_(nominalForTaps)
-    }
-  })
+
+  readFileAsBase64_(document.getElementById('newTrfPlatePhoto'))
+    .then(function (photo) {
+      return callApi('createTransformer', 'POST', {
+        site_id: state.currentSiteId,
+        serial_number: document.getElementById('newTrfSerial').value.trim(),
+        manufacturer: document.getElementById('newTrfManufacturer').value.trim(),
+        phase_type: document.getElementById('newTrfPhaseType').value,
+        vector_group: document.getElementById('newTrfVectorGroup').value.trim() || null,
+        hv_nominal_voltage: isNaN(hv) ? null : hv,
+        lv_nominal_voltage: isNaN(lv) ? null : lv,
+        manufacture_year: year || null,
+        rated_power_kva: isNaN(power) ? null : power,
+        is_special_design: false,
+        tap_config: {
+          nominalVoltage: nominalForTaps,
+          stepPercentage: 2.5,
+          numPositions: 5,
+          neutralPosition: 3,
+          positions: buildDefaultTapPositions_(nominalForTaps)
+        },
+        file_base64: photo ? photo.base64 : null,
+        file_mime_type: photo ? photo.mimeType : null
+      });
+    })
     .then(function () {
       setStatus_(status, 'Equipo creado', true);
       document.getElementById('createTransformerForm').reset();
       return loadDashboardAndShow_();
     })
     .catch(function (err) {
-      if (err.status !== 402) setStatus_(status, formatNetworkAwareError_(err), false, true);
+      if (!err || err.status !== 402) setStatus_(status, formatNetworkAwareError_(err || {}), false, true);
     })
     .then(function () { btn.disabled = false; });
 }
@@ -469,6 +497,9 @@ function handleChangePasswordSubmit(e) {
 // ---------------------------------------------------------------
 
 function renderAdminNavAndPanel() {
+  var moreItem = document.getElementById('moreSheetAdminItem');
+  if (moreItem) moreItem.hidden = state.role !== 'Administrador';
+
   if (state.role !== 'Administrador') return;
   if (document.getElementById('view-admin')) return;
 
@@ -512,6 +543,9 @@ function renderAdminNavAndPanel() {
 }
 
 function removeAdminNavAndPanel() {
+  var moreItem = document.getElementById('moreSheetAdminItem');
+  if (moreItem) moreItem.hidden = true;
+
   var navItem = document.querySelector('.nav-item[data-view="admin"]');
   if (navItem) {
     var label = navItem.previousElementSibling;
@@ -628,8 +662,11 @@ function renderDetail() {
   document.getElementById('detailSpecGrid').innerHTML = [
     ['Tensión HV nominal', fmtVoltage_(t.hv_nominal_voltage)],
     ['Tensión LV nominal', fmtVoltage_(t.lv_nominal_voltage)],
+    ['Potencia nominal', t.rated_power_kva ? (t.rated_power_kva + ' kVA') : '—'],
+    ['Año de fabricación', t.manufacture_year || '—'],
     ['TAPs configurados', (cfg.positions || []).length],
-    ['Paso por TAP', cfg.stepPercentage != null ? (cfg.stepPercentage + ' %') : '—']
+    ['Paso por TAP', cfg.stepPercentage != null ? (cfg.stepPercentage + ' %') : '—'],
+    ['Foto de placa', t.plate_photo_url ? ('<a href="' + t.plate_photo_url + '" target="_blank" rel="noopener">Ver foto</a>') : '—']
   ].map(function (pair) {
     return '<div class="cell"><div class="k">' + pair[0] + '</div><div class="v">' + pair[1] + '</div></div>';
   }).join('');
@@ -933,7 +970,12 @@ function submitTtr() {
   btn.disabled = true;
   setStatus_(status, 'Enviando…', false);
 
-  callApi('submitTtrTest', 'POST', buildTtrRequestBody())
+  readFileAsBase64_(document.getElementById('ttrEvidence'))
+    .then(function (evidence) {
+      var body = buildTtrRequestBody();
+      if (evidence) { body.file_base64 = evidence.base64; body.file_mime_type = evidence.mimeType; }
+      return callApi('submitTtrTest', 'POST', body);
+    })
     .then(function (data) {
       setStatus_(status, 'Prueba registrada · veredicto: ' + data.calculated_results.overallVerdict, true);
       clearDraft_('mya_draft_ttr_' + state.currentTransformerId);
@@ -942,7 +984,7 @@ function submitTtr() {
     .then(function (tests) { state.currentTests = tests || []; renderDetail(); })
     .catch(function (err) {
       // Las lecturas quedan intactas en state.ttr.readings y en el borrador local: el técnico puede reintentar sin volver a digitar.
-      if (err.status !== 402) setStatus_(status, formatNetworkAwareError_(err), false, true);
+      if (!err || err.status !== 402) setStatus_(status, formatNetworkAwareError_(err || {}), false, true);
     })
     .then(function () { btn.disabled = false; });
 }
@@ -1104,7 +1146,12 @@ function submitWinding() {
   btn.disabled = true;
   setStatus_(status, 'Enviando…', false);
 
-  callApi('submitWindingResistanceTest', 'POST', buildWindingRequestBody())
+  readFileAsBase64_(document.getElementById('wrEvidence'))
+    .then(function (evidence) {
+      var body = buildWindingRequestBody();
+      if (evidence) { body.file_base64 = evidence.base64; body.file_mime_type = evidence.mimeType; }
+      return callApi('submitWindingResistanceTest', 'POST', body);
+    })
     .then(function (data) {
       setStatus_(status, 'Prueba registrada · veredicto: ' + data.calculated_results.overallVerdict, true);
       clearDraft_('mya_draft_wr_' + state.currentTransformerId);
@@ -1113,7 +1160,7 @@ function submitWinding() {
     .then(function (tests) { state.currentTests = tests || []; renderDetail(); })
     .catch(function (err) {
       // Las lecturas quedan intactas en state.wr.readings y en el borrador local: el técnico puede reintentar sin volver a digitar.
-      if (err.status !== 402) setStatus_(status, formatNetworkAwareError_(err), false, true);
+      if (!err || err.status !== 402) setStatus_(status, formatNetworkAwareError_(err || {}), false, true);
     })
     .then(function () { btn.disabled = false; });
 }
@@ -1128,31 +1175,74 @@ document.addEventListener('DOMContentLoaded', function () {
   document.getElementById('createSiteForm').addEventListener('submit', handleCreateSiteSubmit);
   document.getElementById('createTransformerForm').addEventListener('submit', handleCreateTransformerSubmit);
 
-  document.querySelectorAll('.nav-item[data-view]').forEach(function (el) {
-    el.addEventListener('click', function () { showView(el.dataset.view); closeMobileNav_(); });
+  document.querySelectorAll('.nav-item[data-view], .bottom-nav-item[data-view], .action-sheet-item[data-view]').forEach(function (el) {
+    el.addEventListener('click', function () { showView(el.dataset.view); });
   });
 
-  var mobileNavBtn = document.getElementById('mobileNavBtn');
-  var mobileNavBackdrop = document.getElementById('mobileNavBackdrop');
-  if (mobileNavBtn) mobileNavBtn.addEventListener('click', toggleMobileNav_);
-  if (mobileNavBackdrop) mobileNavBackdrop.addEventListener('click', closeMobileNav_);
+  document.getElementById('bottomNavFab').addEventListener('click', function () { openTestActionSheet_(); });
+  document.getElementById('bottomNavMoreBtn').addEventListener('click', function () { openMoreActionSheet_(); });
+  document.getElementById('testSheetBackdrop').addEventListener('click', function () { closeActionSheet_('testActionSheet'); });
+  document.getElementById('moreSheetBackdrop').addEventListener('click', function () { closeActionSheet_('moreActionSheet'); });
+
+  attachRippleDelegation_();
 
   showView('login');
 });
 
 // ---------------------------------------------------------------
-// Navegación móvil (menú lateral tipo cajón, bajo 900px)
+// Hojas de acciones (bottom sheets): "Nueva prueba" y "Más"
 // ---------------------------------------------------------------
 
-function toggleMobileNav_() {
-  var sidebar = document.getElementById('sidebar');
-  var open = sidebar.classList.toggle('open');
-  document.getElementById('mobileNavBackdrop').classList.toggle('open', open);
-  document.getElementById('mobileNavBtn').setAttribute('aria-expanded', String(open));
+function backdropIdFor_(sheetId) {
+  return sheetId === 'testActionSheet' ? 'testSheetBackdrop' : 'moreSheetBackdrop';
 }
 
-function closeMobileNav_() {
-  document.getElementById('sidebar').classList.remove('open');
-  document.getElementById('mobileNavBackdrop').classList.remove('open');
-  document.getElementById('mobileNavBtn').setAttribute('aria-expanded', 'false');
+function openActionSheet_(sheetId) {
+  document.getElementById(sheetId).classList.add('open');
+  document.getElementById(backdropIdFor_(sheetId)).classList.add('open');
+}
+
+function closeActionSheet_(sheetId) {
+  var sheet = document.getElementById(sheetId);
+  if (sheet) sheet.classList.remove('open');
+  var backdrop = document.getElementById(backdropIdFor_(sheetId));
+  if (backdrop) backdrop.classList.remove('open');
+}
+
+function openTestActionSheet_() {
+  var hasEquipment = !!state.currentTransformer;
+  var subtitle = document.getElementById('testSheetSubtitle');
+  subtitle.textContent = hasEquipment
+    ? state.currentTransformer.serial_number + ' · elige el tipo de prueba'
+    : 'Selecciona primero un equipo en Fase 2';
+  document.querySelectorAll('#testActionSheet .action-sheet-item[data-view]').forEach(function (el) {
+    el.disabled = !hasEquipment;
+  });
+  openActionSheet_('testActionSheet');
+}
+
+function openMoreActionSheet_() {
+  document.getElementById('moreSheetUser').textContent = (state.username || '—') + ' · ' + (state.role || '—');
+  openActionSheet_('moreActionSheet');
+}
+
+// ---------------------------------------------------------------
+// Microinteracción: ripple táctil (delegado, cubre elementos re-renderizados)
+// ---------------------------------------------------------------
+
+function attachRippleDelegation_() {
+  var selector = '.btn, .nav-item, .tap-chip, .bottom-nav-item, .bottom-nav-fab, .action-sheet-item';
+  document.addEventListener('pointerdown', function (e) {
+    var el = e.target.closest(selector);
+    if (!el || el.disabled) return;
+    var rect = el.getBoundingClientRect();
+    var size = Math.max(rect.width, rect.height);
+    var ripple = document.createElement('span');
+    ripple.className = 'ripple';
+    ripple.style.width = ripple.style.height = size + 'px';
+    ripple.style.left = (e.clientX - rect.left - size / 2) + 'px';
+    ripple.style.top = (e.clientY - rect.top - size / 2) + 'px';
+    el.appendChild(ripple);
+    ripple.addEventListener('animationend', function () { ripple.remove(); });
+  });
 }
