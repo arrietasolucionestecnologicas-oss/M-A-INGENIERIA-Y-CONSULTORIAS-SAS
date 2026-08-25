@@ -72,12 +72,23 @@ data class WindingPhaseReading(
     val resistanceOhm: Double
 )
 
+/**
+ * Un envío de resistencia de devanados cubre uno o varios TAPs (igual que TTR). La
+ * temperatura de devanado es obligatoria por TAP: la corrección térmica del backend usa
+ * este valor puntual, nunca la temperatura ambiente de la sesión (test_sessions.ambient_temperature_c),
+ * porque puede haber transcurrido tiempo entre la medición de un TAP y el siguiente.
+ */
+@Serializable
+data class WindingTapMeasurement(
+    val tapPosition: Int,
+    val windingTemperatureC: Double,
+    /** clave = identificador de fase, ej. "H1-H2" */
+    val phases: Map<String, WindingPhaseReading>
+)
+
 @Serializable
 data class WindingResistanceRawReadings(
-    val tapPosition: Int? = null,
-    val windingTemperatureC: Double? = null,
-    /** clave = identificador de fase, ej. "H1-H2" */
-    val measurements: Map<String, WindingPhaseReading>
+    val measurements: List<WindingTapMeasurement>
 )
 
 @Serializable
@@ -88,16 +99,25 @@ data class SubmitWindingResistanceRequest(
 
 @Serializable
 data class WindingPhaseResult(
+    val resistanceOhm: Double,
     val deviationFromAvgPercent: Double,
     val status: String
 )
 
 @Serializable
-data class WindingResistanceCalculatedResults(
+data class WindingTapResult(
+    val tapPosition: Int,
+    val windingTemperatureC: Double,
     val averageResistanceOhm: Double,
-    val unbalanceThresholdPercent: Double,
     val phases: Map<String, WindingPhaseResult>,
     val maxUnbalancePercent: Double,
+    val tapVerdict: String
+)
+
+@Serializable
+data class WindingResistanceCalculatedResults(
+    val unbalanceThresholdPercent: Double,
+    val taps: List<WindingTapResult>,
     val overallVerdict: String
 )
 

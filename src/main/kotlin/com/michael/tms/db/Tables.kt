@@ -7,6 +7,8 @@ import org.jetbrains.exposed.sql.javatime.datetime
 import java.time.LocalDateTime
 
 object Tenants : UUIDTable("tenants") {
+    /** Código corto público usado para resolver el tenant en el login (ej. "cliente01"); el UUID nunca se le pide al usuario. */
+    val slug = varchar("slug", 60).uniqueIndex()
     val companyName = varchar("company_name", 255)
     val taxId = varchar("tax_id", 50).nullable()
     val isActive = bool("is_active").default(true)

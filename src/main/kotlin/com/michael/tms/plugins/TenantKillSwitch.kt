@@ -8,24 +8,25 @@ import io.ktor.server.application.ApplicationCallPipeline
 import io.ktor.server.application.call
 import io.ktor.server.request.path
 import io.ktor.server.response.respond
-import io.ktor.util.AttributeKey
 import org.jetbrains.exposed.sql.eq
 import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.transaction
 import java.util.UUID
 
-val TenantIdAttrKey = AttributeKey<UUID>("TenantId")
+/** Único endpoint bajo /api/v1 que el cliente puede llamar sin conocer el X-Tenant-ID todavía. */
+private const val LOGIN_PATH = "/api/v1/auth/login"
 
 /**
  * Kill Switch del SaaS: intercepta toda petición bajo /api/v1 antes de que llegue al
  * routing/autenticación. Si tenants.is_active = false (o el tenant no existe), aborta con
  * 402/403 sin ejecutar ninguna lógica de negocio. Los endpoints /admin/* (protegidos por
- * token maestro) y /health quedan fuera de este control.
+ * token maestro), /health y /api/v1/auth/login (que resuelve el tenant por slug, ver
+ * routes/AuthRoutes.kt) quedan fuera de este control basado en header.
  */
 fun Application.configureTenantKillSwitch() {
     intercept(ApplicationCallPipeline.Plugins) {
         val path = call.request.path()
-        if (!path.startsWith("/api/v1")) {
+        if (!path.startsWith("/api/v1") || path == LOGIN_PATH) {
             return@intercept
         }
 
@@ -60,9 +61,7 @@ fun Application.configureTenantKillSwitch() {
                 call.respond(HttpStatusCode.PaymentRequired, ErrorResponse("Cuenta suspendida. Contacte al administrador."))
                 finish()
             }
-            true -> {
-                call.attributes.put(TenantIdAttrKey, tenantId)
-            }
+            true -> Unit
         }
     }
 }

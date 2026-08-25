@@ -4,6 +4,8 @@ import kotlinx.serialization.Serializable
 
 @Serializable
 data class LoginRequest(
+    /** Código corto público del tenant (ej. "cliente01"). El backend lo resuelve al UUID real antes de emitir el JWT. */
+    val tenantSlug: String,
     val email: String,
     val password: String
 )
@@ -11,6 +13,7 @@ data class LoginRequest(
 @Serializable
 data class LoginResponse(
     val token: String,
+    val tenantId: String,
     val userId: String,
     val role: String,
     val fullName: String

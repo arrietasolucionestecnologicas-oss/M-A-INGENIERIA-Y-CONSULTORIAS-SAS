@@ -4,6 +4,7 @@ import kotlinx.serialization.Serializable
 
 @Serializable
 data class CreateTenantRequest(
+    val slug: String,
     val companyName: String,
     val taxId: String? = null,
     val plan: TenantPlan = TenantPlan.BASIC,
@@ -12,6 +13,7 @@ data class CreateTenantRequest(
 
 @Serializable
 data class UpdateTenantRequest(
+    val slug: String? = null,
     val companyName: String? = null,
     val taxId: String? = null,
     val isActive: Boolean? = null,
@@ -23,6 +25,7 @@ data class UpdateTenantRequest(
 @Serializable
 data class TenantResponse(
     val id: String,
+    val slug: String,
     val companyName: String,
     val taxId: String?,
     val isActive: Boolean,
