@@ -33,6 +33,9 @@ var state = {
   allowedApps: [],
   pendingOldUsuario: null,
   pendingOldPassword: null,
+  sites: [],
+  currentSiteId: null,
+  currentSite: null,
   transformers: [],
   currentTransformerId: null,
   currentTransformer: null,
@@ -41,6 +44,12 @@ var state = {
   matrix: { taps: [] },
   wr: { currentTap: null, readings: {} }
 };
+
+/** "12,5" -> 12.5. parseFloat NUNCA debe usarse directo sobre un input de usuario: se detiene en la coma y trunca el valor sin avisar. */
+function parseDecimal_(value) {
+  if (value === null || value === undefined) return NaN;
+  return parseFloat(String(value).trim().replace(',', '.'));
+}
 
 // ---------------------------------------------------------------
 // Cliente HTTP contra Apps Script
@@ -172,6 +181,27 @@ function setStatus_(el, message, ok, isError) {
   el.className = 'status-line' + (isError ? ' error' : (ok ? ' ok' : ''));
 }
 
+/** Distingue un fallo de red/conexión de un error de validación del servidor,
+ *  y deja explícito que las lecturas ingresadas NO se perdieron (se puede reintentar). */
+function formatNetworkAwareError_(err) {
+  if (err && err.status === 0) {
+    return '⚠ Sin conexión con el servidor. Tus datos NO se perdieron: revisa la señal y presiona el botón de nuevo para reintentar. (' + err.message + ')';
+  }
+  return err ? err.message : 'Error desconocido';
+}
+
+/** Persistencia de borrador en localStorage: protege las lecturas de campo ante
+ *  pérdida de conexión, recarga accidental o cierre de pestaña durante una visita. */
+function saveDraft_(key, data) {
+  try { localStorage.setItem(key, JSON.stringify(data)); } catch (e) { /* almacenamiento no disponible; se ignora */ }
+}
+function loadDraft_(key) {
+  try { var v = localStorage.getItem(key); return v ? JSON.parse(v) : null; } catch (e) { return null; }
+}
+function clearDraft_(key) {
+  try { localStorage.removeItem(key); } catch (e) { /* almacenamiento no disponible; se ignora */ }
+}
+
 // ---------------------------------------------------------------
 // Navegación entre vistas
 // ---------------------------------------------------------------
@@ -187,11 +217,13 @@ function showView(name) {
     state.token = null;
     state.username = null;
     state.role = null;
+    state.currentSiteId = null;
+    state.currentSite = null;
     state.currentTransformer = null;
     removeAdminNavAndPanel();
   }
 
-  ['dashboard', 'detail', 'ttr-form', 'winding-form', 'admin'].forEach(function (v) {
+  ['sites', 'dashboard', 'detail', 'ttr-form', 'winding-form', 'admin'].forEach(function (v) {
     var el = document.getElementById('view-' + v);
     if (el) el.hidden = (name !== v);
   });
@@ -201,9 +233,15 @@ function showView(name) {
   });
   window.scrollTo(0, 0);
 
+  // Jerarquía obligatoria: Fase 2 (Equipos) exige Fase 1 (Cliente/Proyecto);
+  // Fase 3 (Pruebas) exige un equipo ya validado en Fase 2.
+  if (name === 'dashboard' && !state.currentSiteId) {
+    alert('Selecciona primero un Cliente/Proyecto (Fase 1).');
+    return showView('sites');
+  }
   if ((name === 'ttr-form' || name === 'winding-form') && !state.currentTransformer) {
-    alert('Selecciona primero un transformador desde el Panel general.');
-    return showView('dashboard');
+    alert('Selecciona primero un equipo desde Fase 2.');
+    return showView(state.currentSiteId ? 'dashboard' : 'sites');
   }
   if (name === 'ttr-form') { renderTtrFormContext(); renderMatrixRows(); refreshTtr(); }
   if (name === 'winding-form') { renderWindingFormContext(); refreshWinding(); }
@@ -248,7 +286,7 @@ function handleLoginSubmit(e) {
       }
 
       renderAdminNavAndPanel();
-      return loadDashboardAndShow_();
+      return loadSitesAndShow_();
     })
     .catch(function (err) {
       setStatus_(errEl, 'No se pudo contactar el servicio de autenticación: ' + err.message, false, true);
@@ -256,8 +294,81 @@ function handleLoginSubmit(e) {
     .then(function () { btn.disabled = false; });
 }
 
+// ---------------------------------------------------------------
+// Fase 1: Cliente / Proyecto (Sitios)
+// ---------------------------------------------------------------
+
+function loadSitesAndShow_() {
+  return callApi('listSites', 'GET', {})
+    .then(function (sites) {
+      state.sites = sites || [];
+      renderSites();
+      showView('sites');
+    })
+    .catch(function (err) {
+      if (err.status === 402) return; // ya se mostró la pantalla de suspendido
+      alert('No se pudieron cargar los clientes/proyectos: ' + err.message);
+    });
+}
+
+function renderSites() {
+  var tbody = document.getElementById('sitesRows');
+  var chip = document.getElementById('sitesTenantChip');
+  if (chip) chip.textContent = state.username + ' · ' + state.role;
+  if (!tbody) return;
+
+  if (state.sites.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="4" class="empty-note">No hay clientes/proyectos todavía. Crea el primero arriba para empezar (Fase 1).</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = state.sites.map(function (s) {
+    return '<tr class="rowlink" onclick="selectSite(\'' + s.id + '\')">' +
+      '<td>' + escapeHtml_(s.client_name) + '</td>' +
+      '<td>' + escapeHtml_(s.project_name) + '</td>' +
+      '<td>' + escapeHtml_(s.address || '—') + '</td>' +
+      '<td><span class="pill neutral">Seleccionar &rarr;</span></td>' +
+      '</tr>';
+  }).join('');
+}
+
+function selectSite(id) {
+  var site = state.sites.filter(function (s) { return s.id === id; })[0];
+  if (!site) return;
+  state.currentSiteId = id;
+  state.currentSite = site;
+  var subtitle = document.getElementById('dashboardSiteSubtitle');
+  if (subtitle) subtitle.textContent = site.client_name + ' · ' + site.project_name;
+  loadDashboardAndShow_();
+}
+
+function handleCreateSiteSubmit(e) {
+  e.preventDefault();
+  var clientName = document.getElementById('newSiteClient').value.trim();
+  var projectName = document.getElementById('newSiteProject').value.trim();
+  var address = document.getElementById('newSiteAddress').value.trim();
+  if (!clientName || !projectName) return;
+
+  var btn = document.getElementById('createSiteBtn');
+  var status = document.getElementById('createSiteStatus');
+  btn.disabled = true;
+  setStatus_(status, 'Creando…', false);
+
+  callApi('createSite', 'POST', { client_name: clientName, project_name: projectName, address: address })
+    .then(function () {
+      setStatus_(status, 'Cliente/Proyecto creado', true);
+      document.getElementById('createSiteForm').reset();
+      return loadSitesAndShow_();
+    })
+    .catch(function (err) {
+      if (err.status !== 402) setStatus_(status, formatNetworkAwareError_(err), false, true);
+    })
+    .then(function () { btn.disabled = false; });
+}
+
 function loadDashboardAndShow_() {
-  return callApi('listTransformers', 'GET', {})
+  if (!state.currentSiteId) return showView('sites');
+  return callApi('listTransformers', 'GET', { site_id: state.currentSiteId })
     .then(function (transformers) {
       state.transformers = transformers || [];
       renderDashboard();
@@ -267,6 +378,54 @@ function loadDashboardAndShow_() {
       if (err.status === 402) return; // ya se mostró la pantalla de suspendido
       alert('No se pudieron cargar los transformadores: ' + err.message);
     });
+}
+
+function handleCreateTransformerSubmit(e) {
+  e.preventDefault();
+  if (!state.currentSiteId) { alert('Selecciona primero un Cliente/Proyecto (Fase 1).'); return; }
+
+  var hv = parseDecimal_(document.getElementById('newTrfHv').value);
+  var lv = parseDecimal_(document.getElementById('newTrfLv').value);
+  var btn = document.getElementById('createTransformerBtn');
+  var status = document.getElementById('createTransformerStatus');
+  btn.disabled = true;
+  setStatus_(status, 'Creando…', false);
+
+  var nominalForTaps = isNaN(hv) ? 0 : hv;
+  callApi('createTransformer', 'POST', {
+    site_id: state.currentSiteId,
+    serial_number: document.getElementById('newTrfSerial').value.trim(),
+    manufacturer: document.getElementById('newTrfManufacturer').value.trim(),
+    phase_type: document.getElementById('newTrfPhaseType').value,
+    vector_group: document.getElementById('newTrfVectorGroup').value.trim() || null,
+    hv_nominal_voltage: isNaN(hv) ? null : hv,
+    lv_nominal_voltage: isNaN(lv) ? null : lv,
+    is_special_design: false,
+    tap_config: {
+      nominalVoltage: nominalForTaps,
+      stepPercentage: 2.5,
+      numPositions: 5,
+      neutralPosition: 3,
+      positions: buildDefaultTapPositions_(nominalForTaps)
+    }
+  })
+    .then(function () {
+      setStatus_(status, 'Equipo creado', true);
+      document.getElementById('createTransformerForm').reset();
+      return loadDashboardAndShow_();
+    })
+    .catch(function (err) {
+      if (err.status !== 402) setStatus_(status, formatNetworkAwareError_(err), false, true);
+    })
+    .then(function () { btn.disabled = false; });
+}
+
+function buildDefaultTapPositions_(nominalVoltage) {
+  var step = 2.5, neutral = 3, n = 5, positions = [];
+  for (var p = 1; p <= n; p++) {
+    positions.push({ position: p, voltage: Math.round(nominalVoltage * (1 - (p - neutral) * step / 100)) });
+  }
+  return positions;
 }
 
 function handleChangePasswordSubmit(e) {
@@ -297,7 +456,7 @@ function handleChangePasswordSubmit(e) {
       state.pendingOldPassword = null;
       state.pendingOldUsuario = null;
       renderAdminNavAndPanel();
-      return loadDashboardAndShow_();
+      return loadSitesAndShow_();
     })
     .catch(function (err) {
       setStatus_(errEl, 'No se pudo cambiar la contraseña: ' + err.message, false, true);
@@ -412,7 +571,7 @@ function renderDashboard() {
     var specialTag = t.is_special_design ? ' <span class="tag">Especial</span>' : '';
     return '<tr class="rowlink" onclick="openTransformer(\'' + t.id + '\')">' +
       '<td class="mono">' + escapeHtml_(t.serial_number) + '</td>' +
-      '<td>' + escapeHtml_(t.site_id || '—') + '</td>' +
+      '<td>' + escapeHtml_(t.manufacturer || '—') + '</td>' +
       '<td>' + phaseLabel + specialTag + '</td>' +
       '<td>' + fmtDate_(t.updated_at) + '</td>' +
       '<td><span class="pill neutral">' + escapeHtml_(t.status || 'ACTIVO') + '</span></td>' +
@@ -456,8 +615,9 @@ function renderDetail() {
 
   var phaseLabel = t.phase_type === 'MONOFASICO' ? 'Monofásico' : 'Trifásico';
   var powerLabel = t.rated_power_kva ? (t.rated_power_kva + ' kVA') : null;
+  var siteLabel = state.currentSite ? (state.currentSite.client_name + ' · ' + state.currentSite.project_name) : null;
   document.getElementById('detailMeta').textContent =
-    [t.site_id, phaseLabel, powerLabel].filter(Boolean).join(' · ');
+    [siteLabel, phaseLabel, powerLabel].filter(Boolean).join(' · ');
 
   var badges = [];
   if (t.is_special_design) badges.push('<span class="tag">Diseño especial</span>');
@@ -537,6 +697,12 @@ function renderTtrFormContext() {
 
 function resetTtrStateFromTransformer() {
   var positions = tapPositions();
+  var draft = loadDraft_('mya_draft_ttr_' + state.currentTransformerId);
+  if (draft) {
+    state.ttr.readings = draft;
+    state.ttr.currentTap = positions.length ? positions[0] : null;
+    return;
+  }
   state.ttr.currentTap = positions.length ? positions[0] : null;
   state.ttr.readings = {};
   if (state.ttr.currentTap !== null) seedTtrTapReadings_(state.ttr.currentTap);
@@ -581,7 +747,7 @@ function renderPhaseEntries() {
 }
 
 function updateReading(key, field, value) {
-  var v = parseFloat(value); if (isNaN(v)) v = 0;
+  var v = parseDecimal_(value); if (isNaN(v)) v = 0;
   state.ttr.readings[state.ttr.currentTap][key][field] = v;
   refreshTtr();
 }
@@ -634,7 +800,7 @@ function renderMatrixRows() {
 function updateMatrixValue(tapPosition, key, value) {
   var t = state.matrix.taps.filter(function (x) { return x.tapPosition === tapPosition; })[0];
   if (!t) return;
-  var v = parseFloat(value); if (isNaN(v)) v = 0;
+  var v = parseDecimal_(value); if (isNaN(v)) v = 0;
   t.phases[key] = { theoreticalRatio: v };
   refreshMatrixJson();
 }
@@ -671,7 +837,7 @@ function saveMatrix() {
     state.currentTransformer.custom_tap_ratio_matrix = { taps: JSON.parse(JSON.stringify(state.matrix.taps)) };
     refreshTtr();
   }).catch(function (err) {
-    if (err.status !== 402) setStatus_(status, err.message, false, true);
+    if (err.status !== 402) setStatus_(status, formatNetworkAwareError_(err), false, true);
   }).then(function () { btn.disabled = false; });
 }
 
@@ -731,7 +897,7 @@ function buildTtrRequestBody() {
   return {
     transformer_id: state.currentTransformerId,
     instrument_used: document.getElementById('ttrInstrument').value,
-    readings: { testVoltageV: parseFloat(document.getElementById('ttrVoltage').value) || null, measurements: measurements }
+    readings: { testVoltageV: parseDecimal_(document.getElementById('ttrVoltage').value) || null, measurements: measurements }
   };
 }
 
@@ -746,6 +912,7 @@ function refreshTtr() {
   renderTtrPreview();
   var el = document.getElementById('jsonTtr');
   if (el) el.innerHTML = syntaxHighlight(Object.assign({ action: 'submitTtrTest', token: state.token }, buildTtrRequestBody()));
+  saveDraft_('mya_draft_ttr_' + state.currentTransformerId, state.ttr.readings);
 }
 
 function refreshMatrixJson() {
@@ -769,10 +936,14 @@ function submitTtr() {
   callApi('submitTtrTest', 'POST', buildTtrRequestBody())
     .then(function (data) {
       setStatus_(status, 'Prueba registrada · veredicto: ' + data.calculated_results.overallVerdict, true);
+      clearDraft_('mya_draft_ttr_' + state.currentTransformerId);
       return callApi('listTests', 'GET', { transformer_id: state.currentTransformerId });
     })
     .then(function (tests) { state.currentTests = tests || []; renderDetail(); })
-    .catch(function (err) { if (err.status !== 402) setStatus_(status, err.message, false, true); })
+    .catch(function (err) {
+      // Las lecturas quedan intactas en state.ttr.readings y en el borrador local: el técnico puede reintentar sin volver a digitar.
+      if (err.status !== 402) setStatus_(status, formatNetworkAwareError_(err), false, true);
+    })
     .then(function () { btn.disabled = false; });
 }
 
@@ -798,6 +969,12 @@ function defaultWrPhases_() {
 function resetWindingStateFromTransformer() {
   var positions = tapPositions();
   var firstTap = positions.length ? positions[0] : 1;
+  var draft = loadDraft_('mya_draft_wr_' + state.currentTransformerId);
+  if (draft) {
+    state.wr.readings = draft;
+    state.wr.currentTap = Object.keys(draft).map(Number).sort(function (a, b) { return a - b; })[0];
+    return;
+  }
   state.wr.currentTap = firstTap;
   state.wr.readings = {};
   state.wr.readings[firstTap] = { windingTemperatureC: 25, phases: defaultWrPhases_() };
@@ -842,13 +1019,13 @@ function renderWrPhaseEntries() {
 }
 
 function updateWrPhase(key, value) {
-  var v = parseFloat(value); if (isNaN(v)) v = 0;
+  var v = parseDecimal_(value); if (isNaN(v)) v = 0;
   state.wr.readings[state.wr.currentTap].phases[key] = { resistanceOhm: v };
   refreshWinding();
 }
 
 function updateWrTemp(value) {
-  var v = parseFloat(value); if (isNaN(v)) v = 0;
+  var v = parseDecimal_(value); if (isNaN(v)) v = 0;
   state.wr.readings[state.wr.currentTap].windingTemperatureC = v;
   refreshWinding();
 }
@@ -918,6 +1095,7 @@ function refreshWinding() {
   renderWindingPreview();
   var el = document.getElementById('jsonWinding');
   if (el) el.innerHTML = syntaxHighlight(Object.assign({ action: 'submitWindingResistanceTest', token: state.token }, buildWindingRequestBody()));
+  saveDraft_('mya_draft_wr_' + state.currentTransformerId, state.wr.readings);
 }
 
 function submitWinding() {
@@ -929,10 +1107,14 @@ function submitWinding() {
   callApi('submitWindingResistanceTest', 'POST', buildWindingRequestBody())
     .then(function (data) {
       setStatus_(status, 'Prueba registrada · veredicto: ' + data.calculated_results.overallVerdict, true);
+      clearDraft_('mya_draft_wr_' + state.currentTransformerId);
       return callApi('listTests', 'GET', { transformer_id: state.currentTransformerId });
     })
     .then(function (tests) { state.currentTests = tests || []; renderDetail(); })
-    .catch(function (err) { if (err.status !== 402) setStatus_(status, err.message, false, true); })
+    .catch(function (err) {
+      // Las lecturas quedan intactas en state.wr.readings y en el borrador local: el técnico puede reintentar sin volver a digitar.
+      if (err.status !== 402) setStatus_(status, formatNetworkAwareError_(err), false, true);
+    })
     .then(function () { btn.disabled = false; });
 }
 
@@ -943,10 +1125,34 @@ function submitWinding() {
 document.addEventListener('DOMContentLoaded', function () {
   document.getElementById('loginForm').addEventListener('submit', handleLoginSubmit);
   document.getElementById('changePasswordForm').addEventListener('submit', handleChangePasswordSubmit);
+  document.getElementById('createSiteForm').addEventListener('submit', handleCreateSiteSubmit);
+  document.getElementById('createTransformerForm').addEventListener('submit', handleCreateTransformerSubmit);
 
   document.querySelectorAll('.nav-item[data-view]').forEach(function (el) {
-    el.addEventListener('click', function () { showView(el.dataset.view); });
+    el.addEventListener('click', function () { showView(el.dataset.view); closeMobileNav_(); });
   });
+
+  var mobileNavBtn = document.getElementById('mobileNavBtn');
+  var mobileNavBackdrop = document.getElementById('mobileNavBackdrop');
+  if (mobileNavBtn) mobileNavBtn.addEventListener('click', toggleMobileNav_);
+  if (mobileNavBackdrop) mobileNavBackdrop.addEventListener('click', closeMobileNav_);
 
   showView('login');
 });
+
+// ---------------------------------------------------------------
+// Navegación móvil (menú lateral tipo cajón, bajo 900px)
+// ---------------------------------------------------------------
+
+function toggleMobileNav_() {
+  var sidebar = document.getElementById('sidebar');
+  var open = sidebar.classList.toggle('open');
+  document.getElementById('mobileNavBackdrop').classList.toggle('open', open);
+  document.getElementById('mobileNavBtn').setAttribute('aria-expanded', String(open));
+}
+
+function closeMobileNav_() {
+  document.getElementById('sidebar').classList.remove('open');
+  document.getElementById('mobileNavBackdrop').classList.remove('open');
+  document.getElementById('mobileNavBtn').setAttribute('aria-expanded', 'false');
+}

@@ -17,18 +17,22 @@
   --accent: #1f7ba3;
   --accent-strong: #175c7c;
   --accent-soft: #e2f0f6;
+  --on-accent: #ffffff;
   --brand: #5a6983;
-  --success: #2f8f2b;
+  /* Verdes/rojos/ámbares oscurecidos frente a la paleta de marca para cumplir WCAG AAA
+     (>=7:1 en texto normal) sin cambiar el matiz de marca — ver informe de auditoría. */
+  --success: #155613;
   --success-bg: #e5f4e3;
   --success-border: #bfe2ba;
-  --warning: #9c7300;
+  --warning: #5c4300;
   --warning-bg: #fbf1d2;
   --warning-border: #edd486;
-  --danger: #a53434;
+  --danger: #7a1f1f;
   --danger-bg: #f7e5e5;
   --danger-border: #e6bcbc;
   --shadow: 0 1px 2px rgba(27,36,48,0.06), 0 8px 24px -12px rgba(27,36,48,0.18);
   --radius: 10px;
+  --tap-min: 48px;
   color-scheme: light;
 }
 
@@ -44,14 +48,15 @@
     --accent: #55b6e2;
     --accent-strong: #86cdec;
     --accent-soft: #1f3644;
+    --on-accent: #0b2431;
     --brand: #9aa8bd;
-    --success: #5fc659;
+    --success: #7ed878;
     --success-bg: #1c3020;
     --success-border: #2e4d2b;
     --warning: #f0c23e;
     --warning-bg: #362c11;
     --warning-border: #574721;
-    --danger: #e28080;
+    --danger: #f5b3b3;
     --danger-bg: #3a2222;
     --danger-border: #5c3232;
     --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 12px 32px -14px rgba(0,0,0,0.55);
@@ -70,14 +75,15 @@
   --accent: #55b6e2;
   --accent-strong: #86cdec;
   --accent-soft: #1f3644;
+  --on-accent: #0b2431;
   --brand: #9aa8bd;
-  --success: #5fc659;
+  --success: #7ed878;
   --success-bg: #1c3020;
   --success-border: #2e4d2b;
   --warning: #f0c23e;
   --warning-bg: #362c11;
   --warning-border: #57472a;
-  --danger: #e28080;
+  --danger: #f5b3b3;
   --danger-bg: #3a2222;
   --danger-border: #5c3232;
   --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 12px 32px -14px rgba(0,0,0,0.55);
@@ -213,13 +219,15 @@ tr.rowlink:hover td { background: var(--surface-alt); }
 }
 
 .btn {
-  font-family: inherit; font-size: 13px; font-weight: 600; padding: 8px 14px; border-radius: 8px;
+  font-family: inherit; font-size: 14px; font-weight: 600; padding: 8px 16px; border-radius: 8px;
   border: 1px solid var(--border); background: var(--surface); color: var(--text); cursor: pointer;
+  min-height: var(--tap-min); min-width: var(--tap-min);
 }
 .btn:hover { background: var(--surface-alt); }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-.btn.primary:hover { background: var(--accent-strong); border-color: var(--accent-strong); }
+/* AAA: texto blanco/oscuro sobre accent-strong da >=7:1 (ver informe); accent (claro) solo se usa como acento, no como fondo de texto. */
+.btn.primary { background: var(--accent-strong); border-color: var(--accent-strong); color: var(--on-accent); }
+.btn.primary:hover { filter: brightness(1.1); }
 .btn:focus-visible, .nav-item:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 .back-link {
@@ -294,8 +302,10 @@ tr.rowlink:hover td { background: var(--surface-alt); }
   text-transform: uppercase; letter-spacing: 0.03em; margin-bottom: 5px;
 }
 .field input, .field select {
-  width: 100%; font-family: "IBM Plex Sans", sans-serif; font-size: 13.5px; padding: 9px 11px;
+  width: 100%; font-family: "IBM Plex Sans", sans-serif; font-size: 16px; padding: 9px 11px;
   border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text);
+  min-height: var(--tap-min);
+  /* font-size:16px evita el auto-zoom de iOS Safari al enfocar un campo en campo con guantes. */
 }
 .field input.mono, .field select.mono { font-family: "IBM Plex Mono", monospace; }
 .field .field-note { font-size: 10.5px; color: var(--text-faint); margin-top: 4px; }
@@ -343,10 +353,12 @@ tr.rowlink:hover td { background: var(--surface-alt); }
 
 .tap-chip-row { display: flex; gap: 6px; flex-wrap: wrap; padding: 12px 18px; border-bottom: 1px solid var(--border); }
 .tap-chip {
-  font-family: "IBM Plex Mono", monospace; font-size: 11.5px; font-weight: 600; padding: 5px 10px;
+  font-family: "IBM Plex Mono", monospace; font-size: 13px; font-weight: 600; padding: 5px 14px;
   border-radius: 7px; border: 1px solid var(--border); background: var(--surface-alt); color: var(--text-muted); cursor: pointer;
+  min-height: var(--tap-min); min-width: var(--tap-min);
+  display: inline-flex; align-items: center; justify-content: center;
 }
-.tap-chip.current { background: var(--accent); border-color: var(--accent); color: #fff; }
+.tap-chip.current { background: var(--accent-strong); border-color: var(--accent-strong); color: var(--on-accent); }
 .tap-chip.filled:not(.current) { border-color: var(--success-border); color: var(--success); background: var(--success-bg); }
 
 .phase-entry-grid { padding: 14px 18px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
@@ -354,7 +366,7 @@ tr.rowlink:hover td { background: var(--surface-alt); }
 .phase-entry .ph-name { font-family: "IBM Plex Mono", monospace; font-size: 12px; font-weight: 600; color: var(--text-muted); margin-bottom: 8px; }
 .phase-entry .field + .field { margin-top: 8px; }
 .phase-entry .field label { font-size: 9.5px; }
-.phase-entry .field input { padding: 6px 8px; font-size: 12.5px; }
+.phase-entry .field input { padding: 6px 8px; font-size: 16px; min-height: var(--tap-min); }
 
 .rbac-note {
   display: flex; gap: 8px; align-items: flex-start; margin: 12px 18px; padding: 10px 12px; border-radius: 8px;
@@ -370,8 +382,9 @@ table.matrix-table th {
 }
 table.matrix-table td { padding: 6px 10px 6px 18px; border-bottom: 1px solid var(--border); }
 table.matrix-table input {
-  width: 92px; font-family: "IBM Plex Mono", monospace; font-size: 12.5px; padding: 6px 7px;
+  width: 92px; font-family: "IBM Plex Mono", monospace; font-size: 16px; padding: 6px 7px;
   border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text);
+  min-height: var(--tap-min);
 }
 table.matrix-table input:disabled { background: var(--surface-alt); color: var(--text-faint); }
 .matrix-remove {
@@ -412,8 +425,30 @@ table.matrix-table input:disabled { background: var(--surface-alt); color: var(-
 
 .submit-row { display: flex; align-items: center; gap: 12px; padding: 14px 18px; flex-wrap: wrap; }
 
+/* ---------- Navegación móvil (cajón lateral) ---------- */
+.mobile-nav-btn {
+  display: none; position: fixed; top: 12px; left: 12px; z-index: 40;
+  width: var(--tap-min); height: var(--tap-min); border-radius: 10px;
+  border: 1px solid var(--border); background: var(--surface); color: var(--text);
+  align-items: center; justify-content: center; box-shadow: var(--shadow); cursor: pointer;
+}
+.mobile-nav-backdrop {
+  display: none; position: fixed; inset: 0; background: rgba(10,14,20,0.45); z-index: 29;
+}
+.mobile-nav-backdrop.open { display: block; }
+
 @media (max-width: 900px) {
   .app { grid-template-columns: 1fr; }
-  .sidebar { display: none; }
+  .mobile-nav-btn { display: flex; }
+  .sidebar {
+    position: fixed; top: 0; bottom: 0; left: 0; z-index: 30; width: 268px;
+    transform: translateX(-100%); transition: transform 0.2s ease-out; box-shadow: var(--shadow);
+  }
+  .sidebar.open { transform: translateX(0); }
+  .topbar { padding-left: 64px; }
   .stat-row, .test-grid, .spec-grid, .phase-entry-grid { grid-template-columns: 1fr 1fr; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar { transition: none; }
 }

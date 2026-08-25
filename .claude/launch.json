@@ -4,8 +4,9 @@
     {
       "name": "frontend-static",
       "runtimeExecutable": "npx",
-      "runtimeArgs": ["-y", "serve", "frontend", "-p", "8811"],
-      "port": 8811
+      "runtimeArgs": ["-y", "serve", "."],
+      "port": 8811,
+      "autoPort": true
     }
   ]
 }

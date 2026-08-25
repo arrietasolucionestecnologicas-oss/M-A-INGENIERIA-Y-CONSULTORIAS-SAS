@@ -52,11 +52,16 @@ var CONTROL_ACCESO_URL = 'https://script.google.com/macros/s/AKfycby4K-qxW87hfd9
 var APP_ID = 'MYA_PRUEBAS';
 
 var SHEET_NAMES = {
+  SITIOS: 'Sitios',
   TRANSFORMADORES: 'Transformadores',
   PRUEBAS: 'Pruebas'
 };
 
 var HEADERS = {
+  /** Cliente + Proyecto (Fase 1 de la jerarquía obligatoria). No confundir con "Clientes" de Control de Acceso (esos son usuarios de M&A, esto es la empresa/proyecto del equipo que se prueba). */
+  SITIOS: [
+    'id', 'client_name', 'project_name', 'address', 'created_at'
+  ],
   TRANSFORMADORES: [
     'id', 'site_id', 'serial_number', 'manufacturer', 'manufacture_year',
     'phase_type', 'vector_group', 'rated_power_kva', 'hv_nominal_voltage', 'lv_nominal_voltage',
@@ -294,6 +299,57 @@ function safeParseJson_(s) {
 }
 
 // ---------------------------------------------------------------------------
+// Sitios (Cliente + Proyecto) — Fase 1 de la jerarquía obligatoria
+// ---------------------------------------------------------------------------
+
+function findSiteRow_(id) {
+  var sheet = getSheet_('SITIOS');
+  var data = sheet.getDataRange().getValues();
+  var idCol = HEADERS.SITIOS.indexOf('id');
+  for (var r = 1; r < data.length; r++) {
+    if (data[r][idCol] === id) return rowToObject_(data[r], 'SITIOS', r + 1);
+  }
+  return null;
+}
+
+function siteRowToJson_(row) {
+  return {
+    id: row.id,
+    client_name: row.client_name,
+    project_name: row.project_name,
+    address: row.address,
+    created_at: row.created_at
+  };
+}
+
+function createSite_(params) {
+  return withLock_(function () {
+    if (!params.client_name || !params.project_name) {
+      return jsonResponse_({ status: 400, message: 'client_name y project_name son obligatorios' });
+    }
+    var id = generateId_();
+    appendRow_('SITIOS', {
+      id: id,
+      client_name: params.client_name,
+      project_name: params.project_name,
+      address: params.address || '',
+      created_at: new Date().toISOString()
+    });
+    return jsonResponse_({ status: 201, message: 'Cliente/Proyecto creado', data: { id: id } });
+  });
+}
+
+function listSites_() {
+  var sheet = getSheet_('SITIOS');
+  var data = sheet.getDataRange().getValues();
+  var result = [];
+  for (var r = 1; r < data.length; r++) {
+    result.push(siteRowToJson_(rowToObject_(data[r], 'SITIOS', r + 1)));
+  }
+  return jsonResponse_({ status: 200, data: result });
+}
+
+// ---------------------------------------------------------------------------
 // Transformadores
 // ---------------------------------------------------------------------------
 
@@ -333,6 +389,12 @@ function transformerRowToJson_(row) {
 
 function createTransformer_(params) {
   return withLock_(function () {
+    if (!params.site_id) {
+      return jsonResponse_({ status: 400, message: 'site_id es obligatorio: selecciona primero un Cliente/Proyecto (Fase 1)' });
+    }
+    if (!findSiteRow_(params.site_id)) {
+      return jsonResponse_({ status: 404, message: 'El Cliente/Proyecto indicado no existe' });
+    }
     if (!params.serial_number || !params.phase_type) {
       return jsonResponse_({ status: 400, message: 'serial_number y phase_type son obligatorios' });
     }
@@ -758,6 +820,7 @@ function driveFileUrl_(fileId) {
 // ---------------------------------------------------------------------------
 
 var POST_ACTIONS = {
+  createSite: createSite_,
   createTransformer: createTransformer_,
   updateTransformer: updateTransformer_,
   submitTtrTest: submitTtrTest_,
@@ -766,6 +829,7 @@ var POST_ACTIONS = {
 };
 
 var GET_ACTIONS = {
+  listSites: listSites_,
   listTransformers: listTransformers_,
   getTransformer: getTransformer_,
   listTests: listTests_
