@@ -1,0 +1,40 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: tms
+      POSTGRES_USER: tms_user
+      POSTGRES_PASSWORD: tms_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - tms_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tms_user -d tms"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: jdbc:postgresql://db:5432/tms
+      DATABASE_USER: tms_user
+      DATABASE_PASSWORD: tms_password
+      JWT_SECRET: ${JWT_SECRET:-please-override-this-secret-with-a-real-one-via-env-var}
+      JWT_ISSUER: tms-api
+      JWT_AUDIENCE: tms-clients
+      JWT_REALM: tms
+      JWT_EXPIRATION_MINUTES: "480"
+      ADMIN_MASTER_TOKEN: ${ADMIN_MASTER_TOKEN:-please-override-this-master-token-via-env-var}
+      PORT: "8080"
+    ports:
+      - "8080:8080"
+
+volumes:
+  tms_pgdata:
