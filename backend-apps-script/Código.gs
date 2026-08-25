@@ -3,56 +3,68 @@
  * M&A INGENIERÍA Y CONSULTORÍA SAS — API de Gestión de Pruebas de Transformadores
  * Backend: Google Apps Script (router) + Google Sheets (base de datos)
  *          + Google Drive (almacenamiento de archivos)
+ *
+ * AUTENTICACIÓN: delegada al IdP central "Control de Acceso" (JL Bedoya Group).
+ * Este script NO valida usuarios ni contraseñas — solo confía en tokens ya
+ * emitidos por Control de Acceso para la app MYA_PRUEBAS. Login, cambio de
+ * contraseña y creación de usuarios se hacen contra Control de Acceso
+ * directamente desde el frontend, nunca a través de este backend.
  * ============================================================================
  *
  * DESPLIEGUE
- *  1. Pega este archivo como Código.gs en un proyecto de Apps Script vinculado
- *     (contenedor) a la hoja de cálculo que hará de base de datos.
- *  2. Ejecuta manualmente ensureAllSheets_() una vez desde el editor para crear
- *     las pestañas con sus encabezados (también se auto-crean en cada petición
- *     por si acaso, pero así puedes revisarlas antes de exponer el Web App).
- *  3. En Configuración del proyecto > Propiedades del script, agrega la
- *     propiedad ADMIN_MASTER_TOKEN con un valor secreto (se usa para la única
- *     acción administrativa: createClient).
- *  4. Implementar > Nueva implementación > Aplicación web.
- *     Ejecutar como: Yo. Quién tiene acceso: Cualquier usuario.
+ *  1. Pega este archivo como Código.gs en el proyecto de Apps Script "M&A APP".
+ *  2. Ejecuta manualmente ensureAllSheets_() una vez desde el editor.
+ *  3. Implementar > Administrar implementaciones > editar > Nueva versión > Implementar.
  *
- * NOTA IMPORTANTE SOBRE CÓDIGOS HTTP
- *  Google Apps Script (ContentService) no permite fijar el código de estado
- *  HTTP real de la respuesta: el transporte siempre entrega 200. Por eso el
- *  contrato de esta API va el campo "status" DENTRO del cuerpo JSON (tal como
- *  pide la directriz 402/429): el cliente debe leer body.status, nunca confiar
- *  en el código HTTP de la respuesta.
- *
- * NOTA SOBRE CORS EN doPost
- *  Si el frontend llama con fetch() desde un navegador, para evitar el
- *  preflight de CORS conviene enviar el body con
- *  Content-Type: text/plain;charset=utf-8 (aunque el contenido sea JSON).
- *  Por eso parseParams_ intenta parsear e.postData.contents como JSON sin
- *  depender del content-type declarado.
+ * NOTA SOBRE CÓDIGOS HTTP
+ *  Apps Script (ContentService) no permite fijar el código de estado HTTP real
+ *  de la respuesta: el transporte siempre entrega 200. El estado real va DENTRO
+ *  del cuerpo JSON como "status" (402, 403, 404, 429, etc.) — el cliente debe
+ *  leer body.status, nunca el código HTTP de fetch().
  * ============================================================================
  */
 
+/**
+ * Función pública (sin guion bajo) SOLO para forzar la ventana de autorización
+ * de Google: las funciones que terminan en "_" son tratadas como privadas por
+ * Apps Script y no aparecen en el selector de Ejecutar del editor. Selecciona
+ * "testAuthorization" en ese menú y dale a Ejecutar. Se puede borrar después.
+ */
+function testAuthorization() {
+  var ss = getSpreadsheet_();
+  Logger.log('Sheets OK, hoja: ' + ss.getName());
+
+  var folder = getOrCreateFolder_(ATTACHMENTS_FOLDER_NAME);
+  Logger.log('Drive OK, carpeta: ' + folder.getName());
+
+  var response = UrlFetchApp.fetch(CONTROL_ACCESO_URL + '?action=validateToken&token=test&app=' + APP_ID, { muteHttpExceptions: true });
+  Logger.log('UrlFetchApp OK, respuesta: ' + response.getContentText());
+}
+
 // ---------------------------------------------------------------------------
-// Configuración y mapeo de encabezados (evita depender de letras de columna)
+// Configuración
 // ---------------------------------------------------------------------------
 
+/** Deployment activo del IdP central "Control de Acceso" (proyecto compartido, JL Bedoya Group). */
+var CONTROL_ACCESO_URL = 'https://script.google.com/macros/s/AKfycby4K-qxW87hfd9Fy1wKHeyF8bic_Qo8clKfJ-ZuPg9zElNuc7XOe8qTgW8sUmJ9mnKjDA/exec';
+
+/** Identificador de esta app dentro de Control de Acceso (fila en la hoja Config). */
+var APP_ID = 'MYA_PRUEBAS';
+
 var SHEET_NAMES = {
-  CLIENTES: 'Clientes',
   TRANSFORMADORES: 'Transformadores',
   PRUEBAS: 'Pruebas'
 };
 
 var HEADERS = {
-  CLIENTES: ['tenant_slug', 'company_name', 'is_active', 'plan', 'created_at'],
   TRANSFORMADORES: [
-    'id', 'tenant_slug', 'site_id', 'serial_number', 'manufacturer', 'manufacture_year',
-    'phase_type', 'vector_group', 'hv_nominal_voltage', 'lv_nominal_voltage',
+    'id', 'site_id', 'serial_number', 'manufacturer', 'manufacture_year',
+    'phase_type', 'vector_group', 'rated_power_kva', 'hv_nominal_voltage', 'lv_nominal_voltage',
     'tap_config_json', 'is_special_design', 'custom_tap_ratio_matrix_json',
     'status', 'plate_photo_file_id', 'created_at', 'updated_at'
   ],
   PRUEBAS: [
-    'id', 'tenant_slug', 'transformer_id', 'test_type', 'raw_readings_json',
+    'id', 'transformer_id', 'test_type', 'raw_readings_json',
     'calculated_results_json', 'verdict', 'instrument_used', 'tested_by',
     'attachment_file_id', 'created_at'
   ]
@@ -70,9 +82,6 @@ var VECTOR_GROUP_MULTIPLIERS = {
   Ynd1: 1 / Math.sqrt(3), Ynd11: 1 / Math.sqrt(3)
 };
 
-/** Acciones que NO pasan por el Kill Switch automático (ellas resuelven su propia autorización). */
-var PUBLIC_ACTIONS = { createClient: true };
-
 // ---------------------------------------------------------------------------
 // Entradas HTTP
 // ---------------------------------------------------------------------------
@@ -86,10 +95,10 @@ function doPost(e) {
 }
 
 /**
- * Router principal. Orquesta: parseo de parámetros, Kill Switch (directriz 5)
- * y despacho a la función específica según ?action=. Las funciones de
- * escritura (POST_ACTIONS) aplican su propio LockService internamente
- * (directriz 1); las de lectura (GET_ACTIONS) no lo necesitan.
+ * Router principal. Toda petición (lectura o escritura) pasa por validateAuth_
+ * antes de llegar a cualquier función de negocio: exige un token vigente,
+ * emitido para MYA_PRUEBAS, con el servicio activo en Control de Acceso.
+ * Las funciones de escritura (POST_ACTIONS) además aplican LockService.
  */
 function routeRequest_(e, method) {
   try {
@@ -107,22 +116,12 @@ function routeRequest_(e, method) {
       return jsonResponse_({ status: 404, message: 'Acción no reconocida: ' + action });
     }
 
-    var tenant = null;
-    if (!PUBLIC_ACTIONS[action]) {
-      // ---- Kill Switch SaaS (directriz 5): primera acción real del script ----
-      if (!params.tenant_slug) {
-        return jsonResponse_({ status: 400, message: 'tenant_slug es obligatorio en todo payload' });
-      }
-      tenant = findTenantBySlug_(params.tenant_slug);
-      if (!tenant) {
-        return jsonResponse_({ status: 404, message: 'Cliente no reconocido: ' + params.tenant_slug });
-      }
-      if (!isTruthy_(tenant.is_active)) {
-        return jsonResponse_({ status: 402, message: 'Servicio suspendido' });
-      }
+    var auth = validateAuth_(params.token);
+    if (auth.errorStatus) {
+      return jsonResponse_({ status: auth.errorStatus, message: auth.errorMessage });
     }
 
-    return handler(params, tenant);
+    return handler(params, auth);
   } catch (err) {
     return jsonResponse_({ status: 500, message: 'Error interno: ' + (err && err.message ? err.message : err) });
   }
@@ -150,13 +149,54 @@ function jsonResponse_(obj) {
 }
 
 // ---------------------------------------------------------------------------
-// Concurrencia (directriz 1)
+// Autenticación / Kill Switch (delegado a Control de Acceso)
 // ---------------------------------------------------------------------------
 
 /**
- * Envuelve toda función de escritura en LockService.getScriptLock().tryLock(10000).
- * Si no se obtiene el bloqueo en 10s, responde 429 en el cuerpo JSON.
+ * Valida el token contra Control de Acceso (acción validateToken, app=MYA_PRUEBAS).
+ * Devuelve { errorStatus, errorMessage } si debe abortarse la petición, o
+ * { username, role, allowedApps } si el token es válido y el servicio está activo.
+ *
+ * Códigos: 403 = token ausente/inválido/expirado o sin permiso para esta app.
+ *          402 = token válido pero el servicio está suspendido (Kill Switch).
  */
+function validateAuth_(token) {
+  if (!token) {
+    return { errorStatus: 403, errorMessage: 'Token requerido' };
+  }
+
+  var url = CONTROL_ACCESO_URL + '?action=validateToken&token=' + encodeURIComponent(token) + '&app=' + encodeURIComponent(APP_ID);
+  var response;
+  try {
+    response = UrlFetchApp.fetch(url, { muteHttpExceptions: true, followRedirects: true });
+  } catch (err) {
+    return { errorStatus: 500, errorMessage: 'No se pudo validar la sesión con Control de Acceso: ' + err.message };
+  }
+
+  var result;
+  try {
+    result = JSON.parse(response.getContentText());
+  } catch (err) {
+    return { errorStatus: 500, errorMessage: 'Respuesta inválida de Control de Acceso' };
+  }
+
+  if (!result.valid) {
+    return { errorStatus: 403, errorMessage: 'Token inválido o expirado' };
+  }
+  if ((result.allowedApps || []).indexOf(APP_ID) === -1) {
+    return { errorStatus: 403, errorMessage: 'Tu usuario no tiene permiso para Gestión de Pruebas' };
+  }
+  if (!result.active) {
+    return { errorStatus: 402, errorMessage: 'Servicio suspendido' };
+  }
+
+  return { username: result.sub, role: result.role, allowedApps: result.allowedApps };
+}
+
+// ---------------------------------------------------------------------------
+// Concurrencia (escrituras)
+// ---------------------------------------------------------------------------
+
 function withLock_(fn) {
   var lock = LockService.getScriptLock();
   var gotLock = false;
@@ -174,11 +214,27 @@ function withLock_(fn) {
 }
 
 // ---------------------------------------------------------------------------
-// Acceso a Sheets (mapeo de índices de columnas — directriz 2)
+// Acceso a Sheets (mapeo de índices de columnas)
 // ---------------------------------------------------------------------------
 
+/**
+ * SpreadsheetApp.getActiveSpreadsheet() siempre devuelve null en una petición
+ * Web App (sin contexto de UI). Se abre por ID explícito, guardado en las
+ * Propiedades del script; si es la primera ejecución, se crea automáticamente.
+ */
+function getSpreadsheet_() {
+  var props = PropertiesService.getScriptProperties();
+  var id = props.getProperty('SPREADSHEET_ID');
+  if (id) {
+    return SpreadsheetApp.openById(id);
+  }
+  var ss = SpreadsheetApp.create('TMS - Base de Datos (M&A Gestión de Pruebas)');
+  props.setProperty('SPREADSHEET_ID', ss.getId());
+  return ss;
+}
+
 function ensureAllSheets_() {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var ss = getSpreadsheet_();
   Object.keys(HEADERS).forEach(function (key) {
     var sheet = ss.getSheetByName(SHEET_NAMES[key]);
     if (!sheet) {
@@ -190,15 +246,14 @@ function ensureAllSheets_() {
 }
 
 function getSheet_(entityKey) {
-  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAMES[entityKey]);
+  var sheet = getSpreadsheet_().getSheetByName(SHEET_NAMES[entityKey]);
   if (!sheet) {
     ensureAllSheets_();
-    sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAMES[entityKey]);
+    sheet = getSpreadsheet_().getSheetByName(SHEET_NAMES[entityKey]);
   }
   return sheet;
 }
 
-/** Índice de columna 1-based para usar con getRange(row, col) — nunca letras fijas. */
 function colIndex_(entityKey, fieldName) {
   var idx = HEADERS[entityKey].indexOf(fieldName);
   if (idx === -1) throw new Error('Campo desconocido "' + fieldName + '" en ' + entityKey);
@@ -239,58 +294,15 @@ function safeParseJson_(s) {
 }
 
 // ---------------------------------------------------------------------------
-// Clientes (tenants) — Kill Switch
-// ---------------------------------------------------------------------------
-
-function findTenantBySlug_(slug) {
-  var sheet = getSheet_('CLIENTES');
-  var data = sheet.getDataRange().getValues();
-  var slugCol = HEADERS.CLIENTES.indexOf('tenant_slug');
-  for (var r = 1; r < data.length; r++) {
-    if (String(data[r][slugCol]).trim() === String(slug).trim()) {
-      return rowToObject_(data[r], 'CLIENTES', r + 1);
-    }
-  }
-  return null;
-}
-
-/** Única acción administrativa: crea un tenant. Gateada por ADMIN_MASTER_TOKEN (Propiedades del script), no por el Kill Switch. */
-function createClient_(params) {
-  return withLock_(function () {
-    var masterToken = PropertiesService.getScriptProperties().getProperty('ADMIN_MASTER_TOKEN');
-    if (!masterToken || params.admin_token !== masterToken) {
-      return jsonResponse_({ status: 403, message: 'Token de administrador inválido' });
-    }
-    if (!params.tenant_slug || !params.company_name) {
-      return jsonResponse_({ status: 400, message: 'tenant_slug y company_name son obligatorios' });
-    }
-    if (findTenantBySlug_(params.tenant_slug)) {
-      return jsonResponse_({ status: 409, message: 'El tenant_slug ya existe: ' + params.tenant_slug });
-    }
-
-    appendRow_('CLIENTES', {
-      tenant_slug: params.tenant_slug,
-      company_name: params.company_name,
-      is_active: true,
-      plan: params.plan || 'BASIC',
-      created_at: new Date().toISOString()
-    });
-
-    return jsonResponse_({ status: 201, message: 'Cliente creado', data: { tenant_slug: params.tenant_slug } });
-  });
-}
-
-// ---------------------------------------------------------------------------
 // Transformadores
 // ---------------------------------------------------------------------------
 
-function findTransformerRow_(tenantSlug, id) {
+function findTransformerRow_(id) {
   var sheet = getSheet_('TRANSFORMADORES');
   var data = sheet.getDataRange().getValues();
-  var tenantCol = HEADERS.TRANSFORMADORES.indexOf('tenant_slug');
   var idCol = HEADERS.TRANSFORMADORES.indexOf('id');
   for (var r = 1; r < data.length; r++) {
-    if (data[r][idCol] === id && data[r][tenantCol] === tenantSlug) {
+    if (data[r][idCol] === id) {
       return rowToObject_(data[r], 'TRANSFORMADORES', r + 1);
     }
   }
@@ -306,6 +318,7 @@ function transformerRowToJson_(row) {
     manufacture_year: row.manufacture_year,
     phase_type: row.phase_type,
     vector_group: row.vector_group,
+    rated_power_kva: row.rated_power_kva,
     hv_nominal_voltage: row.hv_nominal_voltage,
     lv_nominal_voltage: row.lv_nominal_voltage,
     tap_config: safeParseJson_(row.tap_config_json),
@@ -318,7 +331,7 @@ function transformerRowToJson_(row) {
   };
 }
 
-function createTransformer_(params, tenant) {
+function createTransformer_(params) {
   return withLock_(function () {
     if (!params.serial_number || !params.phase_type) {
       return jsonResponse_({ status: 400, message: 'serial_number y phase_type son obligatorios' });
@@ -337,13 +350,13 @@ function createTransformer_(params, tenant) {
 
     appendRow_('TRANSFORMADORES', {
       id: id,
-      tenant_slug: tenant.tenant_slug,
       site_id: params.site_id || '',
       serial_number: params.serial_number,
       manufacturer: params.manufacturer || '',
       manufacture_year: params.manufacture_year || '',
       phase_type: params.phase_type,
       vector_group: params.vector_group || '',
+      rated_power_kva: params.rated_power_kva || '',
       hv_nominal_voltage: params.hv_nominal_voltage || '',
       lv_nominal_voltage: params.lv_nominal_voltage || '',
       tap_config_json: JSON.stringify(params.tap_config || {}),
@@ -360,15 +373,15 @@ function createTransformer_(params, tenant) {
 }
 
 /** POST de actualización (Apps Script Web Apps no tienen verbo PATCH nativo). Solo escribe los campos presentes en el payload. */
-function updateTransformer_(params, tenant) {
+function updateTransformer_(params) {
   return withLock_(function () {
     if (!params.id) return jsonResponse_({ status: 400, message: 'id es obligatorio' });
 
-    var row = findTransformerRow_(tenant.tenant_slug, params.id);
+    var row = findTransformerRow_(params.id);
     if (!row) return jsonResponse_({ status: 404, message: 'Transformador no encontrado' });
 
     var updates = {};
-    ['serial_number', 'manufacturer', 'manufacture_year', 'phase_type', 'vector_group',
+    ['serial_number', 'manufacturer', 'manufacture_year', 'phase_type', 'vector_group', 'rated_power_kva',
       'hv_nominal_voltage', 'lv_nominal_voltage', 'status', 'site_id'].forEach(function (field) {
       if (params[field] !== undefined) updates[field] = params[field];
     });
@@ -396,23 +409,21 @@ function updateTransformer_(params, tenant) {
   });
 }
 
-function listTransformers_(params, tenant) {
+function listTransformers_(params) {
   var sheet = getSheet_('TRANSFORMADORES');
   var data = sheet.getDataRange().getValues();
-  var tenantCol = HEADERS.TRANSFORMADORES.indexOf('tenant_slug');
   var siteCol = HEADERS.TRANSFORMADORES.indexOf('site_id');
   var result = [];
   for (var r = 1; r < data.length; r++) {
-    if (data[r][tenantCol] !== tenant.tenant_slug) continue;
     if (params.site_id && data[r][siteCol] !== params.site_id) continue;
     result.push(transformerRowToJson_(rowToObject_(data[r], 'TRANSFORMADORES', r + 1)));
   }
   return jsonResponse_({ status: 200, data: result });
 }
 
-function getTransformer_(params, tenant) {
+function getTransformer_(params) {
   if (!params.id) return jsonResponse_({ status: 400, message: 'id es obligatorio' });
-  var row = findTransformerRow_(tenant.tenant_slug, params.id);
+  var row = findTransformerRow_(params.id);
   if (!row) return jsonResponse_({ status: 404, message: 'Transformador no encontrado' });
   return jsonResponse_({ status: 200, data: transformerRowToJson_(row) });
 }
@@ -421,7 +432,7 @@ function getTransformer_(params, tenant) {
 // Pruebas (TTR / Resistencia de devanados / Aislamiento)
 // ---------------------------------------------------------------------------
 
-function persistTest_(tenant, transformer, testType, rawReadings, calculated, params) {
+function persistTest_(transformer, testType, rawReadings, calculated, params, auth) {
   var attachmentId = '';
   if (params.file_base64) {
     var saved = saveFileToDrive_(
@@ -435,14 +446,13 @@ function persistTest_(tenant, transformer, testType, rawReadings, calculated, pa
   var id = generateId_();
   appendRow_('PRUEBAS', {
     id: id,
-    tenant_slug: tenant.tenant_slug,
     transformer_id: transformer.id,
     test_type: testType,
     raw_readings_json: JSON.stringify(rawReadings),
     calculated_results_json: JSON.stringify(calculated),
     verdict: calculated.overallVerdict,
     instrument_used: params.instrument_used || '',
-    tested_by: params.tested_by || '',
+    tested_by: auth.username || params.instrument_used || 'desconocido',
     attachment_file_id: attachmentId,
     created_at: new Date().toISOString()
   });
@@ -450,10 +460,10 @@ function persistTest_(tenant, transformer, testType, rawReadings, calculated, pa
   return { id: id, calculated_results: calculated };
 }
 
-function submitTtrTest_(params, tenant) {
+function submitTtrTest_(params, auth) {
   return withLock_(function () {
     if (!params.transformer_id) return jsonResponse_({ status: 400, message: 'transformer_id es obligatorio' });
-    var transformer = findTransformerRow_(tenant.tenant_slug, params.transformer_id);
+    var transformer = findTransformerRow_(params.transformer_id);
     if (!transformer) return jsonResponse_({ status: 404, message: 'Transformador no encontrado' });
     if (!params.readings || !params.readings.measurements) {
       return jsonResponse_({ status: 400, message: 'readings.measurements es obligatorio' });
@@ -466,15 +476,15 @@ function submitTtrTest_(params, tenant) {
       return jsonResponse_({ status: 422, message: calcErr.message });
     }
 
-    var saved = persistTest_(tenant, transformer, 'TTR', params.readings, calculated, params);
+    var saved = persistTest_(transformer, 'TTR', params.readings, calculated, params, auth);
     return jsonResponse_({ status: 201, message: 'Prueba TTR registrada', data: saved });
   });
 }
 
-function submitWindingResistanceTest_(params, tenant) {
+function submitWindingResistanceTest_(params, auth) {
   return withLock_(function () {
     if (!params.transformer_id) return jsonResponse_({ status: 400, message: 'transformer_id es obligatorio' });
-    var transformer = findTransformerRow_(tenant.tenant_slug, params.transformer_id);
+    var transformer = findTransformerRow_(params.transformer_id);
     if (!transformer) return jsonResponse_({ status: 404, message: 'Transformador no encontrado' });
     if (!params.readings || !params.readings.measurements) {
       return jsonResponse_({ status: 400, message: 'readings.measurements es obligatorio' });
@@ -487,15 +497,15 @@ function submitWindingResistanceTest_(params, tenant) {
       return jsonResponse_({ status: 422, message: calcErr.message });
     }
 
-    var saved = persistTest_(tenant, transformer, 'RESISTENCIA_DEVANADOS', params.readings, calculated, params);
+    var saved = persistTest_(transformer, 'RESISTENCIA_DEVANADOS', params.readings, calculated, params, auth);
     return jsonResponse_({ status: 201, message: 'Prueba de resistencia de devanados registrada', data: saved });
   });
 }
 
-function submitInsulationTest_(params, tenant) {
+function submitInsulationTest_(params, auth) {
   return withLock_(function () {
     if (!params.transformer_id) return jsonResponse_({ status: 400, message: 'transformer_id es obligatorio' });
-    var transformer = findTransformerRow_(tenant.tenant_slug, params.transformer_id);
+    var transformer = findTransformerRow_(params.transformer_id);
     if (!transformer) return jsonResponse_({ status: 404, message: 'Transformador no encontrado' });
     if (!params.readings || !params.readings.measurements) {
       return jsonResponse_({ status: 400, message: 'readings.measurements es obligatorio' });
@@ -508,19 +518,17 @@ function submitInsulationTest_(params, tenant) {
       return jsonResponse_({ status: 422, message: calcErr.message });
     }
 
-    var saved = persistTest_(tenant, transformer, 'AISLAMIENTO', params.readings, calculated, params);
+    var saved = persistTest_(transformer, 'AISLAMIENTO', params.readings, calculated, params, auth);
     return jsonResponse_({ status: 201, message: 'Prueba de aislamiento registrada', data: saved });
   });
 }
 
-function listTests_(params, tenant) {
+function listTests_(params) {
   var sheet = getSheet_('PRUEBAS');
   var data = sheet.getDataRange().getValues();
-  var tenantCol = HEADERS.PRUEBAS.indexOf('tenant_slug');
   var transformerCol = HEADERS.PRUEBAS.indexOf('transformer_id');
   var result = [];
   for (var r = 1; r < data.length; r++) {
-    if (data[r][tenantCol] !== tenant.tenant_slug) continue;
     if (params.transformer_id && data[r][transformerCol] !== params.transformer_id) continue;
     var obj = rowToObject_(data[r], 'PRUEBAS', r + 1);
     result.push({
@@ -718,7 +726,7 @@ function calculateInsulation_(readings) {
 }
 
 // ---------------------------------------------------------------------------
-// Almacenamiento de archivos en Drive (directriz 4)
+// Almacenamiento de archivos en Drive
 // ---------------------------------------------------------------------------
 
 function getOrCreateFolder_(name) {
@@ -746,11 +754,10 @@ function driveFileUrl_(fileId) {
 }
 
 // ---------------------------------------------------------------------------
-// Router: tabla de acciones (patrón Router — directriz de entregables)
+// Router: tabla de acciones
 // ---------------------------------------------------------------------------
 
 var POST_ACTIONS = {
-  createClient: createClient_,
   createTransformer: createTransformer_,
   updateTransformer: updateTransformer_,
   submitTtrTest: submitTtrTest_,

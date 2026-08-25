@@ -10,11 +10,14 @@
 // Configuración de conexión
 // ---------------------------------------------------------------
 
-/** Reemplaza con la URL del Web App (Implementar > Nueva implementación > Aplicación web), termina en /exec. */
+/** Backend propio de M&A (transformadores/pruebas). Termina en /exec. */
 const API_WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbz1frJeBe7KpN83DQaVjtPBfzWtdujl6mngBAmAe3XCLRBW6_5cEShkVPRwgk98UtbKAw/exec";
 
-/** Acciones que no requieren tenant_slug todavía (ver PUBLIC_ACTIONS en Código.gs). */
-const PUBLIC_CLIENT_ACTIONS = { createClient: true };
+/** IdP central "Control de Acceso" (JL Bedoya Group) — login, cambio de contraseña, creación de usuarios. */
+const CONTROL_ACCESO_URL = "https://script.google.com/macros/s/AKfycby4K-qxW87hfd9Fy1wKHeyF8bic_Qo8clKfJ-ZuPg9zElNuc7XOe8qTgW8sUmJ9mnKjDA/exec";
+
+/** Identificador de esta app dentro de Control de Acceso (fila en la hoja Config). */
+const APP_ID = "MYA_PRUEBAS";
 
 const TOLERANCE_PERCENT = 0.5;
 const UNBALANCE_THRESHOLD = 5.0;
@@ -24,13 +27,16 @@ const UNBALANCE_THRESHOLD = 5.0;
 // ---------------------------------------------------------------
 
 var state = {
-  tenantSlug: null,
-  userDisplayName: null,
+  token: null,
+  username: null,
+  role: null,
+  allowedApps: [],
+  pendingOldUsuario: null,
+  pendingOldPassword: null,
   transformers: [],
   currentTransformerId: null,
   currentTransformer: null,
   currentTests: [],
-  role: 'tecnico',
   ttr: { currentTap: null, readings: {} },
   matrix: { taps: [] },
   wr: { currentTap: null, readings: {} }
@@ -56,14 +62,11 @@ ApiError.prototype = Object.create(Error.prototype);
 ApiError.prototype.constructor = ApiError;
 
 function callApi(action, method, payload) {
-  if (!API_WEBHOOK_URL || API_WEBHOOK_URL === 'URL_DE_APPS_SCRIPT_AQUI') {
-    return Promise.reject(new ApiError(0, 'Configura API_WEBHOOK_URL en app.js con la URL real del Web App de Apps Script'));
-  }
-  if (!state.tenantSlug && !PUBLIC_CLIENT_ACTIONS[action]) {
-    return Promise.reject(new ApiError(0, 'No hay una sesión activa (tenant_slug ausente)'));
+  if (!state.token) {
+    return Promise.reject(new ApiError(0, 'No hay una sesión activa (token ausente)'));
   }
 
-  var body = Object.assign({ action: action, tenant_slug: state.tenantSlug }, payload || {});
+  var body = Object.assign({ action: action, token: state.token }, payload || {});
   var request;
 
   if (method === 'GET') {
@@ -96,6 +99,34 @@ function callApi(action, method, payload) {
       if (err instanceof ApiError) throw err;
       throw new ApiError(0, 'No se pudo contactar el backend: ' + err.message);
     });
+}
+
+/** Cliente para Control de Acceso (login, changePassword, createUser). Contrato distinto: {ok, ...}, no {status, ...}. */
+function callAuthApi(action, payload) {
+  var body = Object.assign({ action: action }, payload || {});
+  return fetch(CONTROL_ACCESO_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify(body)
+  }).then(function (res) { return res.json(); });
+}
+
+function mapAuthError_(code) {
+  var map = {
+    credenciales_incompletas: 'Completa usuario y contraseña',
+    credenciales_invalidas: 'Usuario o contraseña incorrectos',
+    usuario_inactivo: 'Este usuario está inactivo',
+    servicio_suspendido: 'Servicio suspendido',
+    datos_incompletos: 'Faltan datos obligatorios',
+    password_muy_corta: 'La contraseña debe tener al menos 8 caracteres',
+    usuario_ya_existe: 'Ese nombre de usuario ya existe',
+    no_autorizado: 'No tienes permiso para esta acción',
+    token_invalido: 'Tu sesión expiró, vuelve a iniciar sesión',
+    usuario_no_encontrado: 'Usuario no encontrado',
+    body_invalido: 'Solicitud inválida',
+    accion_no_soportada: 'Acción no soportada'
+  };
+  return map[code] || code || 'Error desconocido';
 }
 
 // ---------------------------------------------------------------
@@ -146,17 +177,21 @@ function setStatus_(el, message, ok, isError) {
 // ---------------------------------------------------------------
 
 function showView(name) {
-  var isFullscreen = name === 'login' || name === 'suspended';
+  var isFullscreen = name === 'login' || name === 'suspended' || name === 'change-password';
   document.getElementById('app-shell').style.display = isFullscreen ? 'none' : 'grid';
   document.getElementById('screen-login').hidden = name !== 'login';
   document.getElementById('screen-suspended').hidden = name !== 'suspended';
+  document.getElementById('screen-change-password').hidden = name !== 'change-password';
 
   if (name === 'login') {
-    state.tenantSlug = null;
+    state.token = null;
+    state.username = null;
+    state.role = null;
     state.currentTransformer = null;
+    removeAdminNavAndPanel();
   }
 
-  ['dashboard', 'detail', 'ttr-form', 'winding-form'].forEach(function (v) {
+  ['dashboard', 'detail', 'ttr-form', 'winding-form', 'admin'].forEach(function (v) {
     var el = document.getElementById('view-' + v);
     if (el) el.hidden = (name !== v);
   });
@@ -175,47 +210,187 @@ function showView(name) {
 }
 
 // ---------------------------------------------------------------
-// Login — primera llamada real (Kill Switch) + carga del panel
+// Login real contra Control de Acceso + flujo DebeCambiar
 // ---------------------------------------------------------------
 
 function handleLoginSubmit(e) {
   e.preventDefault();
-  var slug = document.getElementById('loginSlug').value.trim();
-  var email = document.getElementById('loginEmail').value.trim();
-  if (!slug) return;
-
-  state.tenantSlug = slug;
-  state.userDisplayName = email || 'Usuario';
+  var usuario = document.getElementById('loginUsuario').value.trim();
+  var password = document.getElementById('loginPassword').value;
+  if (!usuario || !password) return;
 
   var btn = document.getElementById('loginSubmitBtn');
   var errEl = document.getElementById('loginError');
   btn.disabled = true;
   setStatus_(errEl, '', false);
 
-  callApi('listTransformers', 'GET', {})
+  callAuthApi('login', { usuario: usuario, password: password })
+    .then(function (json) {
+      if (!json.ok) {
+        setStatus_(errEl, mapAuthError_(json.error), false, true);
+        return;
+      }
+
+      state.token = json.token;
+      state.username = usuario;
+      state.role = json.role;
+      state.allowedApps = json.allowedApps || [];
+
+      document.getElementById('sidebarUserName').textContent = state.username;
+      document.getElementById('sidebarRole').textContent = state.role;
+      document.getElementById('dashboardTenantLabel').textContent = state.username + ' · ' + state.role;
+
+      if (json.debeCambiar) {
+        state.pendingOldUsuario = usuario;
+        state.pendingOldPassword = password;
+        showView('change-password');
+        return;
+      }
+
+      renderAdminNavAndPanel();
+      return loadDashboardAndShow_();
+    })
+    .catch(function (err) {
+      setStatus_(errEl, 'No se pudo contactar el servicio de autenticación: ' + err.message, false, true);
+    })
+    .then(function () { btn.disabled = false; });
+}
+
+function loadDashboardAndShow_() {
+  return callApi('listTransformers', 'GET', {})
     .then(function (transformers) {
       state.transformers = transformers || [];
-      document.getElementById('sidebarUserName').textContent = state.userDisplayName;
-      document.getElementById('sidebarTenant').textContent = state.tenantSlug;
-      document.getElementById('dashboardTenantLabel').textContent = state.tenantSlug;
       renderDashboard();
       showView('dashboard');
     })
     .catch(function (err) {
       if (err.status === 402) return; // ya se mostró la pantalla de suspendido
-      state.tenantSlug = null;
-      setStatus_(errEl, err.message, false, true);
+      alert('No se pudieron cargar los transformadores: ' + err.message);
+    });
+}
+
+function handleChangePasswordSubmit(e) {
+  e.preventDefault();
+  var newPassword = document.getElementById('newPassword').value;
+  var confirmPassword = document.getElementById('confirmPassword').value;
+  var errEl = document.getElementById('changePasswordError');
+  var btn = document.getElementById('changePasswordBtn');
+
+  if (newPassword !== confirmPassword) {
+    setStatus_(errEl, 'Las contraseñas no coinciden', false, true);
+    return;
+  }
+
+  btn.disabled = true;
+  setStatus_(errEl, '', false);
+
+  callAuthApi('changePassword', {
+    usuario: state.pendingOldUsuario,
+    oldPassword: state.pendingOldPassword,
+    newPassword: newPassword
+  })
+    .then(function (json) {
+      if (!json.ok) {
+        setStatus_(errEl, mapAuthError_(json.error), false, true);
+        return;
+      }
+      state.pendingOldPassword = null;
+      state.pendingOldUsuario = null;
+      renderAdminNavAndPanel();
+      return loadDashboardAndShow_();
+    })
+    .catch(function (err) {
+      setStatus_(errEl, 'No se pudo cambiar la contraseña: ' + err.message, false, true);
     })
     .then(function () { btn.disabled = false; });
 }
 
-function refreshLoginPreview() {
-  var el = document.getElementById('jsonLogin');
-  if (!el) return;
-  el.innerHTML = syntaxHighlight({
-    action: 'listTransformers',
-    tenant_slug: document.getElementById('loginSlug').value
-  });
+// ---------------------------------------------------------------
+// Panel de administración (RBAC) — solo se agrega al DOM para rol Administrador
+// ---------------------------------------------------------------
+
+function renderAdminNavAndPanel() {
+  if (state.role !== 'Administrador') return;
+  if (document.getElementById('view-admin')) return;
+
+  var previewLabel = document.getElementById('navLabelPreview');
+
+  var navLabel = document.createElement('div');
+  navLabel.className = 'nav-label';
+  navLabel.textContent = 'Administración';
+
+  var navItem = document.createElement('div');
+  navItem.className = 'nav-item';
+  navItem.dataset.view = 'admin';
+  navItem.innerHTML = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="5.2" r="2.7" stroke="currentColor" stroke-width="1.4"/><path d="M2.5 14c0-3 2.5-4.8 5.5-4.8s5.5 1.8 5.5 4.8" stroke="currentColor" stroke-width="1.4"/></svg>Gestión de usuarios';
+  navItem.addEventListener('click', function () { showView('admin'); });
+
+  previewLabel.parentNode.insertBefore(navLabel, previewLabel);
+  previewLabel.parentNode.insertBefore(navItem, previewLabel);
+
+  var section = document.createElement('section');
+  section.id = 'view-admin';
+  section.hidden = true;
+  section.innerHTML =
+    '<div class="topbar"><div><h1>Gestión de usuarios</h1><p>Crea técnicos y supervisores con acceso a Gestión de Pruebas</p></div>' +
+    '<div class="tenant-chip">' + APP_ID + '</div></div>' +
+    '<div class="view">' +
+    '<div class="panel" style="max-width:480px;">' +
+    '<div class="panel-head"><h2>Nuevo usuario</h2></div>' +
+    '<form id="createUserForm" style="padding:16px 18px; display:flex; flex-direction:column; gap:13px;">' +
+    '<div class="field"><label>Usuario</label><input class="mono" id="newUserUsuario" placeholder="tecnico.nombre" required></div>' +
+    '<div class="field"><label>Contraseña temporal</label><input type="password" id="newUserPassword" required minlength="8"></div>' +
+    '<div class="field"><label>Rol</label><select id="newUserRol"><option value="Tecnico">Técnico</option><option value="Supervisor">Supervisor</option></select></div>' +
+    '<button class="btn primary" type="submit" id="createUserBtn">Crear usuario</button>' +
+    '<span class="status-line" id="createUserStatus" hidden></span>' +
+    '</form>' +
+    '<div class="source-strip" style="display:flex; justify-content:space-between; padding:10px 18px; font-size:11.5px; color:var(--text-muted); background:var(--surface-alt);">' +
+    '<span>El usuario nuevo deberá cambiar esta contraseña al entrar</span><span class="tag">DebeCambiar</span></div>' +
+    '</div></div>';
+
+  document.querySelector('main').appendChild(section);
+  document.getElementById('createUserForm').addEventListener('submit', handleCreateUserSubmit);
+}
+
+function removeAdminNavAndPanel() {
+  var navItem = document.querySelector('.nav-item[data-view="admin"]');
+  if (navItem) {
+    var label = navItem.previousElementSibling;
+    if (label && label.classList.contains('nav-label')) label.remove();
+    navItem.remove();
+  }
+  var section = document.getElementById('view-admin');
+  if (section) section.remove();
+}
+
+function handleCreateUserSubmit(e) {
+  e.preventDefault();
+  var usuario = document.getElementById('newUserUsuario').value.trim();
+  var password = document.getElementById('newUserPassword').value;
+  var rol = document.getElementById('newUserRol').value;
+  var btn = document.getElementById('createUserBtn');
+  var status = document.getElementById('createUserStatus');
+
+  btn.disabled = true;
+  setStatus_(status, 'Creando…', false);
+
+  callAuthApi('createUser', {
+    token: state.token,
+    usuario: usuario,
+    password: password,
+    rol: rol,
+    appsPermitidas: APP_ID
+  })
+    .then(function (json) {
+      if (!json.ok) {
+        setStatus_(status, mapAuthError_(json.error), false, true);
+        return;
+      }
+      setStatus_(status, 'Usuario "' + usuario + '" creado. Debe cambiar la contraseña al entrar.', true);
+      document.getElementById('createUserForm').reset();
+    })
+    .catch(function (err) { setStatus_(status, 'No se pudo crear el usuario: ' + err.message, false, true); })
+    .then(function () { btn.disabled = false; });
 }
 
 // ---------------------------------------------------------------
@@ -354,9 +529,10 @@ function tapVoltageFor(position) {
 function renderTtrFormContext() {
   var t = state.currentTransformer;
   document.getElementById('ttrFormSubtitle').textContent = t.serial_number + ' · Relación de Transformación';
-  document.getElementById('ttrTenantChip').textContent = state.tenantSlug;
+  document.getElementById('ttrTenantChip').textContent = state.username + ' · ' + state.role;
   document.getElementById('ttrVectorGroupLabel').textContent = t.vector_group || 'N/A';
   document.getElementById('tapCountLabel').textContent = tapPositions().length;
+  document.getElementById('sessionRolePill').textContent = state.role || '—';
 }
 
 function resetTtrStateFromTransformer() {
@@ -426,10 +602,14 @@ function resetMatrixStateFromTransformer() {
   }
 }
 
+function canEditMatrix_() {
+  return state.role === 'Administrador' || state.role === 'Supervisor';
+}
+
 function renderMatrixRows() {
   var tbody = document.getElementById('matrixRows');
   if (!tbody) return;
-  var disabled = state.role !== 'supervisor';
+  var disabled = !canEditMatrix_();
   tbody.innerHTML = state.matrix.taps.map(function (t) {
     var v = tapVoltageFor(t.tapPosition);
     var cells = getPhaseKeys().map(function (k) {
@@ -446,7 +626,7 @@ function renderMatrixRows() {
       '</tr>';
   }).join('');
 
-  document.getElementById('matrixLock').hidden = state.role === 'supervisor';
+  document.getElementById('matrixLock').hidden = !disabled;
   document.getElementById('addTapBtn').disabled = disabled;
   document.getElementById('saveMatrixBtn').disabled = disabled;
 }
@@ -476,19 +656,8 @@ function removeTapRow(tapPosition) {
   refreshMatrixJson();
 }
 
-document.addEventListener('DOMContentLoaded', function () {
-  var seg = document.getElementById('roleSegment');
-  if (!seg) return;
-  seg.querySelectorAll('.seg-btn').forEach(function (btn) {
-    btn.addEventListener('click', function () {
-      state.role = btn.dataset.role;
-      seg.querySelectorAll('.seg-btn').forEach(function (b) { b.classList.toggle('active', b === btn); });
-      renderMatrixRows();
-    });
-  });
-});
-
 function saveMatrix() {
+  if (!canEditMatrix_()) return;
   var btn = document.getElementById('saveMatrixBtn');
   var status = document.getElementById('matrixSubmitStatus');
   btn.disabled = true;
@@ -496,7 +665,7 @@ function saveMatrix() {
 
   callApi('updateTransformer', 'POST', {
     id: state.currentTransformerId,
-    custom_tap_ratio_matrix: { source: 'Cargada desde la interfaz · ' + (state.userDisplayName || 'usuario'), taps: state.matrix.taps }
+    custom_tap_ratio_matrix: { source: 'Cargada desde la interfaz · ' + (state.username || 'usuario'), taps: state.matrix.taps }
   }).then(function () {
     setStatus_(status, 'Matriz guardada', true);
     state.currentTransformer.custom_tap_ratio_matrix = { taps: JSON.parse(JSON.stringify(state.matrix.taps)) };
@@ -562,7 +731,6 @@ function buildTtrRequestBody() {
   return {
     transformer_id: state.currentTransformerId,
     instrument_used: document.getElementById('ttrInstrument').value,
-    tested_by: state.userDisplayName,
     readings: { testVoltageV: parseFloat(document.getElementById('ttrVoltage').value) || null, measurements: measurements }
   };
 }
@@ -577,12 +745,12 @@ function buildMatrixRequestBody() {
 function refreshTtr() {
   renderTtrPreview();
   var el = document.getElementById('jsonTtr');
-  if (el) el.innerHTML = syntaxHighlight(Object.assign({ action: 'submitTtrTest', tenant_slug: state.tenantSlug }, buildTtrRequestBody()));
+  if (el) el.innerHTML = syntaxHighlight(Object.assign({ action: 'submitTtrTest', token: state.token }, buildTtrRequestBody()));
 }
 
 function refreshMatrixJson() {
   var el = document.getElementById('jsonMatrix');
-  if (el) el.innerHTML = syntaxHighlight(Object.assign({ action: 'updateTransformer', tenant_slug: state.tenantSlug }, buildMatrixRequestBody()));
+  if (el) el.innerHTML = syntaxHighlight(Object.assign({ action: 'updateTransformer', token: state.token }, buildMatrixRequestBody()));
 }
 
 function switchJsonTab(tab) {
@@ -615,7 +783,7 @@ function submitTtr() {
 function renderWindingFormContext() {
   var t = state.currentTransformer;
   document.getElementById('wrFormSubtitle').textContent = t.serial_number + ' · Desbalance entre fases';
-  document.getElementById('wrTenantChip').textContent = state.tenantSlug;
+  document.getElementById('wrTenantChip').textContent = state.username + ' · ' + state.role;
 }
 
 /** Los identificadores de fase de TTR (H1H2-X1X2) y de resistencia de devanados (H1-H2) difieren; se mapean explícitamente. */
@@ -735,7 +903,6 @@ function buildWindingRequestBody() {
   return {
     transformer_id: state.currentTransformerId,
     instrument_used: document.getElementById('wrInstrument').value,
-    tested_by: state.userDisplayName,
     readings: {
       measurements: taps.map(function (p) {
         var tap = state.wr.readings[p];
@@ -750,7 +917,7 @@ function refreshWinding() {
   renderWrPhaseEntries();
   renderWindingPreview();
   var el = document.getElementById('jsonWinding');
-  if (el) el.innerHTML = syntaxHighlight(Object.assign({ action: 'submitWindingResistanceTest', tenant_slug: state.tenantSlug }, buildWindingRequestBody()));
+  if (el) el.innerHTML = syntaxHighlight(Object.assign({ action: 'submitWindingResistanceTest', token: state.token }, buildWindingRequestBody()));
 }
 
 function submitWinding() {
@@ -775,8 +942,7 @@ function submitWinding() {
 
 document.addEventListener('DOMContentLoaded', function () {
   document.getElementById('loginForm').addEventListener('submit', handleLoginSubmit);
-  document.getElementById('loginSlug').addEventListener('input', refreshLoginPreview);
-  refreshLoginPreview();
+  document.getElementById('changePasswordForm').addEventListener('submit', handleChangePasswordSubmit);
 
   document.querySelectorAll('.nav-item[data-view]').forEach(function (el) {
     el.addEventListener('click', function () { showView(el.dataset.view); });
