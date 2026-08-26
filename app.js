@@ -386,13 +386,29 @@ function handleContextCreateTransformer_() {
   var phase = document.getElementById('ctxTrfPhase').value;
   var statusEl = document.getElementById('ctxTrfStatus');
   if (!serial) { setStatus_(statusEl, 'El número de serie es obligatorio', false, true); return; }
-  setStatus_(statusEl, 'Creando…', false);
-  callApi('createTransformer', 'POST', {
-    site_id: state.currentSiteId,
-    serial_number: serial,
-    phase_type: phase,
-    tap_config: { nominalVoltage: 0, stepPercentage: 2.5, numPositions: 5, neutralPosition: 3, positions: buildDefaultTapPositions_(0) }
-  })
+  setStatus_(statusEl, 'Verificando número de serie…', false);
+
+  checkSerialExists_(serial)
+    .then(function (existing) {
+      if (existing && existing.site_id === state.currentSiteId) {
+        setStatus_(statusEl, 'Este equipo ya existe — abriéndolo…', true);
+        selectContextTransformer_(existing.id);
+        return Promise.reject({ __handled: true });
+      }
+      if (existing) {
+        return resolveSiteLabel_(existing.site_id).then(function (label) {
+          setStatus_(statusEl, 'Ese número de serie ya está registrado en ' + label + '. No se puede duplicar.', false, true);
+          return Promise.reject({ __handled: true });
+        });
+      }
+      setStatus_(statusEl, 'Creando…', false);
+      return callApi('createTransformer', 'POST', {
+        site_id: state.currentSiteId,
+        serial_number: serial,
+        phase_type: phase,
+        tap_config: { nominalVoltage: 0, stepPercentage: 2.5, numPositions: 5, neutralPosition: 3, positions: buildDefaultTapPositions_(0) }
+      });
+    })
     .then(function (data) {
       return callApi('listTransformers', 'GET', { site_id: state.currentSiteId }).then(function (transformers) {
         state.transformers = transformers || [];
@@ -400,7 +416,8 @@ function handleContextCreateTransformer_() {
       });
     })
     .catch(function (err) {
-      if (err.status !== 402 && err.status !== 403) setStatus_(statusEl, formatNetworkAwareError_(err), false, true);
+      if (err && err.__handled) return;
+      if (!err || (err.status !== 402 && err.status !== 403)) setStatus_(statusEl, formatNetworkAwareError_(err || {}), false, true);
     });
 }
 
@@ -561,10 +578,29 @@ function readFileAsBase64_(fileInput) {
   });
 }
 
+/** Un transformador es un activo físico único: si el número de serie ya está
+ *  registrado, nunca debe crearse un duplicado — hay que reabrir el existente. */
+function checkSerialExists_(serial) {
+  if (!serial) return Promise.resolve(null);
+  return callApi('listTransformers', 'GET', { serial_number: serial })
+    .then(function (matches) { return (matches && matches[0]) || null; });
+}
+
+function resolveSiteLabel_(siteId) {
+  var cached = state.sites.filter(function (s) { return s.id === siteId; })[0];
+  if (cached) return Promise.resolve(cached.client_name + ' · ' + cached.project_name);
+  return callApi('listSites', 'GET', {}).then(function (sites) {
+    state.sites = sites || [];
+    var found = state.sites.filter(function (s) { return s.id === siteId; })[0];
+    return found ? (found.client_name + ' · ' + found.project_name) : 'otro cliente/proyecto';
+  });
+}
+
 function handleCreateTransformerSubmit(e) {
   e.preventDefault();
   if (!state.currentSiteId) { alert('Selecciona primero un Cliente/Proyecto (Fase 1).'); return; }
 
+  var serial = document.getElementById('newTrfSerial').value.trim();
   var hv = parseDecimal_(document.getElementById('newTrfHv').value);
   var lv = parseDecimal_(document.getElementById('newTrfLv').value);
   var year = document.getElementById('newTrfYear').value.trim();
@@ -572,11 +608,27 @@ function handleCreateTransformerSubmit(e) {
   var btn = document.getElementById('createTransformerBtn');
   var status = document.getElementById('createTransformerStatus');
   btn.disabled = true;
-  setStatus_(status, 'Creando…', false);
+  setStatus_(status, 'Verificando número de serie…', false);
 
   var nominalForTaps = isNaN(hv) ? 0 : hv;
 
-  readFileAsBase64_(document.getElementById('newTrfPlatePhoto'))
+  checkSerialExists_(serial)
+    .then(function (existing) {
+      if (existing && existing.site_id === state.currentSiteId) {
+        setStatus_(status, 'Este equipo ya existe — abriéndolo…', true);
+        btn.disabled = false;
+        return openTransformer(existing.id).then(function () { return Promise.reject({ __handled: true }); });
+      }
+      if (existing) {
+        return resolveSiteLabel_(existing.site_id).then(function (label) {
+          setStatus_(status, 'Ese número de serie ya está registrado en ' + label + '. No se puede duplicar.', false, true);
+          btn.disabled = false;
+          return Promise.reject({ __handled: true });
+        });
+      }
+      setStatus_(status, 'Creando…', false);
+      return readFileAsBase64_(document.getElementById('newTrfPlatePhoto'));
+    })
     .then(function (photo) {
       return callApi('createTransformer', 'POST', {
         site_id: state.currentSiteId,
@@ -606,6 +658,7 @@ function handleCreateTransformerSubmit(e) {
       return loadDashboardAndShow_();
     })
     .catch(function (err) {
+      if (err && err.__handled) return; // ya se mostró el mensaje de duplicado/reapertura
       if (!err || (err.status !== 402 && err.status !== 403)) setStatus_(status, formatNetworkAwareError_(err || {}), false, true);
     })
     .then(function () { btn.disabled = false; });

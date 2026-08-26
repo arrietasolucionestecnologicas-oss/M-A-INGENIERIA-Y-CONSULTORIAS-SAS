@@ -471,13 +471,22 @@ function updateTransformer_(params) {
   });
 }
 
+/**
+ * Sin site_id: lista global (usada para el buscador de duplicados por número de serie,
+ * ya que un transformador es un activo físico único y no debería registrarse dos veces
+ * aunque el técnico esté parado en un cliente/proyecto distinto al de su primer registro).
+ * Con serial_number: coincidencia exacta, sin distinguir mayúsculas/minúsculas.
+ */
 function listTransformers_(params) {
   var sheet = getSheet_('TRANSFORMADORES');
   var data = sheet.getDataRange().getValues();
   var siteCol = HEADERS.TRANSFORMADORES.indexOf('site_id');
+  var serialCol = HEADERS.TRANSFORMADORES.indexOf('serial_number');
+  var wantedSerial = params.serial_number ? String(params.serial_number).trim().toLowerCase() : null;
   var result = [];
   for (var r = 1; r < data.length; r++) {
     if (params.site_id && data[r][siteCol] !== params.site_id) continue;
+    if (wantedSerial && String(data[r][serialCol]).trim().toLowerCase() !== wantedSerial) continue;
     result.push(transformerRowToJson_(rowToObject_(data[r], 'TRANSFORMADORES', r + 1)));
   }
   return jsonResponse_({ status: 200, data: result });
