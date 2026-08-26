@@ -22,6 +22,12 @@ const APP_ID = "MYA_PRUEBAS";
 const TOLERANCE_PERCENT = 0.5;
 const UNBALANCE_THRESHOLD = 5.0;
 
+/** Debe reflejar exactamente los umbrales de calculateOilAnalysis_ en Código.gs. */
+const OIL_ACIDEZ_MAX = 0.15;
+const OIL_TENSION_INTERFACIAL_MIN = 24;
+const OIL_RIGIDEZ_MIN = 30;
+const OIL_HUMEDAD_MAX = 35;
+
 // ---------------------------------------------------------------
 // Estado global de la aplicación
 // ---------------------------------------------------------------
@@ -42,7 +48,8 @@ var state = {
   currentTests: [],
   ttr: { currentTap: null, readings: {} },
   matrix: { taps: [] },
-  wr: { currentTap: null, readings: {} }
+  wr: { currentTap: null, readings: {} },
+  oil: { rigidez: null, humedad: null, acidez: null, tension: null }
 };
 
 /** "12,5" -> 12.5. parseFloat NUNCA debe usarse directo sobre un input de usuario: se detiene en la coma y trunca el valor sin avisar. */
@@ -155,8 +162,8 @@ function fmtDate_(iso) {
 
 function verdictPillClass_(verdict) {
   if (verdict === 'APROBADO') return 'success';
-  if (verdict === 'RECHAZADO') return 'danger';
-  if (verdict === 'OBSERVADO') return 'warning';
+  if (verdict === 'RECHAZADO' || verdict === 'REQUIERE REGENERACIÓN / CAMBIO') return 'danger';
+  if (verdict === 'OBSERVADO' || verdict === 'REQUIERE TERMOVACÍO') return 'warning';
   return 'neutral';
 }
 
@@ -247,6 +254,7 @@ function showView(name) {
   }
   if (name === 'ttr-form') { renderTtrFormContext(); renderMatrixRows(); refreshTtr(); }
   if (name === 'winding-form') { renderWindingFormContext(); refreshWinding(); }
+  if (name === 'oil-form') { renderOilFormContext(); refreshOil(); }
 }
 
 // ---------------------------------------------------------------
@@ -628,6 +636,7 @@ function openTransformer(id) {
     resetTtrStateFromTransformer();
     resetMatrixStateFromTransformer();
     resetWindingStateFromTransformer();
+    resetOilStateFromTransformer();
   }).catch(function (err) {
     if (err.status === 402) return;
     alert('No se pudo cargar el transformador: ' + err.message);
@@ -1160,6 +1169,129 @@ function submitWinding() {
     .then(function (tests) { state.currentTests = tests || []; renderDetail(); })
     .catch(function (err) {
       // Las lecturas quedan intactas en state.wr.readings y en el borrador local: el técnico puede reintentar sin volver a digitar.
+      if (!err || err.status !== 402) setStatus_(status, formatNetworkAwareError_(err || {}), false, true);
+    })
+    .then(function () { btn.disabled = false; });
+}
+
+// ---------------------------------------------------------------
+// Formulario de Aceite Dieléctrico
+// ---------------------------------------------------------------
+
+function renderOilFormContext() {
+  var t = state.currentTransformer;
+  document.getElementById('oilFormSubtitle').textContent = t.serial_number + ' · Rigidez, humedad, acidez y tensión interfacial';
+  document.getElementById('oilTenantChip').textContent = state.username + ' · ' + state.role;
+}
+
+function resetOilStateFromTransformer() {
+  var draft = loadDraft_('mya_draft_oil_' + state.currentTransformerId);
+  state.oil = draft || { rigidez: null, humedad: null, acidez: null, tension: null };
+  var fields = { oilRigidez: 'rigidez', oilHumedad: 'humedad', oilAcidez: 'acidez', oilTension: 'tension' };
+  Object.keys(fields).forEach(function (id) {
+    var el = document.getElementById(id);
+    if (el) el.value = state.oil[fields[id]] != null ? state.oil[fields[id]] : '';
+  });
+}
+
+/** Debe replicar EXACTAMENTE calculateOilAnalysis_ en Código.gs: misma matriz, mismo orden de prioridad. */
+function calculateOilPreview_(rigidez, humedad, acidez, tension) {
+  if ([rigidez, humedad, acidez, tension].some(function (v) { return v == null || isNaN(v); })) {
+    return { overallVerdict: 'PENDIENTE' };
+  }
+  var overallVerdict;
+  if (acidez >= OIL_ACIDEZ_MAX || tension <= OIL_TENSION_INTERFACIAL_MIN) {
+    overallVerdict = 'REQUIERE REGENERACIÓN / CAMBIO';
+  } else if (rigidez <= OIL_RIGIDEZ_MIN || humedad >= OIL_HUMEDAD_MAX) {
+    overallVerdict = 'REQUIERE TERMOVACÍO';
+  } else {
+    overallVerdict = 'APROBADO';
+  }
+  return { overallVerdict: overallVerdict };
+}
+
+function renderOilPreview() {
+  var o = state.oil;
+  var result = calculateOilPreview_(o.rigidez, o.humedad, o.acidez, o.tension);
+  var rows = [
+    ['Rigidez dieléctrica (BDV)', o.rigidez, 'kV', o.rigidez != null && o.rigidez <= OIL_RIGIDEZ_MIN],
+    ['Humedad', o.humedad, 'ppm', o.humedad != null && o.humedad >= OIL_HUMEDAD_MAX],
+    ['Acidez', o.acidez, 'mg KOH/g', o.acidez != null && o.acidez >= OIL_ACIDEZ_MAX],
+    ['Tensión interfacial', o.tension, 'mN/m', o.tension != null && o.tension <= OIL_TENSION_INTERFACIAL_MIN]
+  ];
+  document.getElementById('oilPreviewRows').innerHTML = rows.map(function (r) {
+    var valTxt = r[1] != null ? r[1] + ' ' + r[2] : '—';
+    var cls = r[1] == null ? 'pending' : (r[3] ? 'bad' : 'ok');
+    return '<div class="preview-row"><span class="phase-name">' + r[0] + '</span><span class="num"></span>' +
+      '<span class="err ' + cls + '">' + valTxt + '</span></div>';
+  }).join('');
+
+  var banner = document.getElementById('oilVerdictBanner');
+  var bannerCls = 'verdict-banner';
+  if (result.overallVerdict === 'APROBADO') bannerCls += ' success';
+  else if (result.overallVerdict === 'REQUIERE TERMOVACÍO') bannerCls += ' warning';
+  else if (result.overallVerdict === 'REQUIERE REGENERACIÓN / CAMBIO') bannerCls += ' danger';
+  banner.className = bannerCls;
+  banner.innerHTML = 'Dictamen: ' + result.overallVerdict;
+}
+
+function buildOilRequestBody() {
+  return {
+    transformer_id: state.currentTransformerId,
+    instrument_used: document.getElementById('oilInstrument').value,
+    readings: {
+      rigidezKv: state.oil.rigidez,
+      humedadPpm: state.oil.humedad,
+      acidezMgKohG: state.oil.acidez,
+      tensionInterfacialMnM: state.oil.tension,
+      color: document.getElementById('oilColor').value || null,
+      visual: document.getElementById('oilVisual').value || null
+    }
+  };
+}
+
+function refreshOil() {
+  var r = parseDecimal_(document.getElementById('oilRigidez').value);
+  var h = parseDecimal_(document.getElementById('oilHumedad').value);
+  var a = parseDecimal_(document.getElementById('oilAcidez').value);
+  var t = parseDecimal_(document.getElementById('oilTension').value);
+  state.oil.rigidez = isNaN(r) ? null : r;
+  state.oil.humedad = isNaN(h) ? null : h;
+  state.oil.acidez = isNaN(a) ? null : a;
+  state.oil.tension = isNaN(t) ? null : t;
+
+  renderOilPreview();
+  var el = document.getElementById('jsonOil');
+  if (el) el.innerHTML = syntaxHighlight(Object.assign({ action: 'submitOilAnalysisTest', token: state.token }, buildOilRequestBody()));
+  saveDraft_('mya_draft_oil_' + state.currentTransformerId, state.oil);
+}
+
+function submitOil() {
+  var btn = document.getElementById('submitOilBtn');
+  var status = document.getElementById('oilSubmitStatus');
+
+  if (state.oil.rigidez == null || state.oil.humedad == null || state.oil.acidez == null || state.oil.tension == null) {
+    setStatus_(status, 'Rigidez, humedad, acidez y tensión interfacial son obligatorios', false, true);
+    return;
+  }
+
+  btn.disabled = true;
+  setStatus_(status, 'Enviando…', false);
+
+  readFileAsBase64_(document.getElementById('oilCertificate'))
+    .then(function (evidence) {
+      var body = buildOilRequestBody();
+      if (evidence) { body.file_base64 = evidence.base64; body.file_mime_type = evidence.mimeType; }
+      return callApi('submitOilAnalysisTest', 'POST', body);
+    })
+    .then(function (data) {
+      setStatus_(status, 'Prueba registrada · dictamen: ' + data.calculated_results.overallVerdict, true);
+      clearDraft_('mya_draft_oil_' + state.currentTransformerId);
+      return callApi('listTests', 'GET', { transformer_id: state.currentTransformerId });
+    })
+    .then(function (tests) { state.currentTests = tests || []; renderDetail(); })
+    .catch(function (err) {
+      // Las lecturas quedan intactas en state.oil y en el borrador local: se puede reintentar sin volver a digitar.
       if (!err || err.status !== 402) setStatus_(status, formatNetworkAwareError_(err || {}), false, true);
     })
     .then(function () { btn.disabled = false; });

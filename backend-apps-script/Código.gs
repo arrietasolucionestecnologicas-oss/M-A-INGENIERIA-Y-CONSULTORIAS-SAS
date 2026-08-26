@@ -788,6 +788,75 @@ function calculateInsulation_(readings) {
 }
 
 // ---------------------------------------------------------------------------
+// Aceite dieléctrico (BDV, humedad, acidez, tensión interfacial)
+// ---------------------------------------------------------------------------
+
+/** Umbrales de la matriz de decisión, en orden de prioridad (ver informe de habilitación del módulo). */
+var OIL_ACIDEZ_MAX_MG_KOH_G = 0.15;
+var OIL_TENSION_INTERFACIAL_MIN_MN_M = 24;
+var OIL_RIGIDEZ_MIN_KV = 30;
+var OIL_HUMEDAD_MAX_PPM = 35;
+
+/**
+ * Matriz de reglas de negocio en orden de prioridad:
+ *  1. acidez >= 0.15 mg KOH/g  O  tensión interfacial <= 24 mN/m  -> REQUIERE REGENERACIÓN / CAMBIO
+ *  2. rigidez <= 30 kV  O  humedad >= 35 ppm                      -> REQUIERE TERMOVACÍO
+ *  3. en otro caso                                                -> APROBADO
+ */
+function calculateOilAnalysis_(rigidez, humedad, acidez, tension) {
+  [rigidez, humedad, acidez, tension].forEach(function (v) {
+    if (typeof v !== 'number' || isNaN(v)) {
+      throw new Error('Rigidez, humedad, acidez y tensión interfacial son obligatorios y deben ser numéricos');
+    }
+  });
+
+  var overallVerdict;
+  if (acidez >= OIL_ACIDEZ_MAX_MG_KOH_G || tension <= OIL_TENSION_INTERFACIAL_MIN_MN_M) {
+    overallVerdict = 'REQUIERE REGENERACIÓN / CAMBIO';
+  } else if (rigidez <= OIL_RIGIDEZ_MIN_KV || humedad >= OIL_HUMEDAD_MAX_PPM) {
+    overallVerdict = 'REQUIERE TERMOVACÍO';
+  } else {
+    overallVerdict = 'APROBADO';
+  }
+
+  return {
+    rigidezKv: rigidez,
+    humedadPpm: humedad,
+    acidezMgKohG: acidez,
+    tensionInterfacialMnM: tension,
+    thresholds: {
+      acidezMaxMgKohG: OIL_ACIDEZ_MAX_MG_KOH_G,
+      tensionInterfacialMinMnM: OIL_TENSION_INTERFACIAL_MIN_MN_M,
+      rigidezMinKv: OIL_RIGIDEZ_MIN_KV,
+      humedadMaxPpm: OIL_HUMEDAD_MAX_PPM
+    },
+    overallVerdict: overallVerdict
+  };
+}
+
+function submitOilAnalysisTest_(params, auth) {
+  return withLock_(function () {
+    if (!params.transformer_id) return jsonResponse_({ status: 400, message: 'transformer_id es obligatorio' });
+    var transformer = findTransformerRow_(params.transformer_id);
+    if (!transformer) return jsonResponse_({ status: 404, message: 'Transformador no encontrado' });
+    if (!params.readings) return jsonResponse_({ status: 400, message: 'readings es obligatorio' });
+
+    var r = params.readings;
+    var calculated;
+    try {
+      calculated = calculateOilAnalysis_(r.rigidezKv, r.humedadPpm, r.acidezMgKohG, r.tensionInterfacialMnM);
+      calculated.colorObservado = r.color || '';
+      calculated.aspectoVisual = r.visual || '';
+    } catch (calcErr) {
+      return jsonResponse_({ status: 422, message: calcErr.message });
+    }
+
+    var saved = persistTest_(transformer, 'ACEITE_DIELECTRICO', params.readings, calculated, params, auth);
+    return jsonResponse_({ status: 201, message: 'Prueba de aceite dieléctrico registrada', data: saved });
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Almacenamiento de archivos en Drive
 // ---------------------------------------------------------------------------
 
@@ -825,7 +894,8 @@ var POST_ACTIONS = {
   updateTransformer: updateTransformer_,
   submitTtrTest: submitTtrTest_,
   submitWindingResistanceTest: submitWindingResistanceTest_,
-  submitInsulationTest: submitInsulationTest_
+  submitInsulationTest: submitInsulationTest_,
+  submitOilAnalysisTest: submitOilAnalysisTest_
 };
 
 var GET_ACTIONS = {
