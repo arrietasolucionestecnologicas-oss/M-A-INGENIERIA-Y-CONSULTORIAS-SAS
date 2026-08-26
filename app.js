@@ -13,7 +13,7 @@
 /** Backend propio de M&A (transformadores/pruebas). Termina en /exec. */
 const API_WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbz1frJeBe7KpN83DQaVjtPBfzWtdujl6mngBAmAe3XCLRBW6_5cEShkVPRwgk98UtbKAw/exec";
 
-/** IdP central "Control de Acceso" (JL Bedoya Group) — login, cambio de contraseña, creación de usuarios. */
+/** Servicio de autenticación: login, cambio de contraseña, creación de usuarios. */
 const CONTROL_ACCESO_URL = "https://script.google.com/macros/s/AKfycby4K-qxW87hfd9Fy1wKHeyF8bic_Qo8clKfJ-ZuPg9zElNuc7XOe8qTgW8sUmJ9mnKjDA/exec";
 
 /** Identificador de esta app dentro de Control de Acceso (fila en la hoja Config). */
@@ -105,6 +105,15 @@ function callApi(action, method, payload) {
       if (json.status === 402) {
         showView('suspended');
         throw new ApiError(402, json.message || 'Servicio suspendido');
+      }
+      if (json.status === 403) {
+        // Token inválido/expirado: no es un problema de facturación, así que se
+        // regresa al login (no a la pantalla de "suspendido") con un aviso genérico.
+        state.token = null;
+        showView('login');
+        var loginErr = document.getElementById('loginError');
+        if (loginErr) setStatus_(loginErr, 'Tu sesión no es válida o expiró. Vuelve a iniciar sesión.', false, true);
+        throw new ApiError(403, json.message || 'Sesión inválida');
       }
       if (json.status >= 400) {
         throw new ApiError(json.status, json.message || ('Error ' + json.status));
@@ -316,7 +325,7 @@ function loadSitesAndShow_() {
       showView('sites');
     })
     .catch(function (err) {
-      if (err.status === 402) return; // ya se mostró la pantalla de suspendido
+      if (err.status === 402 || err.status === 403) return; // ya se mostró la pantalla correspondiente
       alert('No se pudieron cargar los clientes/proyectos: ' + err.message);
     });
 }
@@ -371,7 +380,7 @@ function handleCreateSiteSubmit(e) {
       return loadSitesAndShow_();
     })
     .catch(function (err) {
-      if (err.status !== 402) setStatus_(status, formatNetworkAwareError_(err), false, true);
+      if (err.status !== 402 && err.status !== 403) setStatus_(status, formatNetworkAwareError_(err), false, true);
     })
     .then(function () { btn.disabled = false; });
 }
@@ -385,7 +394,7 @@ function loadDashboardAndShow_() {
       showView('dashboard');
     })
     .catch(function (err) {
-      if (err.status === 402) return; // ya se mostró la pantalla de suspendido
+      if (err.status === 402 || err.status === 403) return; // ya se mostró la pantalla correspondiente
       alert('No se pudieron cargar los transformadores: ' + err.message);
     });
 }
@@ -451,7 +460,7 @@ function handleCreateTransformerSubmit(e) {
       return loadDashboardAndShow_();
     })
     .catch(function (err) {
-      if (!err || err.status !== 402) setStatus_(status, formatNetworkAwareError_(err || {}), false, true);
+      if (!err || (err.status !== 402 && err.status !== 403)) setStatus_(status, formatNetworkAwareError_(err || {}), false, true);
     })
     .then(function () { btn.disabled = false; });
 }
@@ -505,10 +514,22 @@ function handleChangePasswordSubmit(e) {
 // ---------------------------------------------------------------
 
 function renderAdminNavAndPanel() {
-  var moreItem = document.getElementById('moreSheetAdminItem');
-  if (moreItem) moreItem.hidden = state.role !== 'Administrador';
-
   if (state.role !== 'Administrador') return;
+
+  // Hoja "Más" (móvil): el ítem solo se crea para rol Administrador — nunca existe
+  // en el DOM para otros roles, ni siquiera oculto.
+  if (!document.getElementById('moreSheetAdminItem')) {
+    var moreItem = document.createElement('button');
+    moreItem.type = 'button';
+    moreItem.className = 'action-sheet-item';
+    moreItem.id = 'moreSheetAdminItem';
+    moreItem.dataset.view = 'admin';
+    moreItem.innerHTML = '<svg width="18" height="18" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="5.2" r="2.7" stroke="currentColor" stroke-width="1.4"/><path d="M2.5 14c0-3 2.5-4.8 5.5-4.8s5.5 1.8 5.5 4.8" stroke="currentColor" stroke-width="1.4"/></svg>Gestión de usuarios';
+    moreItem.addEventListener('click', function () { showView('admin'); });
+    var moreSheetUserP = document.getElementById('moreSheetUser').closest('p');
+    moreSheetUserP.insertAdjacentElement('afterend', moreItem);
+  }
+
   if (document.getElementById('view-admin')) return;
 
   var previewLabel = document.getElementById('navLabelPreview');
@@ -543,7 +564,7 @@ function renderAdminNavAndPanel() {
     '<span class="status-line" id="createUserStatus" hidden></span>' +
     '</form>' +
     '<div class="source-strip" style="display:flex; justify-content:space-between; padding:10px 18px; font-size:11.5px; color:var(--text-muted); background:var(--surface-alt);">' +
-    '<span>El usuario nuevo deberá cambiar esta contraseña al entrar</span><span class="tag">DebeCambiar</span></div>' +
+    '<span>El usuario nuevo deberá cambiar esta contraseña al entrar</span><span class="tag">Temporal</span></div>' +
     '</div></div>';
 
   document.querySelector('main').appendChild(section);
@@ -552,7 +573,7 @@ function renderAdminNavAndPanel() {
 
 function removeAdminNavAndPanel() {
   var moreItem = document.getElementById('moreSheetAdminItem');
-  if (moreItem) moreItem.hidden = true;
+  if (moreItem) moreItem.remove();
 
   var navItem = document.querySelector('.nav-item[data-view="admin"]');
   if (navItem) {
@@ -638,7 +659,7 @@ function openTransformer(id) {
     resetWindingStateFromTransformer();
     resetOilStateFromTransformer();
   }).catch(function (err) {
-    if (err.status === 402) return;
+    if (err.status === 402 || err.status === 403) return;
     alert('No se pudo cargar el transformador: ' + err.message);
     showView('dashboard');
   });
@@ -883,7 +904,7 @@ function saveMatrix() {
     state.currentTransformer.custom_tap_ratio_matrix = { taps: JSON.parse(JSON.stringify(state.matrix.taps)) };
     refreshTtr();
   }).catch(function (err) {
-    if (err.status !== 402) setStatus_(status, formatNetworkAwareError_(err), false, true);
+    if (err.status !== 402 && err.status !== 403) setStatus_(status, formatNetworkAwareError_(err), false, true);
   }).then(function () { btn.disabled = false; });
 }
 
@@ -993,7 +1014,7 @@ function submitTtr() {
     .then(function (tests) { state.currentTests = tests || []; renderDetail(); })
     .catch(function (err) {
       // Las lecturas quedan intactas en state.ttr.readings y en el borrador local: el técnico puede reintentar sin volver a digitar.
-      if (!err || err.status !== 402) setStatus_(status, formatNetworkAwareError_(err || {}), false, true);
+      if (!err || (err.status !== 402 && err.status !== 403)) setStatus_(status, formatNetworkAwareError_(err || {}), false, true);
     })
     .then(function () { btn.disabled = false; });
 }
@@ -1169,7 +1190,7 @@ function submitWinding() {
     .then(function (tests) { state.currentTests = tests || []; renderDetail(); })
     .catch(function (err) {
       // Las lecturas quedan intactas en state.wr.readings y en el borrador local: el técnico puede reintentar sin volver a digitar.
-      if (!err || err.status !== 402) setStatus_(status, formatNetworkAwareError_(err || {}), false, true);
+      if (!err || (err.status !== 402 && err.status !== 403)) setStatus_(status, formatNetworkAwareError_(err || {}), false, true);
     })
     .then(function () { btn.disabled = false; });
 }
@@ -1292,7 +1313,7 @@ function submitOil() {
     .then(function (tests) { state.currentTests = tests || []; renderDetail(); })
     .catch(function (err) {
       // Las lecturas quedan intactas en state.oil y en el borrador local: se puede reintentar sin volver a digitar.
-      if (!err || err.status !== 402) setStatus_(status, formatNetworkAwareError_(err || {}), false, true);
+      if (!err || (err.status !== 402 && err.status !== 403)) setStatus_(status, formatNetworkAwareError_(err || {}), false, true);
     })
     .then(function () { btn.disabled = false; });
 }
