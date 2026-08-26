@@ -46,6 +46,7 @@ var state = {
   currentTransformerId: null,
   currentTransformer: null,
   currentTests: [],
+  pendingContextTarget: null,
   ttr: { currentTap: null, readings: {} },
   matrix: { taps: [] },
   wr: { currentTap: null, readings: {} },
@@ -223,6 +224,19 @@ function clearDraft_(key) {
 // ---------------------------------------------------------------
 
 function showView(name) {
+  // Requisitos de datos: Equipos exige un Cliente/Proyecto activo; las pruebas
+  // exigen un equipo activo. En vez de bloquear con un alert() y redirigir a
+  // otra pantalla, se pide el dato que falta en un modal y se continúa aquí
+  // mismo apenas se resuelve.
+  if (viewNeedsSite_(name) && !state.currentSiteId) {
+    openContextModal_('site', name);
+    return;
+  }
+  if (viewNeedsTransformer_(name) && !state.currentTransformer) {
+    openContextModal_(state.currentSiteId ? 'equipment' : 'site', name);
+    return;
+  }
+
   var isFullscreen = name === 'login' || name === 'suspended' || name === 'change-password';
   document.getElementById('app-shell').style.display = isFullscreen ? 'none' : 'grid';
   document.getElementById('screen-login').hidden = name !== 'login';
@@ -251,19 +265,151 @@ function showView(name) {
   closeActionSheet_('moreActionSheet');
   window.scrollTo(0, 0);
 
-  // Jerarquía obligatoria: Fase 2 (Equipos) exige Fase 1 (Cliente/Proyecto);
-  // Fase 3 (Pruebas) exige un equipo ya validado en Fase 2.
-  if (name === 'dashboard' && !state.currentSiteId) {
-    alert('Selecciona primero un Cliente/Proyecto (Fase 1).');
-    return showView('sites');
-  }
-  if ((name === 'ttr-form' || name === 'winding-form' || name === 'oil-form' || name === 'pcb-form') && !state.currentTransformer) {
-    alert('Selecciona primero un equipo desde Fase 2.');
-    return showView(state.currentSiteId ? 'dashboard' : 'sites');
-  }
   if (name === 'ttr-form') { renderTtrFormContext(); renderMatrixRows(); refreshTtr(); }
   if (name === 'winding-form') { renderWindingFormContext(); refreshWinding(); }
   if (name === 'oil-form') { renderOilFormContext(); refreshOil(); }
+}
+
+function viewNeedsSite_(name) {
+  return name === 'dashboard';
+}
+function viewNeedsTransformer_(name) {
+  return name === 'ttr-form' || name === 'winding-form' || name === 'oil-form' || name === 'pcb-form';
+}
+
+// ---------------------------------------------------------------
+// Modal de contexto: pide Cliente/Proyecto y/o Equipo cuando faltan,
+// sin sacar al técnico de donde estaba (reemplaza el redirect a una
+// pantalla de "Fase" separada).
+// ---------------------------------------------------------------
+
+function openContextModal_(mode, targetView) {
+  closeActionSheet_('testActionSheet');
+  closeActionSheet_('moreActionSheet');
+  state.pendingContextTarget = targetView;
+  document.getElementById('contextModalTitle').textContent =
+    mode === 'site' ? 'Selecciona Cliente / Proyecto' : 'Selecciona el equipo';
+  var body = document.getElementById('contextModalBody');
+  body.innerHTML = '<div class="empty-note">Cargando…</div>';
+  document.getElementById('contextModal').classList.add('open');
+  document.getElementById('contextModalBackdrop').classList.add('open');
+
+  var loader = mode === 'site'
+    ? callApi('listSites', 'GET', {}).then(function (sites) { state.sites = sites || []; renderContextSiteBody_(); })
+    : callApi('listTransformers', 'GET', { site_id: state.currentSiteId }).then(function (transformers) {
+        state.transformers = transformers || [];
+        renderContextEquipmentBody_();
+      });
+
+  loader.catch(function (err) {
+    if (err.status !== 402 && err.status !== 403) {
+      body.innerHTML = '<div class="empty-note">' + formatNetworkAwareError_(err) + '</div>';
+    }
+  });
+}
+
+function closeContextModal_() {
+  document.getElementById('contextModal').classList.remove('open');
+  document.getElementById('contextModalBackdrop').classList.remove('open');
+  state.pendingContextTarget = null;
+}
+
+function renderContextSiteBody_() {
+  var body = document.getElementById('contextModalBody');
+  var listHtml = state.sites.map(function (s) {
+    return '<button type="button" class="modal-list-item" onclick="selectContextSite_(\'' + s.id + '\')">' +
+      '<strong>' + escapeHtml_(s.client_name) + '</strong><span>' + escapeHtml_(s.project_name) + '</span></button>';
+  }).join('');
+
+  body.innerHTML =
+    '<div class="field"><label>Cliente</label><input class="mono" id="ctxSiteClient" placeholder="Electrocosta"></div>' +
+    '<div class="field"><label>Proyecto / Subestación</label><input class="mono" id="ctxSiteProject" placeholder="Subestación Norte"></div>' +
+    '<button class="btn primary" style="width:100%; margin-top:6px;" id="ctxSiteCreateBtn">Crear y continuar</button>' +
+    '<span class="status-line" id="ctxSiteStatus" hidden></span>' +
+    (state.sites.length ? '<div class="modal-divider">o selecciona uno existente</div><div class="modal-list">' + listHtml + '</div>' : '');
+
+  document.getElementById('ctxSiteCreateBtn').addEventListener('click', handleContextCreateSite_);
+}
+
+function handleContextCreateSite_() {
+  var client = document.getElementById('ctxSiteClient').value.trim();
+  var project = document.getElementById('ctxSiteProject').value.trim();
+  var statusEl = document.getElementById('ctxSiteStatus');
+  if (!client || !project) { setStatus_(statusEl, 'Cliente y proyecto son obligatorios', false, true); return; }
+  setStatus_(statusEl, 'Creando…', false);
+  callApi('createSite', 'POST', { client_name: client, project_name: project, address: '' })
+    .then(function (data) {
+      return callApi('listSites', 'GET', {}).then(function (sites) {
+        state.sites = sites || [];
+        selectContextSite_(data.id);
+      });
+    })
+    .catch(function (err) {
+      if (err.status !== 402 && err.status !== 403) setStatus_(statusEl, formatNetworkAwareError_(err), false, true);
+    });
+}
+
+function selectContextSite_(id) {
+  var site = state.sites.filter(function (s) { return s.id === id; })[0];
+  if (!site) return;
+  state.currentSiteId = id;
+  state.currentSite = site;
+  var target = state.pendingContextTarget;
+  if (viewNeedsTransformer_(target) && !state.currentTransformer) {
+    openContextModal_('equipment', target);
+  } else {
+    closeContextModal_();
+    showView(target || 'dashboard');
+  }
+}
+
+function renderContextEquipmentBody_() {
+  var body = document.getElementById('contextModalBody');
+  var listHtml = state.transformers.map(function (t) {
+    return '<button type="button" class="modal-list-item" onclick="selectContextTransformer_(\'' + t.id + '\')">' +
+      '<strong>' + escapeHtml_(t.serial_number) + '</strong><span>' + escapeHtml_(t.manufacturer || '—') + '</span></button>';
+  }).join('');
+
+  body.innerHTML =
+    '<div class="field"><label>Número de serie</label><input class="mono" id="ctxTrfSerial" placeholder="TRF-1187-B"></div>' +
+    '<div class="field"><label>Fases</label><select id="ctxTrfPhase"><option value="TRIFASICO">Trifásico</option><option value="MONOFASICO">Monofásico</option></select></div>' +
+    '<button class="btn primary" style="width:100%; margin-top:6px;" id="ctxTrfCreateBtn">Crear y continuar</button>' +
+    '<span class="status-line" id="ctxTrfStatus" hidden></span>' +
+    '<div class="field-note" style="margin-top:2px;">Puedes completar el resto de los datos de placa luego, desde Equipos.</div>' +
+    (state.transformers.length ? '<div class="modal-divider">o selecciona uno existente</div><div class="modal-list">' + listHtml + '</div>' : '');
+
+  document.getElementById('ctxTrfCreateBtn').addEventListener('click', handleContextCreateTransformer_);
+}
+
+function handleContextCreateTransformer_() {
+  var serial = document.getElementById('ctxTrfSerial').value.trim();
+  var phase = document.getElementById('ctxTrfPhase').value;
+  var statusEl = document.getElementById('ctxTrfStatus');
+  if (!serial) { setStatus_(statusEl, 'El número de serie es obligatorio', false, true); return; }
+  setStatus_(statusEl, 'Creando…', false);
+  callApi('createTransformer', 'POST', {
+    site_id: state.currentSiteId,
+    serial_number: serial,
+    phase_type: phase,
+    tap_config: { nominalVoltage: 0, stepPercentage: 2.5, numPositions: 5, neutralPosition: 3, positions: buildDefaultTapPositions_(0) }
+  })
+    .then(function (data) {
+      return callApi('listTransformers', 'GET', { site_id: state.currentSiteId }).then(function (transformers) {
+        state.transformers = transformers || [];
+        selectContextTransformer_(data.id);
+      });
+    })
+    .catch(function (err) {
+      if (err.status !== 402 && err.status !== 403) setStatus_(statusEl, formatNetworkAwareError_(err), false, true);
+    });
+}
+
+function selectContextTransformer_(id) {
+  var target = state.pendingContextTarget;
+  closeContextModal_();
+  openTransformer(id).then(function () {
+    if (target && target !== 'detail' && target !== 'dashboard') showView(target);
+  });
 }
 
 // ---------------------------------------------------------------
@@ -646,7 +792,7 @@ function openTransformer(id) {
   document.getElementById('detailTopTitle').textContent = 'Cargando…';
   showView('detail');
 
-  Promise.all([
+  return Promise.all([
     callApi('getTransformer', 'GET', { id: id }),
     callApi('listTests', 'GET', { transformer_id: id })
   ]).then(function (results) {
@@ -1336,6 +1482,7 @@ document.addEventListener('DOMContentLoaded', function () {
   document.getElementById('bottomNavMoreBtn').addEventListener('click', function () { openMoreActionSheet_(); });
   document.getElementById('testSheetBackdrop').addEventListener('click', function () { closeActionSheet_('testActionSheet'); });
   document.getElementById('moreSheetBackdrop').addEventListener('click', function () { closeActionSheet_('moreActionSheet'); });
+  document.getElementById('contextModalBackdrop').addEventListener('click', function () { closeContextModal_(); });
 
   attachRippleDelegation_();
 
@@ -1367,10 +1514,7 @@ function openTestActionSheet_() {
   var subtitle = document.getElementById('testSheetSubtitle');
   subtitle.textContent = hasEquipment
     ? state.currentTransformer.serial_number + ' · elige el tipo de prueba'
-    : 'Selecciona primero un equipo en Fase 2';
-  document.querySelectorAll('#testActionSheet .action-sheet-item[data-view]').forEach(function (el) {
-    el.disabled = !hasEquipment;
-  });
+    : 'Elige un tipo de prueba — te pedirá cliente y equipo si aún no los has seleccionado';
   openActionSheet_('testActionSheet');
 }
 
@@ -1384,7 +1528,7 @@ function openMoreActionSheet_() {
 // ---------------------------------------------------------------
 
 function attachRippleDelegation_() {
-  var selector = '.btn, .nav-item, .tap-chip, .bottom-nav-item, .bottom-nav-fab, .action-sheet-item';
+  var selector = '.btn, .nav-item, .tap-chip, .bottom-nav-item, .bottom-nav-fab, .action-sheet-item, .modal-list-item';
   document.addEventListener('pointerdown', function (e) {
     var el = e.target.closest(selector);
     if (!el || el.disabled) return;
