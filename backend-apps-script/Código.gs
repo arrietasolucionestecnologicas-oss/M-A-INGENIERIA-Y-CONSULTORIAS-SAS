@@ -471,6 +471,53 @@ function updateTransformer_(params) {
   });
 }
 
+/** Solo Administrador. Elimina el transformador y en cascada sus pruebas asociadas
+ *  (evita filas de PRUEBAS huérfanas apuntando a un transformer_id inexistente). */
+function deleteTransformer_(params, auth) {
+  return withLock_(function () {
+    if (auth.role !== 'Administrador') {
+      return jsonResponse_({ status: 403, message: 'Solo un Administrador puede eliminar equipos' });
+    }
+    if (!params.id) return jsonResponse_({ status: 400, message: 'id es obligatorio' });
+    var row = findTransformerRow_(params.id);
+    if (!row) return jsonResponse_({ status: 404, message: 'Transformador no encontrado' });
+
+    var testsSheet = getSheet_('PRUEBAS');
+    var testsData = testsSheet.getDataRange().getValues();
+    var transformerCol = HEADERS.PRUEBAS.indexOf('transformer_id');
+    for (var r = testsData.length - 1; r >= 1; r--) {
+      if (testsData[r][transformerCol] === params.id) testsSheet.deleteRow(r + 1);
+    }
+
+    getSheet_('TRANSFORMADORES').deleteRow(row._row);
+    return jsonResponse_({ status: 200, message: 'Transformador eliminado' });
+  });
+}
+
+/** Solo Administrador. Elimina el Cliente/Proyecto — se rechaza si todavía tiene
+ *  equipos registrados, para no dejar transformadores huérfanos sin site_id válido. */
+function deleteSite_(params, auth) {
+  return withLock_(function () {
+    if (auth.role !== 'Administrador') {
+      return jsonResponse_({ status: 403, message: 'Solo un Administrador puede eliminar clientes/proyectos' });
+    }
+    if (!params.id) return jsonResponse_({ status: 400, message: 'id es obligatorio' });
+    var row = findSiteRow_(params.id);
+    if (!row) return jsonResponse_({ status: 404, message: 'Cliente/Proyecto no encontrado' });
+
+    var trfSheet = getSheet_('TRANSFORMADORES');
+    var trfData = trfSheet.getDataRange().getValues();
+    var siteCol = HEADERS.TRANSFORMADORES.indexOf('site_id');
+    var hasEquipment = trfData.some(function (r, i) { return i > 0 && r[siteCol] === params.id; });
+    if (hasEquipment) {
+      return jsonResponse_({ status: 409, message: 'Este cliente/proyecto todavía tiene equipos registrados; elimínalos primero' });
+    }
+
+    getSheet_('SITIOS').deleteRow(row._row);
+    return jsonResponse_({ status: 200, message: 'Cliente/Proyecto eliminado' });
+  });
+}
+
 /**
  * Sin site_id: lista global (usada para el buscador de duplicados por número de serie,
  * ya que un transformador es un activo físico único y no debería registrarse dos veces
@@ -901,6 +948,8 @@ var POST_ACTIONS = {
   createSite: createSite_,
   createTransformer: createTransformer_,
   updateTransformer: updateTransformer_,
+  deleteTransformer: deleteTransformer_,
+  deleteSite: deleteSite_,
   submitTtrTest: submitTtrTest_,
   submitWindingResistanceTest: submitWindingResistanceTest_,
   submitInsulationTest: submitInsulationTest_,

@@ -290,19 +290,32 @@ function openContextModal_(mode, targetView) {
   document.getElementById('contextModalTitle').textContent =
     mode === 'site' ? 'Selecciona Cliente / Proyecto' : 'Selecciona el equipo';
   var body = document.getElementById('contextModalBody');
-  body.innerHTML = '<div class="empty-note">Cargando…</div>';
   document.getElementById('contextModal').classList.add('open');
   document.getElementById('contextModalBackdrop').classList.add('open');
 
+  var trfCacheKey = 'mya_cache_transformers_' + state.currentSiteId;
+  var cached = mode === 'site' ? loadDraft_('mya_cache_sites') : loadDraft_(trfCacheKey);
+  if (cached) {
+    if (mode === 'site') { state.sites = cached; renderContextSiteBody_(); }
+    else { state.transformers = cached; renderContextEquipmentBody_(); }
+  } else {
+    body.innerHTML = '<div class="empty-note">Cargando…</div>';
+  }
+
   var loader = mode === 'site'
-    ? callApi('listSites', 'GET', {}).then(function (sites) { state.sites = sites || []; renderContextSiteBody_(); })
+    ? callApi('listSites', 'GET', {}).then(function (sites) {
+        state.sites = sites || [];
+        saveDraft_('mya_cache_sites', state.sites);
+        renderContextSiteBody_();
+      })
     : callApi('listTransformers', 'GET', { site_id: state.currentSiteId }).then(function (transformers) {
         state.transformers = transformers || [];
+        saveDraft_(trfCacheKey, state.transformers);
         renderContextEquipmentBody_();
       });
 
   loader.catch(function (err) {
-    if (err.status !== 402 && err.status !== 403) {
+    if (err.status !== 402 && err.status !== 403 && !cached) {
       body.innerHTML = '<div class="empty-note">' + formatNetworkAwareError_(err) + '</div>';
     }
   });
@@ -341,6 +354,7 @@ function handleContextCreateSite_() {
     .then(function (data) {
       return callApi('listSites', 'GET', {}).then(function (sites) {
         state.sites = sites || [];
+        saveDraft_('mya_cache_sites', state.sites);
         selectContextSite_(data.id);
       });
     })
@@ -412,6 +426,7 @@ function handleContextCreateTransformer_() {
     .then(function (data) {
       return callApi('listTransformers', 'GET', { site_id: state.currentSiteId }).then(function (transformers) {
         state.transformers = transformers || [];
+        saveDraft_('mya_cache_transformers_' + state.currentSiteId, state.transformers);
         selectContextTransformer_(data.id);
       });
     })
@@ -480,16 +495,23 @@ function handleLoginSubmit(e) {
 // Fase 1: Cliente / Proyecto (Sitios)
 // ---------------------------------------------------------------
 
+/** Caché-luego-red: si hay datos guardados de una visita anterior los muestra
+ *  de inmediato (sensación instantánea), y siempre refresca contra el backend
+ *  en segundo plano para no quedarse con datos desactualizados. */
 function loadSitesAndShow_() {
+  var cached = loadDraft_('mya_cache_sites');
+  if (cached) { state.sites = cached; renderSites(); }
+  showView('sites');
+
   return callApi('listSites', 'GET', {})
     .then(function (sites) {
       state.sites = sites || [];
+      saveDraft_('mya_cache_sites', state.sites);
       renderSites();
-      showView('sites');
     })
     .catch(function (err) {
       if (err.status === 402 || err.status === 403) return; // ya se mostró la pantalla correspondiente
-      alert('No se pudieron cargar los clientes/proyectos: ' + err.message);
+      if (!cached) alert('No se pudieron cargar los clientes/proyectos: ' + err.message);
     });
 }
 
@@ -505,13 +527,32 @@ function renderSites() {
   }
 
   tbody.innerHTML = state.sites.map(function (s) {
+    var deleteBtn = state.role === 'Administrador'
+      ? '<button type="button" class="matrix-remove" title="Eliminar" onclick="event.stopPropagation(); handleDeleteSite_(\'' + s.id + '\')">&times;</button>'
+      : '';
     return '<tr class="rowlink" onclick="selectSite(\'' + s.id + '\')">' +
       '<td>' + escapeHtml_(s.client_name) + '</td>' +
       '<td>' + escapeHtml_(s.project_name) + '</td>' +
       '<td>' + escapeHtml_(s.address || '—') + '</td>' +
-      '<td><span class="pill neutral">Seleccionar &rarr;</span></td>' +
+      '<td style="display:flex; align-items:center; justify-content:flex-end; gap:8px;"><span class="pill neutral">Seleccionar &rarr;</span>' + deleteBtn + '</td>' +
       '</tr>';
   }).join('');
+}
+
+/** Solo Administrador (el backend también lo exige). Se rechaza si el sitio aún tiene equipos. */
+function handleDeleteSite_(id) {
+  var site = state.sites.filter(function (s) { return s.id === id; })[0];
+  if (!site) return;
+  if (!confirm('¿Eliminar "' + site.client_name + ' · ' + site.project_name + '"? Esta acción no se puede deshacer.')) return;
+  callApi('deleteSite', 'POST', { id: id })
+    .then(function () {
+      clearDraft_('mya_cache_sites');
+      return loadSitesAndShow_();
+    })
+    .catch(function (err) {
+      if (err.status === 402 || err.status === 403) return;
+      alert('No se pudo eliminar: ' + err.message);
+    });
 }
 
 function selectSite(id) {
@@ -550,15 +591,21 @@ function handleCreateSiteSubmit(e) {
 
 function loadDashboardAndShow_() {
   if (!state.currentSiteId) return showView('sites');
+
+  var cacheKey = 'mya_cache_transformers_' + state.currentSiteId;
+  var cached = loadDraft_(cacheKey);
+  if (cached) { state.transformers = cached; renderDashboard(); }
+  showView('dashboard');
+
   return callApi('listTransformers', 'GET', { site_id: state.currentSiteId })
     .then(function (transformers) {
       state.transformers = transformers || [];
+      saveDraft_(cacheKey, state.transformers);
       renderDashboard();
-      showView('dashboard');
     })
     .catch(function (err) {
       if (err.status === 402 || err.status === 403) return; // ya se mostró la pantalla correspondiente
-      alert('No se pudieron cargar los transformadores: ' + err.message);
+      if (!cached) alert('No se pudieron cargar los transformadores: ' + err.message);
     });
 }
 
@@ -831,19 +878,52 @@ function renderDashboard() {
   tbody.innerHTML = state.transformers.map(function (t) {
     var phaseLabel = (t.phase_type === 'MONOFASICO' ? 'Monofásico' : 'Trifásico') + (t.vector_group ? ' &middot; ' + escapeHtml_(t.vector_group) : '');
     var specialTag = t.is_special_design ? ' <span class="tag">Especial</span>' : '';
+    var deleteBtn = state.role === 'Administrador'
+      ? '<button type="button" class="matrix-remove" title="Eliminar" onclick="event.stopPropagation(); handleDeleteTransformer_(\'' + t.id + '\')">&times;</button>'
+      : '';
     return '<tr class="rowlink" onclick="openTransformer(\'' + t.id + '\')">' +
       '<td class="mono">' + escapeHtml_(t.serial_number) + '</td>' +
       '<td>' + escapeHtml_(t.manufacturer || '—') + '</td>' +
       '<td>' + phaseLabel + specialTag + '</td>' +
       '<td>' + fmtDate_(t.updated_at) + '</td>' +
-      '<td><span class="pill neutral">' + escapeHtml_(t.status || 'ACTIVO') + '</span></td>' +
+      '<td style="display:flex; align-items:center; justify-content:flex-end; gap:8px;"><span class="pill neutral">' + escapeHtml_(t.status || 'ACTIVO') + '</span>' + deleteBtn + '</td>' +
       '</tr>';
   }).join('');
+}
+
+/** Solo Administrador (el backend también lo exige). Elimina el equipo y sus pruebas en cascada. */
+function handleDeleteTransformer_(id) {
+  var t = state.transformers.filter(function (x) { return x.id === id; })[0];
+  if (!t) return;
+  if (!confirm('¿Eliminar el equipo "' + t.serial_number + '" y todas sus pruebas registradas? Esta acción no se puede deshacer.')) return;
+  callApi('deleteTransformer', 'POST', { id: id })
+    .then(function () {
+      clearDraft_('mya_cache_transformers_' + state.currentSiteId);
+      return loadDashboardAndShow_();
+    })
+    .catch(function (err) {
+      if (err.status === 402 || err.status === 403) return;
+      alert('No se pudo eliminar: ' + err.message);
+    });
 }
 
 function openTransformer(id) {
   document.getElementById('detailTopTitle').textContent = 'Cargando…';
   showView('detail');
+
+  var cacheKey = 'mya_cache_transformer_' + id;
+  var testsCacheKey = 'mya_cache_tests_' + id;
+  var cached = loadDraft_(cacheKey);
+  if (cached) {
+    state.currentTransformerId = id;
+    state.currentTransformer = cached;
+    state.currentTests = loadDraft_(testsCacheKey) || [];
+    renderDetail();
+    resetTtrStateFromTransformer();
+    resetMatrixStateFromTransformer();
+    resetWindingStateFromTransformer();
+    resetOilStateFromTransformer();
+  }
 
   return Promise.all([
     callApi('getTransformer', 'GET', { id: id }),
@@ -852,6 +932,8 @@ function openTransformer(id) {
     state.currentTransformerId = id;
     state.currentTransformer = results[0];
     state.currentTests = results[1] || [];
+    saveDraft_(cacheKey, state.currentTransformer);
+    saveDraft_(testsCacheKey, state.currentTests);
     renderDetail();
     resetTtrStateFromTransformer();
     resetMatrixStateFromTransformer();
@@ -859,8 +941,10 @@ function openTransformer(id) {
     resetOilStateFromTransformer();
   }).catch(function (err) {
     if (err.status === 402 || err.status === 403) return;
-    alert('No se pudo cargar el transformador: ' + err.message);
-    showView('dashboard');
+    if (!cached) {
+      alert('No se pudo cargar el transformador: ' + err.message);
+      showView('dashboard');
+    }
   });
 }
 
@@ -1210,7 +1294,7 @@ function submitTtr() {
       clearDraft_('mya_draft_ttr_' + state.currentTransformerId);
       return callApi('listTests', 'GET', { transformer_id: state.currentTransformerId });
     })
-    .then(function (tests) { state.currentTests = tests || []; renderDetail(); })
+    .then(function (tests) { state.currentTests = tests || []; saveDraft_('mya_cache_tests_' + state.currentTransformerId, state.currentTests); renderDetail(); })
     .catch(function (err) {
       // Las lecturas quedan intactas en state.ttr.readings y en el borrador local: el técnico puede reintentar sin volver a digitar.
       if (!err || (err.status !== 402 && err.status !== 403)) setStatus_(status, formatNetworkAwareError_(err || {}), false, true);
@@ -1386,7 +1470,7 @@ function submitWinding() {
       clearDraft_('mya_draft_wr_' + state.currentTransformerId);
       return callApi('listTests', 'GET', { transformer_id: state.currentTransformerId });
     })
-    .then(function (tests) { state.currentTests = tests || []; renderDetail(); })
+    .then(function (tests) { state.currentTests = tests || []; saveDraft_('mya_cache_tests_' + state.currentTransformerId, state.currentTests); renderDetail(); })
     .catch(function (err) {
       // Las lecturas quedan intactas en state.wr.readings y en el borrador local: el técnico puede reintentar sin volver a digitar.
       if (!err || (err.status !== 402 && err.status !== 403)) setStatus_(status, formatNetworkAwareError_(err || {}), false, true);
@@ -1509,7 +1593,7 @@ function submitOil() {
       clearDraft_('mya_draft_oil_' + state.currentTransformerId);
       return callApi('listTests', 'GET', { transformer_id: state.currentTransformerId });
     })
-    .then(function (tests) { state.currentTests = tests || []; renderDetail(); })
+    .then(function (tests) { state.currentTests = tests || []; saveDraft_('mya_cache_tests_' + state.currentTransformerId, state.currentTests); renderDetail(); })
     .catch(function (err) {
       // Las lecturas quedan intactas en state.oil y en el borrador local: se puede reintentar sin volver a digitar.
       if (!err || (err.status !== 402 && err.status !== 403)) setStatus_(status, formatNetworkAwareError_(err || {}), false, true);
