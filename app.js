@@ -192,25 +192,33 @@ function verdictPillClass_(verdict) {
   return 'neutral'; // incluye 'REGISTRADO' (solo DGA, sin veredicto propio)
 }
 
-function syntaxHighlight(obj) {
-  var json = JSON.stringify(obj, null, 2)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  return json.replace(
-    /("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+-]?\d+)?)/g,
-    function (match) {
-      var cls = 'json-num';
-      if (/^"/.test(match)) cls = /:$/.test(match) ? 'json-key' : 'json-str';
-      else if (/true|false|null/.test(match)) cls = 'json-bool';
-      return '<span class="' + cls + '">' + match + '</span>';
-    }
-  );
-}
-
 function setStatus_(el, message, ok, isError) {
   if (!el) return;
   el.hidden = !message;
   el.textContent = message || '';
   el.className = 'status-line' + (isError ? ' error' : (ok ? ' ok' : ''));
+}
+
+/** Aviso no bloqueante (patrón local-first): informa el resultado de un guardado
+ *  en segundo plano sin interrumpir al técnico. Se retira solo, sin botón de cerrar. */
+function showToast_(message, type, duration) {
+  var stack = document.getElementById('toastStack');
+  if (!stack) {
+    stack = document.createElement('div');
+    stack.id = 'toastStack';
+    stack.className = 'toast-stack';
+    document.body.appendChild(stack);
+  }
+  var toast = document.createElement('div');
+  toast.className = 'toast ' + (type || 'success');
+  toast.textContent = message;
+  stack.appendChild(toast);
+  requestAnimationFrame(function () { toast.classList.add('show'); });
+  var ms = duration || (type === 'error' ? 5000 : 2800);
+  setTimeout(function () {
+    toast.classList.remove('show');
+    setTimeout(function () { toast.remove(); }, 300);
+  }, ms);
 }
 
 /** Distingue un fallo de red/conexión de un error de validación del servidor,
@@ -542,17 +550,27 @@ function renderSites() {
   }
 
   tbody.innerHTML = state.sites.map(function (s) {
-    var editBtn = '<button type="button" class="btn" style="min-height:36px; padding:4px 10px;" title="Editar" onclick="event.stopPropagation(); openEditSiteModal_(\'' + s.id + '\')">Editar</button>';
-    var deleteBtn = state.role === 'Administrador'
-      ? '<button type="button" class="matrix-remove" title="Eliminar" onclick="event.stopPropagation(); handleDeleteSite_(\'' + s.id + '\')">&times;</button>'
-      : '';
-    return '<tr class="rowlink" onclick="selectSite(\'' + s.id + '\')">' +
+    var isNew = String(s.id).indexOf('tmp_') === 0;
+    var actionsCell;
+    if (s._pending) {
+      actionsCell = '<span class="pill neutral">Sincronizando&hellip;</span>';
+    } else if (s._error) {
+      actionsCell = '<button type="button" class="pill danger pill-btn" title="' + escapeHtml_(s._errorMessage || 'Reintentar') + '" onclick="event.stopPropagation(); retryPendingSite_(\'' + s.id + '\')">Pendiente &middot; reintentar</button>';
+    } else {
+      var editBtn = '<button type="button" class="btn" style="min-height:36px; padding:4px 10px;" title="Editar" onclick="event.stopPropagation(); openEditSiteModal_(\'' + s.id + '\')">Editar</button>';
+      var deleteBtn = state.role === 'Administrador'
+        ? '<button type="button" class="matrix-remove" title="Eliminar" onclick="event.stopPropagation(); handleDeleteSite_(\'' + s.id + '\')">&times;</button>'
+        : '';
+      actionsCell = editBtn + deleteBtn;
+    }
+    var rowOpen = (isNew || s._pending) ? '<tr>' : '<tr class="rowlink" onclick="selectSite(\'' + s.id + '\')">';
+    return rowOpen +
       '<td>' + escapeHtml_(s.client_name) + '</td>' +
       '<td>' + escapeHtml_(s.project_name) + '</td>' +
       '<td>' + escapeHtml_(s.ciudad || '—') + '</td>' +
       '<td class="mono">' + escapeHtml_(s.nit || '—') + '</td>' +
       '<td>' + escapeHtml_(s.address || '—') + '</td>' +
-      '<td style="display:flex; align-items:center; justify-content:flex-end; gap:8px;">' + editBtn + deleteBtn + '</td>' +
+      '<td style="display:flex; align-items:center; justify-content:flex-end; gap:8px;">' + actionsCell + '</td>' +
       '</tr>';
   }).join('');
 }
@@ -620,23 +638,42 @@ function handleEditSiteSubmit(e) {
   var statusEl = document.getElementById('editSiteStatus');
   var nitResult = normalizeNit_(document.getElementById('editSiteNit').value.trim());
   if (!nitResult.ok) { setStatus_(statusEl, nitResult.message, false, true); return; }
+  setStatus_(statusEl, '', false);
 
-  setStatus_(statusEl, 'Guardando…', false);
-  callApi('updateSite', 'POST', {
+  var payload = {
     id: id,
     client_name: document.getElementById('editSiteClient').value.trim(),
     project_name: document.getElementById('editSiteProject').value.trim(),
     address: document.getElementById('editSiteAddress').value.trim(),
     nit: nitResult.value,
     ciudad: document.getElementById('editSiteCiudad').value.trim()
-  })
-    .then(function () {
-      clearDraft_('mya_cache_sites');
-      closeEditSiteModal_();
-      return loadSitesAndShow_();
+  };
+
+  // Local-first: se aplica el cambio en la fila ya mismo; el POST real corre en segundo plano.
+  var rec = state.sites.filter(function (s) { return s.id === id; })[0];
+  if (rec) {
+    Object.assign(rec, payload);
+    rec._pending = true; rec._error = false; rec._errorMessage = '';
+    saveDraft_('mya_cache_sites', state.sites);
+    renderSites();
+  }
+  closeEditSiteModal_();
+
+  callApi('updateSite', 'POST', payload)
+    .then(function () { return callApi('listSites', 'GET', {}); })
+    .then(function (sites) {
+      state.sites = sites || [];
+      saveDraft_('mya_cache_sites', state.sites);
+      renderSites();
+      showToast_('Cliente/Proyecto actualizado', 'success');
     })
     .catch(function (err) {
-      if (err.status !== 402 && err.status !== 403) setStatus_(statusEl, formatNetworkAwareError_(err), false, true);
+      if (err.status === 402 || err.status === 403) return;
+      var r = state.sites.filter(function (s) { return s.id === id; })[0];
+      if (r) { r._pending = false; r._error = true; r._errorMessage = formatNetworkAwareError_(err); r._retryAction = 'updateSite'; r._retryPayload = payload; }
+      saveDraft_('mya_cache_sites', state.sites);
+      renderSites();
+      showToast_('No se pudo guardar el cambio. Quedó pendiente de sincronizar.', 'error');
     });
 }
 
@@ -674,24 +711,70 @@ function handleCreateSiteSubmit(e) {
   var ciudad = document.getElementById('newSiteCiudad').value.trim();
   if (!clientName || !projectName) return;
 
-  var btn = document.getElementById('createSiteBtn');
   var status = document.getElementById('createSiteStatus');
   var nitResult = normalizeNit_(document.getElementById('newSiteNit').value.trim());
   if (!nitResult.ok) { setStatus_(status, nitResult.message, false, true); return; }
+  setStatus_(status, '', false);
 
-  btn.disabled = true;
-  setStatus_(status, 'Creando…', false);
+  // Local-first: la fila aparece de inmediato con un id temporal; el POST real
+  // corre en segundo plano y un toast informa el resultado sin bloquear la UI.
+  var payload = { client_name: clientName, project_name: projectName, address: address, nit: nitResult.value, ciudad: ciudad };
+  var tempId = 'tmp_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+  state.sites.push(Object.assign({ id: tempId, created_at: new Date().toISOString(), _pending: true }, payload));
+  saveDraft_('mya_cache_sites', state.sites);
+  renderSites();
+  document.getElementById('createSiteForm').reset();
 
-  callApi('createSite', 'POST', { client_name: clientName, project_name: projectName, address: address, nit: nitResult.value, ciudad: ciudad })
-    .then(function () {
-      setStatus_(status, 'Cliente/Proyecto creado', true);
-      document.getElementById('createSiteForm').reset();
-      return loadSitesAndShow_();
+  callApi('createSite', 'POST', payload)
+    .then(function () { return callApi('listSites', 'GET', {}); })
+    .then(function (sites) {
+      state.sites = sites || [];
+      saveDraft_('mya_cache_sites', state.sites);
+      renderSites();
+      showToast_('Cliente/Proyecto guardado correctamente', 'success');
     })
     .catch(function (err) {
-      if (err.status !== 402 && err.status !== 403) setStatus_(status, formatNetworkAwareError_(err), false, true);
+      if (err.status === 402 || err.status === 403) {
+        state.sites = state.sites.filter(function (s) { return s.id !== tempId; });
+        saveDraft_('mya_cache_sites', state.sites);
+        renderSites();
+        return;
+      }
+      var rec = state.sites.filter(function (s) { return s.id === tempId; })[0];
+      if (rec) { rec._pending = false; rec._error = true; rec._errorMessage = formatNetworkAwareError_(err); rec._retryAction = 'createSite'; rec._retryPayload = payload; }
+      saveDraft_('mya_cache_sites', state.sites);
+      renderSites();
+      showToast_('No se pudo guardar "' + clientName + '". Quedó pendiente de sincronizar.', 'error');
+    });
+}
+
+/** Reintenta el guardado en segundo plano de un Sitio marcado como pendiente/error
+ *  (creación con id temporal, o edición sobre un id real) sin pedir datos de nuevo. */
+function retryPendingSite_(id) {
+  var rec = state.sites.filter(function (s) { return s.id === id; })[0];
+  if (!rec || !rec._retryAction) return;
+  rec._pending = true; rec._error = false; rec._errorMessage = '';
+  renderSites();
+
+  var action = rec._retryAction;
+  var payload = rec._retryPayload;
+
+  callApi(action, 'POST', payload)
+    .then(function () { return callApi('listSites', 'GET', {}); })
+    .then(function (sites) {
+      state.sites = sites || [];
+      saveDraft_('mya_cache_sites', state.sites);
+      renderSites();
+      showToast_('Cliente/Proyecto sincronizado', 'success');
     })
-    .then(function () { btn.disabled = false; });
+    .catch(function (err) {
+      if (err.status === 402 || err.status === 403) return;
+      var r = state.sites.filter(function (s) { return s.id === id; })[0];
+      if (r) { r._pending = false; r._error = true; r._errorMessage = formatNetworkAwareError_(err); }
+      saveDraft_('mya_cache_sites', state.sites);
+      renderSites();
+      showToast_('Sigue sin poder sincronizarse. ' + formatNetworkAwareError_(err), 'error');
+    });
 }
 
 function loadDashboardAndShow_() {
@@ -753,18 +836,27 @@ function handleCreateTransformerSubmit(e) {
   if (!state.currentSiteId) { alert('Selecciona primero un Cliente/Proyecto (Fase 1).'); return; }
 
   var serial = document.getElementById('newTrfSerial').value.trim();
+  var manufacturer = document.getElementById('newTrfManufacturer').value.trim();
+  var phaseType = document.getElementById('newTrfPhaseType').value;
+  var vectorGroup = document.getElementById('newTrfVectorGroup').value.trim() || null;
   var hv = parseDecimal_(document.getElementById('newTrfHv').value);
   var lv = parseDecimal_(document.getElementById('newTrfLv').value);
   var year = document.getElementById('newTrfYear').value.trim();
   var power = parseDecimal_(document.getElementById('newTrfPower').value);
+  var cooling = document.getElementById('newTrfCooling').value || null;
   var impedance = parseDecimal_(document.getElementById('newTrfImpedance').value);
+  var insulation = document.getElementById('newTrfInsulation').value.trim() || null;
   var btn = document.getElementById('createTransformerBtn');
   var status = document.getElementById('createTransformerStatus');
+  var siteId = state.currentSiteId;
   btn.disabled = true;
   setStatus_(status, 'Verificando número de serie…', false);
 
   var nominalForTaps = isNaN(hv) ? 0 : hv;
 
+  // La deduplicación por serial se queda síncrona/bloqueante (lectura rápida y
+  // crítica para la integridad de datos); solo el POST de creación pasa a
+  // segundo plano una vez descartado un duplicado.
   checkSerialExists_(serial)
     .then(function (existing) {
       if (existing && existing.site_id === state.currentSiteId) {
@@ -779,23 +871,23 @@ function handleCreateTransformerSubmit(e) {
           return Promise.reject({ __handled: true });
         });
       }
-      setStatus_(status, 'Creando…', false);
       return readFileAsBase64_(document.getElementById('newTrfPlatePhoto'));
     })
     .then(function (photo) {
-      return callApi('createTransformer', 'POST', {
-        site_id: state.currentSiteId,
-        serial_number: document.getElementById('newTrfSerial').value.trim(),
-        manufacturer: document.getElementById('newTrfManufacturer').value.trim(),
-        phase_type: document.getElementById('newTrfPhaseType').value,
-        vector_group: document.getElementById('newTrfVectorGroup').value.trim() || null,
+      setStatus_(status, '', false);
+      var payload = {
+        site_id: siteId,
+        serial_number: serial,
+        manufacturer: manufacturer,
+        phase_type: phaseType,
+        vector_group: vectorGroup,
         hv_nominal_voltage: isNaN(hv) ? null : hv,
         lv_nominal_voltage: isNaN(lv) ? null : lv,
         manufacture_year: year || null,
         rated_power_kva: isNaN(power) ? null : power,
-        cooling_type: document.getElementById('newTrfCooling').value || null,
+        cooling_type: cooling,
         impedance_percent: isNaN(impedance) ? null : impedance,
-        insulation_type: document.getElementById('newTrfInsulation').value.trim() || null,
+        insulation_type: insulation,
         is_special_design: false,
         tap_config: {
           nominalVoltage: nominalForTaps,
@@ -806,18 +898,78 @@ function handleCreateTransformerSubmit(e) {
         },
         file_base64: photo ? photo.base64 : null,
         file_mime_type: photo ? photo.mimeType : null
-      });
-    })
-    .then(function () {
-      setStatus_(status, 'Equipo creado', true);
+      };
+
+      // Local-first: el equipo aparece de inmediato en el panel con id temporal;
+      // el POST real (incluida la foto de placa) corre en segundo plano.
+      var tempId = 'tmp_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+      state.transformers.push(Object.assign({
+        id: tempId, updated_at: new Date().toISOString(), status: 'ACTIVO', _pending: true
+      }, payload));
+      saveDraft_('mya_cache_transformers_' + siteId, state.transformers);
+      renderDashboard();
       document.getElementById('createTransformerForm').reset();
-      return loadDashboardAndShow_();
+      btn.disabled = false;
+
+      callApi('createTransformer', 'POST', payload)
+        .then(function () { return callApi('listTransformers', 'GET', { site_id: siteId }); })
+        .then(function (transformers) {
+          if (state.currentSiteId !== siteId) return; // el técnico ya cambió de sitio
+          state.transformers = transformers || [];
+          saveDraft_('mya_cache_transformers_' + siteId, state.transformers);
+          renderDashboard();
+          showToast_('Equipo guardado correctamente', 'success');
+        })
+        .catch(function (err) {
+          if (err.status === 402 || err.status === 403) {
+            state.transformers = state.transformers.filter(function (t) { return t.id !== tempId; });
+            saveDraft_('mya_cache_transformers_' + siteId, state.transformers);
+            if (state.currentSiteId === siteId) renderDashboard();
+            return;
+          }
+          var rec = state.transformers.filter(function (t) { return t.id === tempId; })[0];
+          if (rec) { rec._pending = false; rec._error = true; rec._errorMessage = formatNetworkAwareError_(err); rec._retryAction = 'createTransformer'; rec._retryPayload = payload; }
+          saveDraft_('mya_cache_transformers_' + siteId, state.transformers);
+          if (state.currentSiteId === siteId) renderDashboard();
+          showToast_('No se pudo guardar el equipo "' + serial + '". Quedó pendiente de sincronizar.', 'error');
+        });
     })
     .catch(function (err) {
       if (err && err.__handled) return; // ya se mostró el mensaje de duplicado/reapertura
+      btn.disabled = false;
       if (!err || (err.status !== 402 && err.status !== 403)) setStatus_(status, formatNetworkAwareError_(err || {}), false, true);
+    });
+}
+
+/** Reintenta el guardado en segundo plano de un Equipo marcado como pendiente/error
+ *  (creación con id temporal, o edición sobre un id real) sin pedir datos de nuevo. */
+function retryPendingTransformer_(id) {
+  var siteId = state.currentSiteId;
+  var rec = state.transformers.filter(function (t) { return t.id === id; })[0];
+  if (!rec || !rec._retryAction) return;
+  rec._pending = true; rec._error = false; rec._errorMessage = '';
+  renderDashboard();
+
+  var action = rec._retryAction;
+  var payload = rec._retryPayload;
+
+  callApi(action, 'POST', payload)
+    .then(function () { return callApi('listTransformers', 'GET', { site_id: siteId }); })
+    .then(function (transformers) {
+      if (state.currentSiteId !== siteId) return;
+      state.transformers = transformers || [];
+      saveDraft_('mya_cache_transformers_' + siteId, state.transformers);
+      renderDashboard();
+      showToast_('Equipo sincronizado', 'success');
     })
-    .then(function () { btn.disabled = false; });
+    .catch(function (err) {
+      if (err.status === 402 || err.status === 403) return;
+      var r = state.transformers.filter(function (t) { return t.id === id; })[0];
+      if (r) { r._pending = false; r._error = true; r._errorMessage = formatNetworkAwareError_(err); }
+      saveDraft_('mya_cache_transformers_' + siteId, state.transformers);
+      if (state.currentSiteId === siteId) renderDashboard();
+      showToast_('Sigue sin poder sincronizarse. ' + formatNetworkAwareError_(err), 'error');
+    });
 }
 
 function openEditTransformerModal_() {
@@ -851,10 +1003,12 @@ function handleEditTransformerSubmit(e) {
   var power = parseDecimal_(document.getElementById('editTrfPower').value);
   var impedance = parseDecimal_(document.getElementById('editTrfImpedance').value);
   var year = document.getElementById('editTrfYear').value.trim();
+  var id = state.currentTransformerId;
+  var siteId = state.currentSiteId;
 
-  setStatus_(statusEl, 'Guardando…', false);
-  callApi('updateTransformer', 'POST', {
-    id: state.currentTransformerId,
+  setStatus_(statusEl, '', false);
+  var payload = {
+    id: id,
     serial_number: document.getElementById('editTrfSerial').value.trim(),
     manufacturer: document.getElementById('editTrfManufacturer').value.trim(),
     vector_group: document.getElementById('editTrfVectorGroup').value.trim() || null,
@@ -865,14 +1019,39 @@ function handleEditTransformerSubmit(e) {
     impedance_percent: isNaN(impedance) ? null : impedance,
     insulation_type: document.getElementById('editTrfInsulation').value.trim() || null,
     manufacture_year: year || null
-  })
-    .then(function () {
-      clearDraft_('mya_cache_transformers_' + state.currentSiteId);
-      closeEditTransformerModal_();
-      return openTransformer(state.currentTransformerId);
+  };
+
+  // Local-first: se refleja el cambio de inmediato tanto en el detalle como en la
+  // fila del panel; el POST real corre en segundo plano.
+  Object.assign(state.currentTransformer, payload);
+  renderDetail();
+  var rec = state.transformers.filter(function (t) { return t.id === id; })[0];
+  if (rec) {
+    Object.assign(rec, payload);
+    rec._pending = true; rec._error = false; rec._errorMessage = '';
+    saveDraft_('mya_cache_transformers_' + siteId, state.transformers);
+    renderDashboard();
+  }
+  saveDraft_('mya_cache_transformer_' + id, state.currentTransformer);
+  closeEditTransformerModal_();
+
+  callApi('updateTransformer', 'POST', payload)
+    .then(function () { return callApi('listTransformers', 'GET', { site_id: siteId }); })
+    .then(function (transformers) {
+      if (state.currentSiteId === siteId) {
+        state.transformers = transformers || [];
+        saveDraft_('mya_cache_transformers_' + siteId, state.transformers);
+        renderDashboard();
+      }
+      showToast_('Equipo actualizado', 'success');
     })
     .catch(function (err) {
-      if (err.status !== 402 && err.status !== 403) setStatus_(statusEl, formatNetworkAwareError_(err), false, true);
+      if (err.status === 402 || err.status === 403) return;
+      var r = state.transformers.filter(function (t) { return t.id === id; })[0];
+      if (r) { r._pending = false; r._error = true; r._errorMessage = formatNetworkAwareError_(err); r._retryAction = 'updateTransformer'; r._retryPayload = payload; }
+      saveDraft_('mya_cache_transformers_' + siteId, state.transformers);
+      if (state.currentSiteId === siteId) renderDashboard();
+      showToast_('No se pudo guardar el cambio. Quedó pendiente de sincronizar.', 'error');
     });
 }
 
@@ -1043,15 +1222,25 @@ function renderDashboard() {
   tbody.innerHTML = state.transformers.map(function (t) {
     var phaseLabel = (t.phase_type === 'MONOFASICO' ? 'Monofásico' : 'Trifásico') + (t.vector_group ? ' &middot; ' + escapeHtml_(t.vector_group) : '');
     var specialTag = t.is_special_design ? ' <span class="tag">Especial</span>' : '';
-    var deleteBtn = state.role === 'Administrador'
-      ? '<button type="button" class="matrix-remove" title="Eliminar" onclick="event.stopPropagation(); handleDeleteTransformer_(\'' + t.id + '\')">&times;</button>'
-      : '';
-    return '<tr class="rowlink" onclick="openTransformer(\'' + t.id + '\')">' +
+    var isNew = String(t.id).indexOf('tmp_') === 0;
+    var statusCell;
+    if (t._pending) {
+      statusCell = '<span class="pill neutral">Sincronizando&hellip;</span>';
+    } else if (t._error) {
+      statusCell = '<button type="button" class="pill danger pill-btn" title="' + escapeHtml_(t._errorMessage || 'Reintentar') + '" onclick="event.stopPropagation(); retryPendingTransformer_(\'' + t.id + '\')">Pendiente &middot; reintentar</button>';
+    } else {
+      var deleteBtn = state.role === 'Administrador'
+        ? '<button type="button" class="matrix-remove" title="Eliminar" onclick="event.stopPropagation(); handleDeleteTransformer_(\'' + t.id + '\')">&times;</button>'
+        : '';
+      statusCell = '<span class="pill neutral">' + escapeHtml_(t.status || 'ACTIVO') + '</span>' + deleteBtn;
+    }
+    var rowOpen = (isNew || t._pending) ? '<tr>' : '<tr class="rowlink" onclick="openTransformer(\'' + t.id + '\')">';
+    return rowOpen +
       '<td class="mono">' + escapeHtml_(t.serial_number) + '</td>' +
       '<td>' + escapeHtml_(t.manufacturer || '—') + '</td>' +
       '<td>' + phaseLabel + specialTag + '</td>' +
       '<td>' + fmtDate_(t.updated_at) + '</td>' +
-      '<td style="display:flex; align-items:center; justify-content:flex-end; gap:8px;"><span class="pill neutral">' + escapeHtml_(t.status || 'ACTIVO') + '</span>' + deleteBtn + '</td>' +
+      '<td style="display:flex; align-items:center; justify-content:flex-end; gap:8px;">' + statusCell + '</td>' +
       '</tr>';
   }).join('');
 }
@@ -1320,7 +1509,6 @@ function updateMatrixValue(tapPosition, key, value) {
   if (!t) return;
   var v = parseDecimal_(value); if (isNaN(v)) v = 0;
   t.phases[key] = { theoreticalRatio: v };
-  refreshMatrixJson();
 }
 
 function addTapRow() {
@@ -1330,14 +1518,12 @@ function addTapRow() {
   getPhaseKeys().forEach(function (k) { phases[k] = { theoreticalRatio: 0 }; });
   state.matrix.taps.push({ tapPosition: nextPos, phases: phases });
   renderMatrixRows();
-  refreshMatrixJson();
 }
 
 function removeTapRow(tapPosition) {
   if (state.matrix.taps.length <= 1) return;
   state.matrix.taps = state.matrix.taps.filter(function (t) { return t.tapPosition !== tapPosition; });
   renderMatrixRows();
-  refreshMatrixJson();
 }
 
 function saveMatrix() {
@@ -1428,21 +1614,7 @@ function buildMatrixRequestBody() {
 
 function refreshTtr() {
   renderTtrPreview();
-  var el = document.getElementById('jsonTtr');
-  if (el) el.innerHTML = syntaxHighlight(Object.assign({ action: 'submitTtrTest', token: state.token }, buildTtrRequestBody()));
   saveDraft_('mya_draft_ttr_' + state.currentTransformerId, state.ttr.readings);
-}
-
-function refreshMatrixJson() {
-  var el = document.getElementById('jsonMatrix');
-  if (el) el.innerHTML = syntaxHighlight(Object.assign({ action: 'updateTransformer', token: state.token }, buildMatrixRequestBody()));
-}
-
-function switchJsonTab(tab) {
-  document.querySelectorAll('#view-ttr-form .json-tab').forEach(function (b) { b.classList.toggle('active', b.dataset.tab === tab); });
-  document.getElementById('jsonTtr').hidden = tab !== 'ttr';
-  document.getElementById('jsonMatrix').hidden = tab !== 'matrix';
-  if (tab === 'matrix') refreshMatrixJson();
 }
 
 function submitTtr() {
@@ -1616,8 +1788,6 @@ function refreshWinding() {
   renderWrTapChips();
   renderWrPhaseEntries();
   renderWindingPreview();
-  var el = document.getElementById('jsonWinding');
-  if (el) el.innerHTML = syntaxHighlight(Object.assign({ action: 'submitWindingResistanceTest', token: state.token }, buildWindingRequestBody()));
   saveDraft_('mya_draft_wr_' + state.currentTransformerId, state.wr.readings);
 }
 
@@ -1884,8 +2054,6 @@ function refreshOil() {
   OIL_PCB_AROCLORES.forEach(function (key) { state.oil.pcb[key] = parseOilNum_('oilPcb_' + key); });
 
   renderOilPreview();
-  var el = document.getElementById('jsonOil');
-  if (el) el.innerHTML = syntaxHighlight(Object.assign({ action: 'submitOilAnalysisTest', token: state.token }, buildOilRequestBody()));
   saveDraft_('mya_draft_oil_' + state.currentTransformerId, state.oil);
 }
 

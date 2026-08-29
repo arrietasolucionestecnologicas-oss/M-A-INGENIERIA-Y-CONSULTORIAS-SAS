@@ -124,6 +124,45 @@ medido". Si agregas un campo nuevo a una sección existente, síguelo
 metiendo dentro del `if (seccion_realizado) {...} else {...}` de esa
 función, no lo dejes fuera.
 
+**Corregido — causa raíz compartida (afectaba TTR, Resistencia y Aceite por
+igual, más el editor de matriz de TAPs) + fuga de credenciales.** No era un
+bug de los renderers de dictamen (`renderTtrPreview`, `renderWindingPreview`,
+`renderOilPreview` siempre escribieron en el panel correcto); el problema
+vivía en las funciones `refreshTtr()`, `refreshWinding()`, `refreshOil()` y
+`refreshMatrixJson()` — cada una, además de actualizar su vista previa real,
+tenía copiada y pegada la misma línea de andamiaje de desarrollo:
+
+```js
+if (el) el.innerHTML = syntaxHighlight(Object.assign({ action: '...', token: state.token }, build...RequestBody()));
+```
+
+Esa línea escribía, sin ninguna bandera que lo condicionara, el payload
+completo del próximo POST — **incluido `state.token`, el token de sesión
+activo** — dentro de un panel siempre visible (`#jsonOil`/`#jsonTtr`/
+`#jsonWinding`/`#jsonMatrix`, con la etiqueta `POST submit...Test`) ubicado
+justo debajo de la vista previa real; en mobile (`.test-grid` colapsa a 1
+columna) esto se veía como "la vista previa se rompió y muestra JSON". No
+era un modo debug detrás de una bandera: era código de desarrollo que nunca
+se quitó antes de que la app llegara a producción, así que se colaba en
+cualquier despliegue.
+
+Se eliminaron por completo (no se ocultaron ni se gatearon detrás de un
+flag): los cuatro paneles `.json-tabs`/`.json-preview` y sus hints ("Se
+envían con POST ..."), las líneas que los alimentaban dentro de
+`refreshTtr`/`refreshWinding`/`refreshOil`, y el código que quedó muerto tras
+eso (`switchJsonTab`, `refreshMatrixJson`, `syntaxHighlight`, y la regla CSS
+`.json-*`). Se decidió borrar en vez de gatear con una bandera porque no
+hay ningún caso legítimo en el que este panel deba verse en pantalla —
+para inspeccionar un payload en desarrollo está la consola del navegador
+(`network`/`console`), que no queda expuesta a quien mire la pantalla del
+técnico ni a una captura/grabación.
+
+Este bug estuvo **en producción (GitHub Pages)** con el token visible en
+pantalla mientras la corrección solo existía sin desplegar en este repo —
+si vuelves a ver este panel en el sitio en vivo después de este commit,
+lo primero que hay que revisar es si el deploy a Pages realmente se hizo
+(push a `main`), no el código en sí.
+
 ## RBAC
 
 Roles vienen de Control de Acceso: `Administrador`, `Supervisor`, `Tecnico`.
@@ -151,6 +190,47 @@ solo `display:none` (ver `renderAdminNavAndPanel`/`removeAdminNavAndPanel`).
   `localStorage` en cada cambio y solo lo limpian tras un envío exitoso.
   `formatNetworkAwareError_()` distingue "sin conexión" de un error de
   validación real.
+- **Nunca renderices un payload crudo ni un token en una vista visible al
+  usuario.** Esta regla existe porque ya pasó: `refreshTtr`/`refreshWinding`/
+  `refreshOil`/`refreshMatrixJson` volcaban `Object.assign({ token:
+  state.token }, build...RequestBody())` en un `<pre>` siempre visible (ver
+  "Corregido" en Aceite dieléctrico arriba) — una fuga de credenciales de
+  sesión en producción, no solo un problema estético. Si necesitas ver el
+  payload exacto durante desarrollo, usa la pestaña Network/Console del
+  navegador — nunca un elemento del DOM de la app. Si algún día hace falta un
+  modo debug real, tiene que vivir detrás de una bandera explícita en `false`
+  por defecto y nunca debe poder activarse en la build que corre en GitHub
+  Pages; hoy no existe ninguna, a propósito.
+- **Local-first + toast** (crear/editar Sitio y Equipo): el envío nunca espera
+  al backend para actualizar la UI. `handleCreateSiteSubmit` /
+  `handleEditSiteSubmit` / `handleCreateTransformerSubmit` /
+  `handleEditTransformerSubmit` insertan o mezclan el registro en
+  `state.sites`/`state.transformers` **de inmediato**, lo cachean
+  (`saveDraft_`) y vuelven a pintar la tabla (`renderSites`/`renderDashboard`)
+  antes de tocar la red — un alta usa un id temporal `tmp_<timestamp>_<rand>`
+  hasta que el backend responde. El POST real corre después, en segundo
+  plano:
+  - Éxito → se refresca la lista completa (`listSites`/`listTransformers`)
+    para reemplazar el id temporal por el real y sincronizar cualquier valor
+    normalizado por el servidor (p. ej. el DV del NIT), y se muestra
+    `showToast_(msg, 'success')`.
+  - Fallo → el registro se marca `_pending:false, _error:true,
+    _errorMessage`, guarda `_retryAction`/`_retryPayload` para reintentar sin
+    pedir los datos de nuevo, y se muestra `showToast_(msg, 'error')`. La fila
+    pinta un pill "Pendiente · reintentar" (`retryPendingSite_`/
+    `retryPendingTransformer_`) en vez de los botones normales, y no es
+    navegable mientras está pendiente o con id temporal — nada de lo que
+    escribió el técnico se pierde.
+  - `showToast_(message, type, duration?)` es el componente de aviso genérico
+    (`.toast-stack`/`.toast` en `styles.css`) — no bloquea, no exige cerrarse,
+    y **debe reusarse** para cualquier formulario nuevo que necesite este
+    patrón en vez de crear otro mecanismo de aviso.
+  - **No aplica** a los envíos de prueba (TTR/Resistencia/Aceite): ahí el
+    veredicto calculado por el backend es el dato que el técnico necesita ver
+    de inmediato, así que siguen siendo síncronos. La deduplicación de número
+    de serie (`checkSerialExists_`) tampoco entra en el patrón — se queda
+    bloqueante a propósito (lectura rápida, crítica para no duplicar un
+    activo) y solo el POST de creación pasa a segundo plano después.
 - **Tema único claro** (sin dark mode) — paleta oficial del manual de marca
   M&A, ver el comentario al inicio de `styles.css` para los códigos hex y por
   qué el texto sobre rellenos sólidos es oscuro (`#152618`) y no blanco en
