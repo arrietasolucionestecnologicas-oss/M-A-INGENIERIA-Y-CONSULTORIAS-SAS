@@ -104,8 +104,11 @@ h1, h2, h3 { font-family: "Zilla Slab", Georgia, serif; text-wrap: balance; marg
 /* El <img> apunta a assets/logo-ma.png (logo oficial horizontal a color) —
    pendiente de que se suba el archivo; hasta entonces el navegador muestra
    el texto de `alt`. */
-.brand-logo { height: 34px; width: auto; display: block; }
-.brand-logo-lg { height: 46px; }
+/* logo-ma.png es el emblema oficial completo (engranaje+turbina+sol, apilado sobre
+   el wordmark "M&A / Ingeniería y Consultoría SAS") — un cuadrado, no un logo
+   horizontal, así que solo se usa a tamaño grande (login) donde el texto se lee. */
+.brand-logo { height: 96px; width: auto; display: block; }
+.brand-logo-lg { height: 150px; }
 /* Se muestra solo si assets/logo-ma.png falla en cargar (onerror en el <img>) —
    evita el icono de imagen rota mientras no se haya subido el archivo real. */
 .brand-fallback { flex-direction: column; }
@@ -113,6 +116,10 @@ h1, h2, h3 { font-family: "Zilla Slab", Georgia, serif; text-wrap: balance; marg
 .brand-fallback .brand-sub { font-size: 9.5px; letter-spacing: 0.06em; color: var(--text-faint); font-weight: 600; text-transform: uppercase; }
 .sidebar .brand-fallback .brand-word { color: #ffffff; }
 .sidebar .brand-fallback .brand-sub { color: var(--nav-label); }
+
+/* Icono recortado (solo el emblema, sin texto) para la barra lateral compacta —
+   el wordmark de al lado se compone con HTML/CSS, no con la imagen apilada. */
+.brand-icon { height: 34px; width: 34px; display: block; flex: none; object-fit: contain; }
 
 nav.mainnav { display: flex; flex-direction: column; gap: 2px; }
 
