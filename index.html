@@ -157,7 +157,7 @@
   </aside>
 
   <main>
-    <!-- ============ FASE 1: CLIENTES / PROYECTOS ============ -->
+    <!-- ============ CLIENTES / PROYECTOS ============ -->
     <section id="view-sites">
       <div class="topbar">
         <div>
@@ -259,12 +259,17 @@
         <div class="field"><label>Impedancia (%)</label><input class="mono" id="editTrfImpedance" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*"></div>
         <div class="field"><label>Tipo de aislamiento</label><input id="editTrfInsulation"></div>
         <div class="field"><label>A&ntilde;o de fabricaci&oacute;n</label><input class="mono" id="editTrfYear" type="text" inputmode="numeric" pattern="[0-9]*"></div>
+        <div class="field">
+          <label>N&uacute;mero de posiciones del cambiador de tomas</label>
+          <input class="mono" id="editTrfTapPositions" type="text" inputmode="numeric" pattern="[0-9]*" placeholder="5 (por defecto)">
+          <div class="field-note">Vacío = se mantiene el valor actual del equipo (5 por defecto). Cambiarlo aquí regenera las posiciones de TAP; si el equipo tiene una matriz personalizada, revísala después.</div>
+        </div>
         <button class="btn primary" type="submit" style="width:100%;">Guardar cambios</button>
         <span class="status-line" id="editTransformerStatus" hidden></span>
       </form>
     </div>
 
-    <!-- ============ FASE 2: EQUIPOS (scoped al sitio activo) ============ -->
+    <!-- ============ EQUIPOS (scoped al sitio activo) ============ -->
     <section id="view-dashboard" hidden>
       <div class="topbar">
         <div>
@@ -354,6 +359,10 @@
               <div class="field" style="min-width:110px;">
                 <label>A&ntilde;o de fabricaci&oacute;n</label>
                 <input class="mono" id="newTrfYear" type="text" inputmode="numeric" pattern="[0-9]*" placeholder="2019">
+              </div>
+              <div class="field" style="min-width:170px;">
+                <label>N&uacute;mero de posiciones del cambiador de tomas</label>
+                <input class="mono" id="newTrfTapPositions" type="text" inputmode="numeric" pattern="[0-9]*" placeholder="5 (por defecto)">
               </div>
               <div class="field" style="min-width:170px;">
                 <label>Foto de la placa</label>
@@ -540,8 +549,8 @@
         <span class="back-link" onclick="showView('detail')">&larr; Volver al transformador</span>
 
         <div class="context-strip">
-          <div><span class="k">Un envío cubre</span><span class="v">Varios TAPs (measurements: [])</span></div>
-          <div><span class="k">Temperatura de devanado</span><span class="v">Obligatoria por TAP</span></div>
+          <div><span class="k">Un envío cubre</span><span class="v">Primario (varios TAPs) + secundario (una medición)</span></div>
+          <div><span class="k">Temperatura de devanado</span><span class="v">Obligatoria por TAP y para el secundario</span></div>
           <div><span class="k">TAPs registrados</span><span class="v num" id="wrTapCountLabel">1</span></div>
         </div>
 
@@ -589,6 +598,31 @@
               </div>
               <div id="wrPreviewRows"></div>
               <div class="verdict-banner" id="wrVerdictBanner">Veredicto: &mdash;</div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <h2>Devanado secundario</h2>
+              <span class="hint">Sin cambiador de tomas &mdash; una sola medición</span>
+            </div>
+            <div class="form-field-block">
+              <div class="field" style="max-width:220px;">
+                <label>Temperatura de devanado (&deg;C) <span style="color:var(--danger);">*</span></label>
+                <input class="mono" id="wrSecondaryTemp" type="text" inputmode="decimal" pattern="[0-9]*[.,]?-?[0-9]*" oninput="updateWrSecondaryTemp(this.value)">
+              </div>
+            </div>
+            <div class="phase-entry-grid" id="wrSecondaryPhaseEntries"></div>
+          </div>
+
+          <div>
+            <div class="panel">
+              <div class="panel-head">
+                <h2>Vista previa &mdash; Secundario</h2>
+                <span class="hint">Umbral de desbalance 5&nbsp;%</span>
+              </div>
+              <div id="wrSecondaryPreviewRows"></div>
+              <div class="verdict-banner" id="wrSecondaryVerdictBanner">Veredicto: &mdash;</div>
             </div>
           </div>
         </div>
@@ -743,7 +777,7 @@
       <div class="topbar">
         <div>
           <h1>Nueva prueba &middot; Resistencia de aislamiento</h1>
-          <p id="insulationFormSubtitle">Megger &mdash; DAR e IP por fase</p>
+          <p id="insulationFormSubtitle">Megger &mdash; DAR e IP por combinación de devanado</p>
         </div>
         <div class="tenant-chip" id="insulationTenantChip">&mdash;</div>
       </div>
@@ -760,7 +794,7 @@
         <div class="test-grid">
           <div class="panel">
             <div class="panel-head">
-              <h2>Lecturas por fase</h2>
+              <h2>Lecturas por combinación (AT-BT, AT-Tierra, BT-Tierra)</h2>
               <span class="hint">Megóhmetro</span>
             </div>
             <div class="form-field-block">
@@ -773,7 +807,7 @@
                 <input class="mono" id="insulationTemp" type="text" inputmode="decimal" pattern="[0-9]*[.,]?-?[0-9]*" oninput="updateInsulationTemp(this.value)">
               </div>
             </div>
-            <div class="phase-entry-grid" id="insulationPhaseEntries"></div>
+            <div class="phase-entry-grid" id="insulationCombinationEntries"></div>
             <div class="form-field-block">
               <div class="field">
                 <label>Evidencia (PDF o foto, opcional)</label>

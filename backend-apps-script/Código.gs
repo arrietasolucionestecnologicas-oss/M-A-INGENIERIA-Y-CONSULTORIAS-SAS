@@ -70,7 +70,8 @@ var HEADERS = {
     'phase_type', 'vector_group', 'rated_power_kva', 'hv_nominal_voltage', 'lv_nominal_voltage',
     'tap_config_json', 'is_special_design', 'custom_tap_ratio_matrix_json',
     'status', 'plate_photo_file_id', 'created_at', 'updated_at',
-    'cooling_type', 'impedance_percent', 'insulation_type'
+    'cooling_type', 'impedance_percent', 'insulation_type',
+    'numero_posiciones_tap'
   ],
   PRUEBAS: [
     'id', 'transformer_id', 'test_type', 'raw_readings_json',
@@ -460,6 +461,7 @@ function transformerRowToJson_(row) {
     cooling_type: row.cooling_type || '',
     impedance_percent: row.impedance_percent,
     insulation_type: row.insulation_type || '',
+    numero_posiciones_tap: row.numero_posiciones_tap || null,
     created_at: row.created_at,
     updated_at: row.updated_at
   };
@@ -508,7 +510,8 @@ function createTransformer_(params) {
       updated_at: new Date().toISOString(),
       cooling_type: params.cooling_type || '',
       impedance_percent: params.impedance_percent || '',
-      insulation_type: params.insulation_type || ''
+      insulation_type: params.insulation_type || '',
+      numero_posiciones_tap: params.numero_posiciones_tap || ''
     });
 
     return jsonResponse_({ status: 201, message: 'Transformador creado', data: { id: id } });
@@ -526,7 +529,7 @@ function updateTransformer_(params) {
     var updates = {};
     ['serial_number', 'manufacturer', 'manufacture_year', 'phase_type', 'vector_group', 'rated_power_kva',
       'hv_nominal_voltage', 'lv_nominal_voltage', 'status', 'site_id',
-      'cooling_type', 'impedance_percent', 'insulation_type'].forEach(function (field) {
+      'cooling_type', 'impedance_percent', 'insulation_type', 'numero_posiciones_tap'].forEach(function (field) {
       if (params[field] !== undefined) updates[field] = params[field];
     });
     if (params.tap_config !== undefined) updates.tap_config_json = JSON.stringify(params.tap_config);
@@ -830,6 +833,42 @@ function calculateTtr_(transformer, readings) {
 // Resistencia de devanados — multi-TAP (réplica de WindingResistanceCalculator.kt)
 // ---------------------------------------------------------------------------
 
+/** Desbalance entre fases a partir de un objeto {clave: {resistanceOhm}} —
+ *  reusado tanto para cada TAP del primario como para el secundario (una
+ *  sola medición, sin TAP), para no duplicar la fórmula. */
+function computePhaseUnbalance_(phases) {
+  var keys = Object.keys(phases || {});
+  if (keys.length === 0) throw new Error('No hay lecturas de fase');
+
+  var values = keys.map(function (k) { return phases[k].resistanceOhm; });
+  var avg = values.reduce(function (a, b) { return a + b; }, 0) / values.length;
+
+  var phaseResults = {};
+  var maxUnbalance = 0;
+
+  if (keys.length === 1) {
+    phaseResults[keys[0]] = { resistanceOhm: values[0], deviationFromAvgPercent: 0, status: 'APROBADO' };
+  } else {
+    keys.forEach(function (k) {
+      var v = phases[k].resistanceOhm;
+      var deviation = ((v - avg) / avg) * 100;
+      var status = Math.abs(deviation) <= UNBALANCE_THRESHOLD_PERCENT ? 'APROBADO' : 'RECHAZADO';
+      phaseResults[k] = { resistanceOhm: v, deviationFromAvgPercent: deviation, status: status };
+      if (Math.abs(deviation) > maxUnbalance) maxUnbalance = Math.abs(deviation);
+    });
+  }
+
+  var verdict = maxUnbalance <= UNBALANCE_THRESHOLD_PERCENT ? 'APROBADO' : 'RECHAZADO';
+  return { averageResistanceOhm: avg, phases: phaseResults, maxUnbalancePercent: maxUnbalance, verdict: verdict };
+}
+
+/**
+ * Primario: multi-TAP, fase-fase (H1-H2/H2-H3/H3-H1), obligatorio.
+ * Secundario: fase-fase (X1-X2/X2-X3/X3-X1), una sola medición sin TAP —
+ * opcional en el payload por compatibilidad, pero el frontend siempre lo
+ * envía. Si viene, su veredicto entra al overallVerdict igual que cualquier
+ * TAP del primario (todos deben estar APROBADO para que el conjunto lo esté).
+ */
 function calculateWindingResistance_(readings) {
   var measurements = readings.measurements || [];
   if (measurements.length === 0) throw new Error('Debe incluir al menos un TAP con lecturas de resistencia de devanados');
@@ -838,44 +877,43 @@ function calculateWindingResistance_(readings) {
     if (tap.windingTemperatureC === undefined || tap.windingTemperatureC === null) {
       throw new Error('El TAP ' + tap.tapPosition + ' no tiene windingTemperatureC (obligatorio)');
     }
-    var phaseKeys = Object.keys(tap.phases || {});
-    if (phaseKeys.length === 0) throw new Error('El TAP ' + tap.tapPosition + ' no tiene lecturas de fase');
+    if (Object.keys(tap.phases || {}).length === 0) throw new Error('El TAP ' + tap.tapPosition + ' no tiene lecturas de fase');
 
-    var values = phaseKeys.map(function (k) { return tap.phases[k].resistanceOhm; });
-    var avg = values.reduce(function (a, b) { return a + b; }, 0) / values.length;
-
-    var phaseResults = {};
-    var maxUnbalance = 0;
-
-    if (phaseKeys.length === 1) {
-      phaseResults[phaseKeys[0]] = { resistanceOhm: values[0], deviationFromAvgPercent: 0, status: 'APROBADO' };
-    } else {
-      phaseKeys.forEach(function (k) {
-        var v = tap.phases[k].resistanceOhm;
-        var deviation = ((v - avg) / avg) * 100;
-        var status = Math.abs(deviation) <= UNBALANCE_THRESHOLD_PERCENT ? 'APROBADO' : 'RECHAZADO';
-        phaseResults[k] = { resistanceOhm: v, deviationFromAvgPercent: deviation, status: status };
-        if (Math.abs(deviation) > maxUnbalance) maxUnbalance = Math.abs(deviation);
-      });
-    }
-
-    var tapVerdict = maxUnbalance <= UNBALANCE_THRESHOLD_PERCENT ? 'APROBADO' : 'RECHAZADO';
-
+    var result = computePhaseUnbalance_(tap.phases);
     return {
       tapPosition: tap.tapPosition,
       windingTemperatureC: tap.windingTemperatureC,
-      averageResistanceOhm: avg,
-      phases: phaseResults,
-      maxUnbalancePercent: maxUnbalance,
-      tapVerdict: tapVerdict
+      averageResistanceOhm: result.averageResistanceOhm,
+      phases: result.phases,
+      maxUnbalancePercent: result.maxUnbalancePercent,
+      tapVerdict: result.verdict
     };
   });
 
-  var overallVerdict = tapResults.every(function (t) { return t.tapVerdict === 'APROBADO'; }) ? 'APROBADO' : 'RECHAZADO';
+  var primaryVerdict = tapResults.every(function (t) { return t.tapVerdict === 'APROBADO'; }) ? 'APROBADO' : 'RECHAZADO';
+
+  var secondaryResult = null;
+  if (readings.secondary && Object.keys(readings.secondary.phases || {}).length) {
+    if (readings.secondary.windingTemperatureC === undefined || readings.secondary.windingTemperatureC === null) {
+      throw new Error('El devanado secundario no tiene windingTemperatureC (obligatorio)');
+    }
+    var secResult = computePhaseUnbalance_(readings.secondary.phases);
+    secondaryResult = {
+      windingTemperatureC: readings.secondary.windingTemperatureC,
+      averageResistanceOhm: secResult.averageResistanceOhm,
+      phases: secResult.phases,
+      maxUnbalancePercent: secResult.maxUnbalancePercent,
+      verdict: secResult.verdict
+    };
+  }
+
+  var overallVerdict = (primaryVerdict === 'APROBADO' && (!secondaryResult || secondaryResult.verdict === 'APROBADO'))
+    ? 'APROBADO' : 'RECHAZADO';
 
   return {
     unbalanceThresholdPercent: UNBALANCE_THRESHOLD_PERCENT,
     taps: tapResults,
+    secondary: secondaryResult,
     overallVerdict: overallVerdict
   };
 }

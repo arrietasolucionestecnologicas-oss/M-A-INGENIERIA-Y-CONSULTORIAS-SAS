@@ -64,7 +64,7 @@ var state = {
   pendingContextTarget: null,
   ttr: { currentTap: null, readings: {} },
   matrix: { taps: [] },
-  wr: { currentTap: null, readings: {} },
+  wr: { currentTap: null, readings: {}, secondary: null },
   oil: { rigidez: null, humedad: null, acidez: null, tension: null },
   insulation: { windingTemperatureC: 20, phases: {} }
 };
@@ -869,6 +869,9 @@ function handleCreateTransformerSubmit(e) {
   var cooling = document.getElementById('newTrfCooling').value || null;
   var impedance = parseDecimal_(document.getElementById('newTrfImpedance').value);
   var insulation = document.getElementById('newTrfInsulation').value.trim() || null;
+  var tapPositionsRaw = document.getElementById('newTrfTapPositions').value.trim();
+  var tapPositionsCount = tapPositionsRaw ? parseInt(tapPositionsRaw, 10) : null;
+  if (tapPositionsCount !== null && (isNaN(tapPositionsCount) || tapPositionsCount < 1)) tapPositionsCount = null;
   var btn = document.getElementById('createTransformerBtn');
   var status = document.getElementById('createTransformerStatus');
   var siteId = state.currentSiteId;
@@ -876,6 +879,7 @@ function handleCreateTransformerSubmit(e) {
   setStatus_(status, 'Verificando número de serie…', false);
 
   var nominalForTaps = isNaN(hv) ? 0 : hv;
+  var effectiveTapCount = tapPositionsCount || 5;
 
   // La deduplicación por serial se queda síncrona/bloqueante (lectura rápida y
   // crítica para la integridad de datos); solo el POST de creación pasa a
@@ -911,13 +915,14 @@ function handleCreateTransformerSubmit(e) {
         cooling_type: cooling,
         impedance_percent: isNaN(impedance) ? null : impedance,
         insulation_type: insulation,
+        numero_posiciones_tap: tapPositionsCount,
         is_special_design: false,
         tap_config: {
           nominalVoltage: nominalForTaps,
           stepPercentage: 2.5,
-          numPositions: 5,
-          neutralPosition: 3,
-          positions: buildDefaultTapPositions_(nominalForTaps)
+          numPositions: effectiveTapCount,
+          neutralPosition: Math.ceil(effectiveTapCount / 2),
+          positions: buildDefaultTapPositions_(nominalForTaps, effectiveTapCount)
         },
         file_base64: photo ? photo.base64 : null,
         file_mime_type: photo ? photo.mimeType : null
@@ -1008,6 +1013,7 @@ function openEditTransformerModal_() {
   document.getElementById('editTrfImpedance').value = t.impedance_percent || '';
   document.getElementById('editTrfInsulation').value = t.insulation_type || '';
   document.getElementById('editTrfYear').value = t.manufacture_year || '';
+  document.getElementById('editTrfTapPositions').value = t.numero_posiciones_tap || '';
   setStatus_(document.getElementById('editTransformerStatus'), '', false);
   document.getElementById('editTransformerModal').classList.add('open');
   document.getElementById('editTransformerModalBackdrop').classList.add('open');
@@ -1044,6 +1050,25 @@ function handleEditTransformerSubmit(e) {
     manufacture_year: year || null
   };
 
+  // El número de posiciones de TAP solo se toca si el técnico lo diligenció;
+  // vacío = se mantiene el tap_config actual del equipo tal cual (no rompe
+  // equipos ya creados ni sus TAPs ya registrados en pruebas anteriores).
+  var tapPositionsRaw = document.getElementById('editTrfTapPositions').value.trim();
+  if (tapPositionsRaw) {
+    var tapPositionsCount = parseInt(tapPositionsRaw, 10);
+    if (!isNaN(tapPositionsCount) && tapPositionsCount > 0) {
+      var currentCfg = (state.currentTransformer && state.currentTransformer.tap_config) || {};
+      payload.numero_posiciones_tap = tapPositionsCount;
+      payload.tap_config = {
+        nominalVoltage: currentCfg.nominalVoltage || 0,
+        stepPercentage: currentCfg.stepPercentage || 2.5,
+        numPositions: tapPositionsCount,
+        neutralPosition: Math.ceil(tapPositionsCount / 2),
+        positions: buildDefaultTapPositions_(currentCfg.nominalVoltage || 0, tapPositionsCount)
+      };
+    }
+  }
+
   // Local-first: se refleja el cambio de inmediato tanto en el detalle como en la
   // fila del panel; el POST real corre en segundo plano.
   Object.assign(state.currentTransformer, payload);
@@ -1078,8 +1103,12 @@ function handleEditTransformerSubmit(e) {
     });
 }
 
-function buildDefaultTapPositions_(nominalVoltage) {
-  var step = 2.5, neutral = 3, n = 5, positions = [];
+/** Genera las posiciones del cambiador de tomas. `numPositions` viene del
+ *  campo de placa `numero_posiciones_tap` cuando el técnico lo diligencia —
+ *  si no, se mantiene el default histórico de 5. La posición neutra se
+ *  calcula como la del medio (no asume que siempre son 5). */
+function buildDefaultTapPositions_(nominalVoltage, numPositions) {
+  var step = 2.5, n = numPositions > 0 ? numPositions : 5, neutral = Math.ceil(n / 2), positions = [];
   for (var p = 1; p <= n; p++) {
     positions.push({ position: p, voltage: Math.round(nominalVoltage * (1 - (p - neutral) * step / 100)) });
   }
@@ -1758,18 +1787,35 @@ function defaultWrPhases_() {
   return p;
 }
 
+/** El secundario usa sus propias claves (X1-X2/X2-X3/X3-X1) — nunca las del
+ *  primario — y respeta monofásico/trifásico igual que el primario, pero sin
+ *  concepto de TAP: normalmente no tiene cambiador de tomas. */
+function getSecondaryPhaseKeys_() {
+  var t = state.currentTransformer;
+  if (t && t.phase_type === 'MONOFASICO') return ['X1-X2'];
+  return ['X1-X2', 'X2-X3', 'X3-X1'];
+}
+
+function defaultWrSecondary_() {
+  var phases = {};
+  getSecondaryPhaseKeys_().forEach(function (k) { phases[k] = { resistanceOhm: 0 }; });
+  return { windingTemperatureC: 25, phases: phases };
+}
+
 function resetWindingStateFromTransformer() {
   var positions = tapPositions();
   var firstTap = positions.length ? positions[0] : 1;
   var draft = loadDraft_('mya_draft_wr_' + state.currentTransformerId);
-  if (draft) {
-    state.wr.readings = draft;
-    state.wr.currentTap = Object.keys(draft).map(Number).sort(function (a, b) { return a - b; })[0];
+  if (draft && draft.readings && Object.keys(draft.readings).length) {
+    state.wr.readings = draft.readings;
+    state.wr.currentTap = Object.keys(draft.readings).map(Number).sort(function (a, b) { return a - b; })[0];
+    state.wr.secondary = draft.secondary || defaultWrSecondary_();
     return;
   }
   state.wr.currentTap = firstTap;
   state.wr.readings = {};
   state.wr.readings[firstTap] = { windingTemperatureC: 25, phases: defaultWrPhases_() };
+  state.wr.secondary = defaultWrSecondary_();
 }
 
 function renderWrTapChips() {
@@ -1805,7 +1851,7 @@ function renderWrPhaseEntries() {
     var r = tap.phases[k];
     return '<div class="phase-entry">' +
       '<div class="ph-name">' + k.replace('-', ' &ndash; ') + '</div>' +
-      '<div class="field"><label>Resistencia (&Omega;)</label><input class="mono" type="number" step="0.0001" value="' + r.resistanceOhm + '" oninput="updateWrPhase(\'' + k + '\',this.value)"></div>' +
+      '<div class="field"><label>Resistencia (&Omega;)</label><input class="mono" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*" value="' + r.resistanceOhm + '" oninput="updateWrPhase(\'' + k + '\',this.value)"></div>' +
       '</div>';
   }).join('');
 }
@@ -1819,6 +1865,31 @@ function updateWrPhase(key, value) {
 function updateWrTemp(value) {
   var v = parseDecimal_(value); if (isNaN(v)) v = 0;
   state.wr.readings[state.wr.currentTap].windingTemperatureC = v;
+  refreshWinding();
+}
+
+function renderWrSecondaryPhaseEntries() {
+  var wrap = document.getElementById('wrSecondaryPhaseEntries');
+  if (!wrap) return;
+  document.getElementById('wrSecondaryTemp').value = state.wr.secondary.windingTemperatureC;
+  wrap.innerHTML = Object.keys(state.wr.secondary.phases).map(function (k) {
+    var r = state.wr.secondary.phases[k];
+    return '<div class="phase-entry">' +
+      '<div class="ph-name">' + k.replace('-', ' &ndash; ') + '</div>' +
+      '<div class="field"><label>Resistencia (&Omega;)</label><input class="mono" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*" value="' + r.resistanceOhm + '" oninput="updateWrSecondaryPhase_(\'' + k + '\',this.value)"></div>' +
+      '</div>';
+  }).join('');
+}
+
+function updateWrSecondaryPhase_(key, value) {
+  var v = parseDecimal_(value); if (isNaN(v)) v = 0;
+  state.wr.secondary.phases[key] = { resistanceOhm: v };
+  refreshWinding();
+}
+
+function updateWrSecondaryTemp(value) {
+  var v = parseDecimal_(value); if (isNaN(v)) v = 0;
+  state.wr.secondary.windingTemperatureC = v;
   refreshWinding();
 }
 
@@ -1839,18 +1910,27 @@ function removeWrTap() {
   selectWrTap(remaining[0]);
 }
 
-function computeWindingPreview(p) {
-  var tap = state.wr.readings[p];
-  var keys = Object.keys(tap.phases);
-  var values = keys.map(function (k) { return tap.phases[k].resistanceOhm; });
+/** Desbalance entre fases — misma fórmula para el primario (por TAP) y el
+ *  secundario (una sola medición): reusada en vez de duplicada. */
+function computePhaseUnbalancePreview_(phases) {
+  var keys = Object.keys(phases);
+  var values = keys.map(function (k) { return phases[k].resistanceOhm; });
   var avg = values.reduce(function (a, b) { return a + b; }, 0) / values.length;
   var rows = keys.map(function (k) {
-    var dev = avg !== 0 ? ((tap.phases[k].resistanceOhm - avg) / avg) * 100 : 0;
-    return { key: k, value: tap.phases[k].resistanceOhm, deviation: dev, status: Math.abs(dev) <= UNBALANCE_THRESHOLD ? 'APROBADO' : 'RECHAZADO' };
+    var dev = avg !== 0 ? ((phases[k].resistanceOhm - avg) / avg) * 100 : 0;
+    return { key: k, value: phases[k].resistanceOhm, deviation: dev, status: Math.abs(dev) <= UNBALANCE_THRESHOLD ? 'APROBADO' : 'RECHAZADO' };
   });
   var maxUnbalance = rows.length > 1 ? Math.max.apply(null, rows.map(function (r) { return Math.abs(r.deviation); })) : 0;
   var verdict = maxUnbalance <= UNBALANCE_THRESHOLD ? 'APROBADO' : 'RECHAZADO';
   return { rows: rows, average: avg, maxUnbalance: maxUnbalance, verdict: verdict };
+}
+
+function computeWindingPreview(p) {
+  return computePhaseUnbalancePreview_(state.wr.readings[p].phases);
+}
+
+function computeWindingSecondaryPreview() {
+  return computePhaseUnbalancePreview_(state.wr.secondary.phases);
 }
 
 function renderWindingPreview() {
@@ -1867,6 +1947,22 @@ function renderWindingPreview() {
     '<span class="tol">desbalance máx. ' + result.maxUnbalance.toFixed(2) + ' % &middot; umbral 5&nbsp;%</span>';
 }
 
+function renderWindingSecondaryPreview() {
+  var result = computeWindingSecondaryPreview();
+  var rowsEl = document.getElementById('wrSecondaryPreviewRows');
+  if (!rowsEl) return;
+  rowsEl.innerHTML = result.rows.map(function (r) {
+    var cls = r.status === 'APROBADO' ? 'ok' : 'bad';
+    return '<div class="preview-row"><span class="phase-name">' + r.key + '</span>' +
+      '<span class="num">' + r.value.toFixed(4) + ' &Omega; &middot; prom. ' + result.average.toFixed(4) + ' &Omega;</span>' +
+      '<span class="err ' + cls + '">' + (r.deviation >= 0 ? '+' : '') + r.deviation.toFixed(2) + ' %</span></div>';
+  }).join('');
+  var banner = document.getElementById('wrSecondaryVerdictBanner');
+  banner.className = 'verdict-banner ' + (result.verdict === 'APROBADO' ? 'success' : 'danger');
+  banner.innerHTML = 'Veredicto secundario: ' + result.verdict +
+    '<span class="tol">desbalance máx. ' + result.maxUnbalance.toFixed(2) + ' % &middot; umbral 5&nbsp;%</span>';
+}
+
 function buildWindingRequestBody() {
   var taps = Object.keys(state.wr.readings).map(Number).sort(function (a, b) { return a - b; });
   return {
@@ -1876,7 +1972,8 @@ function buildWindingRequestBody() {
       measurements: taps.map(function (p) {
         var tap = state.wr.readings[p];
         return { tapPosition: p, windingTemperatureC: tap.windingTemperatureC, phases: tap.phases };
-      })
+      }),
+      secondary: { windingTemperatureC: state.wr.secondary.windingTemperatureC, phases: state.wr.secondary.phases }
     }
   };
 }
@@ -1885,7 +1982,9 @@ function refreshWinding() {
   renderWrTapChips();
   renderWrPhaseEntries();
   renderWindingPreview();
-  saveDraft_('mya_draft_wr_' + state.currentTransformerId, state.wr.readings);
+  renderWrSecondaryPhaseEntries();
+  renderWindingSecondaryPreview();
+  saveDraft_('mya_draft_wr_' + state.currentTransformerId, { readings: state.wr.readings, secondary: state.wr.secondary });
 }
 
 function submitWinding() {
@@ -2210,44 +2309,50 @@ function ipRating_(ip) {
   return 'EXCELENTE';
 }
 
-function defaultInsulationPhases_() {
+/** Las 3 combinaciones de devanado que exige IEEE C57.12.90 para Resistencia
+ *  de Aislamiento — NO son fases del transformador (eso es otro módulo).
+ *  Fijas siempre, sin importar phase_type (monofásico o trifásico): las tres
+ *  combinaciones existen igual en ambos casos. */
+var INSULATION_COMBINATIONS = ['AT-BT', 'AT-Tierra', 'BT-Tierra'];
+
+function defaultInsulationCombinations_() {
   var p = {};
-  getPhaseKeys().forEach(function (k) { p[TTR_TO_WR_PHASE_MAP[k] || k] = { r30sMegaohm: 0, r60sMegaohm: 0, r10minMegaohm: 0 }; });
+  INSULATION_COMBINATIONS.forEach(function (k) { p[k] = { r30sMegaohm: 0, r60sMegaohm: 0, r10minMegaohm: 0 }; });
   return p;
 }
 
 function resetInsulationStateFromTransformer() {
   var draft = loadDraft_('mya_draft_insulation_' + state.currentTransformerId);
-  state.insulation = draft || { windingTemperatureC: 20, phases: defaultInsulationPhases_() };
-  if (!state.insulation.phases) state.insulation.phases = defaultInsulationPhases_();
+  state.insulation = draft || { windingTemperatureC: 20, combinations: defaultInsulationCombinations_() };
+  if (!state.insulation.combinations) state.insulation.combinations = defaultInsulationCombinations_();
   var evidenceInput = document.getElementById('insulationEvidence');
   if (evidenceInput) evidenceInput.value = '';
 }
 
 function renderInsulationFormContext() {
   var t = state.currentTransformer;
-  document.getElementById('insulationFormSubtitle').textContent = t.serial_number + ' · DAR e IP por fase';
+  document.getElementById('insulationFormSubtitle').textContent = t.serial_number + ' · DAR e IP por combinación de devanado';
   document.getElementById('insulationTenantChip').textContent = state.username + ' · ' + state.role;
 }
 
-function renderInsulationPhaseEntries() {
-  var wrap = document.getElementById('insulationPhaseEntries');
+function renderInsulationCombinationEntries() {
+  var wrap = document.getElementById('insulationCombinationEntries');
   if (!wrap) return;
   document.getElementById('insulationTemp').value = state.insulation.windingTemperatureC;
-  wrap.innerHTML = Object.keys(state.insulation.phases).map(function (k) {
-    var r = state.insulation.phases[k];
+  wrap.innerHTML = Object.keys(state.insulation.combinations).map(function (k) {
+    var r = state.insulation.combinations[k];
     return '<div class="phase-entry">' +
-      '<div class="ph-name">' + k.replace('-', ' &ndash; ') + '</div>' +
-      '<div class="field"><label>R 30 s (M&Omega;)</label><input class="mono" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*" value="' + r.r30sMegaohm + '" oninput="updateInsulationPhase_(\'' + k + '\', \'r30sMegaohm\', this.value)"></div>' +
-      '<div class="field"><label>R 60 s / 1 min (M&Omega;)</label><input class="mono" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*" value="' + r.r60sMegaohm + '" oninput="updateInsulationPhase_(\'' + k + '\', \'r60sMegaohm\', this.value)"></div>' +
-      '<div class="field"><label>R 10 min (M&Omega;)</label><input class="mono" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*" value="' + r.r10minMegaohm + '" oninput="updateInsulationPhase_(\'' + k + '\', \'r10minMegaohm\', this.value)"></div>' +
+      '<div class="ph-name">' + k + '</div>' +
+      '<div class="field"><label>R 30 s (M&Omega;)</label><input class="mono" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*" value="' + r.r30sMegaohm + '" oninput="updateInsulationCombination_(\'' + k + '\', \'r30sMegaohm\', this.value)"></div>' +
+      '<div class="field"><label>R 60 s / 1 min (M&Omega;)</label><input class="mono" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*" value="' + r.r60sMegaohm + '" oninput="updateInsulationCombination_(\'' + k + '\', \'r60sMegaohm\', this.value)"></div>' +
+      '<div class="field"><label>R 10 min (M&Omega;)</label><input class="mono" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*" value="' + r.r10minMegaohm + '" oninput="updateInsulationCombination_(\'' + k + '\', \'r10minMegaohm\', this.value)"></div>' +
       '</div>';
   }).join('');
 }
 
-function updateInsulationPhase_(key, field, value) {
+function updateInsulationCombination_(key, field, value) {
   var v = parseDecimal_(value); if (isNaN(v)) v = 0;
-  state.insulation.phases[key][field] = v;
+  state.insulation.combinations[key][field] = v;
   refreshInsulation();
 }
 
@@ -2258,10 +2363,10 @@ function updateInsulationTemp(value) {
 }
 
 function computeInsulationPreview() {
-  var keys = Object.keys(state.insulation.phases);
+  var keys = Object.keys(state.insulation.combinations);
   var hasMalo = false, hasCuestionable = false;
   var rows = keys.map(function (k) {
-    var r = state.insulation.phases[k];
+    var r = state.insulation.combinations[k];
     var dar = r.r30sMegaohm > 0 ? (r.r60sMegaohm / r.r30sMegaohm) : 0;
     var ip = r.r60sMegaohm > 0 ? (r.r10minMegaohm / r.r60sMegaohm) : 0;
     var dRating = darRating_(dar);
@@ -2301,13 +2406,13 @@ function buildInsulationRequestBody() {
     instrument_used: document.getElementById('insulationInstrument').value,
     readings: {
       windingTemperatureC: state.insulation.windingTemperatureC,
-      measurements: state.insulation.phases
+      measurements: state.insulation.combinations
     }
   };
 }
 
 function refreshInsulation() {
-  renderInsulationPhaseEntries();
+  renderInsulationCombinationEntries();
   renderInsulationPreview();
   saveDraft_('mya_draft_insulation_' + state.currentTransformerId, state.insulation);
 }

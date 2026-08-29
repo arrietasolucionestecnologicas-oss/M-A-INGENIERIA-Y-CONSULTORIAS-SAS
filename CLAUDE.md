@@ -49,9 +49,27 @@ Sitio (Cliente/Proyecto)  →  Transformador (equipo)  →  Prueba (TTR / Resist
   "características de placa" — todas opcionales —: `manufacturer`,
   `vector_group`, `rated_power_kva`, `hv_nominal_voltage`,
   `lv_nominal_voltage`, `manufacture_year`, `cooling_type` (ONAN/ONAF),
-  `impedance_percent`, `insulation_type`. Ambas entidades tienen edición real
-  (`updateSite`/`updateTransformer`), no solo creación — modales `#editSiteModal`
-  / `#editTransformerModal` en `index.html`, reusan la clase `.modal` genérica.
+  `impedance_percent`, `insulation_type`, `numero_posiciones_tap`. Ambas
+  entidades tienen edición real (`updateSite`/`updateTransformer`), no solo
+  creación — modales `#editSiteModal` / `#editTransformerModal` en
+  `index.html`, reusan la clase `.modal` genérica.
+- **`numero_posiciones_tap`** (entero, opcional) gobierna `tap_config.numPositions`
+  — si el técnico lo diligencia, `buildDefaultTapPositions_(nominalVoltage,
+  numPositions)` en `app.js` genera esa cantidad de posiciones (la neutra se
+  calcula como la del medio, `Math.ceil(n/2)`) en vez del default histórico
+  de 5. Vacío = se mantiene el comportamiento actual (5 por defecto), tanto
+  al crear como al editar — editar este campo en un equipo existente
+  **regenera** `tap_config.positions` (conserva `nominalVoltage`/
+  `stepPercentage` actuales), así que si el equipo tiene una matriz
+  personalizada (`custom_tap_ratio_matrix`) hay que revisarla después. TTR
+  (`tapPositions()`/chip selector) y Resistencia de Devanados
+  (`addWrTap()`/límite de gaps) leen `tap_config.positions` en vivo, así que
+  ambos módulos reflejan el cambio sin más que abrir el formulario de nuevo
+  — no hace falta tocar nada en ninguno de los dos al agregar este campo.
+  El backend (`Código.gs`) solo almacena y devuelve `numero_posiciones_tap`
+  como columna plana (`HEADERS.TRANSFORMADORES`, al final del arreglo) — no
+  recalcula `tap_config` él mismo, ese cálculo sigue siendo responsabilidad
+  del frontend, igual que antes de este campo existir.
 - **NIT (Colombia)**: `calcularDigitoVerificacionNit_()` implementa el
   algoritmo DIAN estándar (módulo 11, pesos fijos por posición) — existe
   **duplicado a propósito** en `Código.gs` y en `app.js` (el backend es la
@@ -72,26 +90,66 @@ Sitio (Cliente/Proyecto)  →  Transformador (equipo)  →  Prueba (TTR / Resist
 | Módulo | Estado | Motor de cálculo |
 |---|---|---|
 | TTR (relación de transformación) | ✅ Completo | `calculateTtr_` |
-| Resistencia de devanados | ✅ Completo | `calculateWindingResistance_` |
+| Resistencia de devanados | ✅ Completo — **primario multi-TAP + secundario**, ver abajo | `calculateWindingResistance_` |
 | Aceite dieléctrico | ✅ Completo — **tres secciones activables por checkbox**, ver abajo | `calculateOilAnalysis_` |
-| Resistencia de aislamiento (Megger, DAR/IP) | ✅ Completo | `calculateInsulation_` |
+| Resistencia de aislamiento (Megger, DAR/IP) | ✅ Completo — **3 combinaciones de devanado**, ver abajo | `calculateInsulation_` |
+
+### Resistencia de devanados — primario (multi-TAP) + secundario
+
+**Corregido — auditoría IEEE C57.12.90.** El formulario ya soportaba varios
+TAPs del primario (`state.wr.readings` indexado por posición,
+`addWrTap()`/`removeWrTap()` sin tope duro) pero **no capturaba el
+secundario en absoluto** — confirmado al revisar el código antes de tocar
+nada: `TTR_TO_WR_PHASE_MAP` traducía las claves compuestas de TTR
+(`H1H2-X1X2`) a solo `H1-H2`, descartando el lado X por completo.
+
+Estructura actual:
+- **Primario** — fase-fase (`H1-H2`/`H2-H3`/`H3-H1`, o solo `H1-H2` en
+  monofásico), una lectura por cada posición de TAP que el técnico agregue
+  (`state.wr.readings[tapPosition]`), sin cambios respecto a antes.
+- **Secundario** — fase-fase (`X1-X2`/`X2-X3`/`X3-X1`, mismo criterio de
+  monofásico vía `getSecondaryPhaseKeys_()`), **una sola medición sin
+  selector de TAP** (`state.wr.secondary`) — normalmente el secundario no
+  tiene cambiador de tomas.
+- Ambos viajan en el mismo `submitWindingResistanceTest`, en claves
+  separadas: `readings.measurements` (array, primario, sin cambios) y
+  `readings.secondary` (objeto `{windingTemperatureC, phases}`, nuevo).
+  `readings.secondary` es opcional en el contrato del backend (si falta, no
+  rompe pruebas viejas ni llamadas externas), pero el frontend siempre lo
+  envía.
+
+`computePhaseUnbalancePreview_(phases)` en `app.js` y `computePhaseUnbalance_(phases)`
+en `Código.gs` son el **mismo cálculo de desbalance factorizado en una
+función**, reusado tanto por cada TAP del primario como por el secundario —
+no duplicado. `overallVerdict` en `calculateWindingResistance_` ahora exige
+que el primario **y** el secundario (si vino) estén `APROBADO`; si
+cualquiera de los dos falla, el conjunto es `RECHAZADO` — mismo criterio
+binario que ya existía, solo que ahora contempla ambos devanados.
+
+**Requirió cambio en `Código.gs`** (a diferencia de Aislamiento): el
+desbalance del secundario necesitaba calcularse y entrar al veredicto
+combinado, algo que solo el backend puede hacer de forma autoritativa —
+desplegar con el flujo de clasp de siempre (ver "Desplegar cambios de
+backend" abajo).
 
 ### Resistencia de aislamiento — parámetros reales de `calculateInsulation_`
 
 El backend (`submitInsulationTest_`/`calculateInsulation_`) ya existía y no se
-tocó — el frontend se construyó leyendo primero qué esperaba, en vez de
-asumir. Dos cosas que **no** coinciden con lo que se pidió inicialmente para
-el formulario, reportadas explícitamente:
+tocó (ni en esta corrección ni en la construcción original) — es
+**genérico respecto a la clave de medición**: itera `Object.keys(readings.measurements)`
+sin asumir qué representa cada clave, así que el frontend puede usar
+cualquier etiqueta sin tocar `Código.gs`. Dos cosas que **no** coinciden con
+lo que se pidió inicialmente para el formulario, reportadas explícitamente:
 
-- **Solo existen 3 lecturas por fase, no 4**: `r30sMegaohm`, `r60sMegaohm`,
-  `r10minMegaohm`. "60 s" y "1 min" son la misma medición (60 segundos = 1
-  minuto) — no hay un campo `r1minMegaohm` separado. El formulario captura
-  una sola lectura a los 60 s/1 min, etiquetada como tal para que no se
-  confunda con una cuarta lectura que el backend ignoraría.
+- **Solo existen 3 lecturas por combinación, no 4**: `r30sMegaohm`,
+  `r60sMegaohm`, `r10minMegaohm`. "60 s" y "1 min" son la misma medición (60
+  segundos = 1 minuto) — no hay un campo `r1minMegaohm` separado. El
+  formulario captura una sola lectura a los 60 s/1 min, etiquetada como tal
+  para que no se confunda con una cuarta lectura que el backend ignoraría.
 - **La temperatura de devanado se guarda pero no se usa en el cálculo** —
   `calculateInsulation_` no la lee para nada, solo queda en
-  `raw_readings_json` como dato de registro (igual que en Resistencia de
-  devanados). Se captura una sola vez por envío (no por fase).
+  `raw_readings_json` como dato de registro. Se captura una sola vez por
+  envío (no por combinación).
 
 Fórmulas y umbrales (idénticos en `darRating_`/`ipRating_` de `Código.gs` y
 su réplica en `app.js` — vista previa instantánea, el backend es la fuente
@@ -100,13 +158,22 @@ de verdad):
   no EXCELENTE.
 - `IP = R(10min) / R(60s)` — < 1.0 MALO, < 2.0 CUESTIONABLE, < 4.0 BUENO, si
   no EXCELENTE.
-- `overallVerdict`: si cualquier fase tiene DAR o IP en MALO → `RECHAZADO`;
-  si no pero alguna está en CUESTIONABLE → `OBSERVADO`; si no, `APROBADO`.
+- `overallVerdict`: si cualquier combinación tiene DAR o IP en MALO →
+  `RECHAZADO`; si no pero alguna está en CUESTIONABLE → `OBSERVADO`; si no,
+  `APROBADO`.
 
-Las fases usadas son las mismas de Resistencia de devanados
-(`getPhaseKeys()`/`TTR_TO_WR_PHASE_MAP` reusados tal cual: `H1-H2`/`H2-H3`/
-`H3-H1`, o solo `H1-H2` si el transformador es monofásico) — no hay concepto
-de TAP aquí, es una sola lectura por fase por visita.
+**Corregido — estructura de medición equivocada (auditoría IEEE C57.12.90).**
+La primera versión del formulario medía "por fase" (`H1-H2`/`H2-H3`/`H3-H1`,
+reusando `getPhaseKeys()`/`TTR_TO_WR_PHASE_MAP` de Resistencia de devanados)
+— heredado por error, no por ningún requisito del backend (que, como se
+explica arriba, no le importa la clave). La estructura correcta según norma
+son **3 combinaciones de devanado**, fijas siempre (no dependen de
+monofásico/trifásico): `INSULATION_COMBINATIONS = ['AT-BT', 'AT-Tierra',
+'BT-Tierra']` en `app.js`, cada una con sus propias 3 lecturas de tiempo y
+su propio DAR/IP. `state.insulation.combinations` (antes `.phases`) y las
+funciones `renderInsulationCombinationEntries()`/
+`updateInsulationCombination_()` (antes con sufijo `Phase`) se renombraron
+para no dejar el vestigio de "fase" en un módulo que no trata de fases.
 
 Cada envío de prueba acepta un adjunto opcional (`file_base64`/`file_mime_type`)
 que sube a Drive vía `persistTest_()` — ya funciona para los tres módulos
