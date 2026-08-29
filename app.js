@@ -242,6 +242,23 @@ function clearDraft_(key) {
   try { localStorage.removeItem(key); } catch (e) { /* almacenamiento no disponible; se ignora */ }
 }
 
+/** Persistencia de sesión en `sessionStorage` (NO `localStorage`): sobrevive a
+ *  un refresh de página pero muere al cerrar el navegador/pestaña — a
+ *  diferencia del caché de listas, esto SÍ debe tener vida corta. */
+function saveSession_() {
+  try {
+    sessionStorage.setItem('mya_session', JSON.stringify({
+      token: state.token, username: state.username, role: state.role, allowedApps: state.allowedApps
+    }));
+  } catch (e) { /* almacenamiento no disponible; se ignora */ }
+}
+function loadSession_() {
+  try { var v = sessionStorage.getItem('mya_session'); return v ? JSON.parse(v) : null; } catch (e) { return null; }
+}
+function clearSession_() {
+  try { sessionStorage.removeItem('mya_session'); } catch (e) { /* almacenamiento no disponible; se ignora */ }
+}
+
 // ---------------------------------------------------------------
 // Navegación entre vistas
 // ---------------------------------------------------------------
@@ -273,6 +290,7 @@ function showView(name) {
     state.currentSiteId = null;
     state.currentSite = null;
     state.currentTransformer = null;
+    clearSession_();
     removeAdminNavAndPanel();
   }
 
@@ -505,6 +523,7 @@ function handleLoginSubmit(e) {
         return;
       }
 
+      saveSession_();
       renderAdminNavAndPanel();
       return loadSitesAndShow_();
     })
@@ -1090,6 +1109,7 @@ function handleChangePasswordSubmit(e) {
       }
       state.pendingOldPassword = null;
       state.pendingOldUsuario = null;
+      saveSession_();
       renderAdminNavAndPanel();
       return loadSitesAndShow_();
     })
@@ -2117,7 +2137,24 @@ document.addEventListener('DOMContentLoaded', function () {
 
   attachRippleDelegation_();
 
-  showView('login');
+  // Sesión persistente: si sessionStorage trae un token de esta misma pestaña
+  // (sobrevive a un refresh, muere al cerrar el navegador), se usa directo sin
+  // pedir credenciales de nuevo. Si el token ya no es válido, la primera
+  // llamada a callApi() lo detecta (403) y fuerza logout igual que siempre.
+  var session = loadSession_();
+  if (session && session.token) {
+    state.token = session.token;
+    state.username = session.username;
+    state.role = session.role;
+    state.allowedApps = session.allowedApps || [];
+    document.getElementById('sidebarUserName').textContent = state.username;
+    document.getElementById('sidebarRole').textContent = state.role;
+    document.getElementById('dashboardTenantLabel').textContent = state.username + ' · ' + state.role;
+    renderAdminNavAndPanel();
+    loadSitesAndShow_();
+  } else {
+    showView('login');
+  }
 });
 
 // ---------------------------------------------------------------

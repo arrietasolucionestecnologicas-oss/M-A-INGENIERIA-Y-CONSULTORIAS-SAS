@@ -231,6 +231,18 @@ solo `display:none` (ver `renderAdminNavAndPanel`/`removeAdminNavAndPanel`).
     de serie (`checkSerialExists_`) tampoco entra en el patrón — se queda
     bloqueante a propósito (lectura rápida, crítica para no duplicar un
     activo) y solo el POST de creación pasa a segundo plano después.
+- **Sesión persistente en `sessionStorage`, nunca en memoria sola ni en
+  `localStorage`**: al hacer login (o tras un cambio de contraseña forzado),
+  `saveSession_()` guarda `{token, username, role, allowedApps}` en
+  `sessionStorage` bajo la clave `mya_session` — sobrevive a un refresh de
+  página pero muere al cerrar el navegador/pestaña (por diseño: no debe
+  quedar guardado indefinidamente como el caché de listas, que sí usa
+  `localStorage`). Al arrancar (`DOMContentLoaded`), si hay una sesión
+  guardada se restaura directo sin pedir credenciales y se salta la pantalla
+  de login. `showView('login')` es el único lugar que limpia la sesión
+  (`clearSession_()`) — cubre tanto el botón "Cerrar sesión" (que solo hace
+  `showView('login')`) como el logout forzado por un `403` en `callApi()`,
+  así que un token inválido nunca queda guardado.
 - **Tema único claro** (sin dark mode) — paleta oficial del manual de marca
   M&A, ver el comentario al inicio de `styles.css` para los códigos hex y por
   qué el texto sobre rellenos sólidos es oscuro (`#152618`) y no blanco en
@@ -274,13 +286,24 @@ a propósito.
 ## Estado / pendientes conocidos
 
 No implementado todavía, evaluado pero no decidido con el usuario:
-- Sesión persistente entre recargas (`sessionStorage`) — hoy el token vive
-  solo en memoria JS, un refresh de página desloguea.
 - `SweetAlert2` en vez de `alert()`/`confirm()` nativos.
 - Flujo de borrador/certificado en dos etapas para pruebas (hoy todo envío
   queda como definitivo de inmediato).
 - Migrar a offline real (service worker + IndexedDB) — hoy la resiliencia de
   red es "no perder lo digitado", no "funcionar sin señal".
+
+Módulos en diseño, pendientes de validar alcance con el cliente **antes de
+construir** (no empezar sin luz verde explícita):
+- **Ofertas y Licitaciones** — funnel pendiente/aprobada/rechazada/cierre; no
+  depende de que exista un Sitio.
+- **Calibraciones de instrumentos propios de M&A** — catálogo con semáforo de
+  vigencia, se cruza con `instrument_used` en las pruebas.
+- **Informes y Documentos** — carpeta de Drive por Sitio, certificados
+  automáticos + subida manual.
+- **Dashboard general consolidado.**
+
+Ver conversación con Gerson para el detalle completo de campos y KPIs
+propuestos — lo de arriba es solo el resumen de alcance, no el diseño final.
 
 Base de datos en vivo: limpia de datos de prueba (última verificación
 2026-08-29 tras habilitar NIT/ciudad, características de placa y el
