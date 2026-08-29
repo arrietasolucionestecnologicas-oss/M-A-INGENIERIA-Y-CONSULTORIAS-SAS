@@ -65,7 +65,8 @@ var state = {
   ttr: { currentTap: null, readings: {} },
   matrix: { taps: [] },
   wr: { currentTap: null, readings: {} },
-  oil: { rigidez: null, humedad: null, acidez: null, tension: null }
+  oil: { rigidez: null, humedad: null, acidez: null, tension: null },
+  insulation: { windingTemperatureC: 20, phases: {} }
 };
 
 /** "12,5" -> 12.5. parseFloat NUNCA debe usarse directo sobre un input de usuario: se detiene en la coma y trunca el valor sin avisar. */
@@ -292,9 +293,10 @@ function showView(name) {
     state.currentTransformer = null;
     clearSession_();
     removeAdminNavAndPanel();
+    removeRestrictedModuleNav_();
   }
 
-  ['sites', 'dashboard', 'detail', 'ttr-form', 'winding-form', 'oil-form', 'admin'].forEach(function (v) {
+  ['sites', 'dashboard', 'detail', 'ttr-form', 'winding-form', 'oil-form', 'insulation-form', 'calibrations', 'documents', 'commercial', 'general-dashboard', 'admin'].forEach(function (v) {
     var el = document.getElementById('view-' + v);
     if (el) el.hidden = (name !== v);
   });
@@ -309,19 +311,20 @@ function showView(name) {
   if (name === 'ttr-form') { renderTtrFormContext(); renderMatrixRows(); refreshTtr(); }
   if (name === 'winding-form') { renderWindingFormContext(); refreshWinding(); }
   if (name === 'oil-form') { renderOilFormContext(); refreshOil(); }
+  if (name === 'insulation-form') { renderInsulationFormContext(); refreshInsulation(); }
 }
 
 function viewNeedsSite_(name) {
   return name === 'dashboard';
 }
 function viewNeedsTransformer_(name) {
-  return name === 'ttr-form' || name === 'winding-form' || name === 'oil-form';
+  return name === 'ttr-form' || name === 'winding-form' || name === 'oil-form' || name === 'insulation-form';
 }
 
 // ---------------------------------------------------------------
 // Modal de contexto: pide Cliente/Proyecto y/o Equipo cuando faltan,
 // sin sacar al técnico de donde estaba (reemplaza el redirect a una
-// pantalla de "Fase" separada).
+// pantalla separada).
 // ---------------------------------------------------------------
 
 function openContextModal_(mode, targetView) {
@@ -525,6 +528,7 @@ function handleLoginSubmit(e) {
 
       saveSession_();
       renderAdminNavAndPanel();
+      renderRestrictedModuleNav_();
       return loadSitesAndShow_();
     })
     .catch(function (err) {
@@ -534,7 +538,7 @@ function handleLoginSubmit(e) {
 }
 
 // ---------------------------------------------------------------
-// Fase 1: Cliente / Proyecto (Sitios)
+// Cliente / Proyecto (Sitios)
 // ---------------------------------------------------------------
 
 /** Caché-luego-red: si hay datos guardados de una visita anterior los muestra
@@ -564,7 +568,7 @@ function renderSites() {
   if (!tbody) return;
 
   if (state.sites.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="6" class="empty-note">No hay clientes/proyectos todavía. Crea el primero arriba para empezar (Fase 1).</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="6" class="empty-note">No hay clientes/proyectos todavía. Crea el primero arriba para empezar.</td></tr>';
     return;
   }
 
@@ -852,7 +856,7 @@ function resolveSiteLabel_(siteId) {
 
 function handleCreateTransformerSubmit(e) {
   e.preventDefault();
-  if (!state.currentSiteId) { alert('Selecciona primero un Cliente/Proyecto (Fase 1).'); return; }
+  if (!state.currentSiteId) { alert('Selecciona primero un Cliente/Proyecto.'); return; }
 
   var serial = document.getElementById('newTrfSerial').value.trim();
   var manufacturer = document.getElementById('newTrfManufacturer').value.trim();
@@ -1111,6 +1115,7 @@ function handleChangePasswordSubmit(e) {
       state.pendingOldUsuario = null;
       saveSession_();
       renderAdminNavAndPanel();
+      renderRestrictedModuleNav_();
       return loadSitesAndShow_();
     })
     .catch(function (err) {
@@ -1193,6 +1198,76 @@ function removeAdminNavAndPanel() {
   }
   var section = document.getElementById('view-admin');
   if (section) section.remove();
+}
+
+// ---------------------------------------------------------------
+// Módulos "Comercial" y "Panel General" (RBAC) — matriz completa en
+// CLAUDE.md. "Sin acceso" para Técnico: igual que Administración, no se
+// agregan al DOM en absoluto para ese rol (no solo display:none). Ambos
+// son placeholders de navegación hoy — el contenido real se construye
+// después, sin tener que reabrir la navegación ni la lógica de roles.
+// ---------------------------------------------------------------
+
+var RESTRICTED_MODULES_ = [
+  { view: 'commercial', label: 'Comercial', icon: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 12.5 6 7l3 3 5-6.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>', title: 'Comercial', subtitle: 'Ofertas y licitaciones' },
+  { view: 'general-dashboard', label: 'Panel General', icon: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="1.5" y="1.5" width="5" height="5" rx="1" stroke="currentColor" stroke-width="1.3"/><rect x="9.5" y="1.5" width="5" height="5" rx="1" stroke="currentColor" stroke-width="1.3"/><rect x="1.5" y="9.5" width="5" height="5" rx="1" stroke="currentColor" stroke-width="1.3"/><rect x="9.5" y="9.5" width="5" height="5" rx="1" stroke="currentColor" stroke-width="1.3"/></svg>', title: 'Panel General', subtitle: 'Dashboard consolidado de todas las operaciones' }
+];
+
+function renderRestrictedModuleNav_() {
+  if (state.role === 'Tecnico') return;
+
+  var moreAnchor = document.getElementById('moreSheetDocumentsItem');
+  var sidebarAnchor = document.getElementById('navItemDocuments');
+
+  RESTRICTED_MODULES_.forEach(function (mod) {
+    // Hoja "Más" (móvil)
+    if (moreAnchor && !document.getElementById('moreSheet_' + mod.view)) {
+      var moreItem = document.createElement('button');
+      moreItem.type = 'button';
+      moreItem.className = 'action-sheet-item';
+      moreItem.id = 'moreSheet_' + mod.view;
+      moreItem.dataset.view = mod.view;
+      moreItem.innerHTML = mod.icon + mod.label;
+      moreItem.addEventListener('click', function () { showView(mod.view); });
+      moreAnchor.insertAdjacentElement('afterend', moreItem);
+      moreAnchor = moreItem; // el siguiente módulo se ancla justo después de este
+    }
+
+    // Barra lateral (escritorio)
+    if (sidebarAnchor && !document.querySelector('.nav-item[data-view="' + mod.view + '"]')) {
+      var navItem = document.createElement('div');
+      navItem.className = 'nav-item';
+      navItem.dataset.view = mod.view;
+      navItem.innerHTML = mod.icon + mod.label;
+      navItem.addEventListener('click', function () { showView(mod.view); });
+      sidebarAnchor.insertAdjacentElement('afterend', navItem);
+      sidebarAnchor = navItem; // el siguiente módulo se ancla justo después de este
+    }
+
+    // Vista placeholder (solo si no existe todavía)
+    if (!document.getElementById('view-' + mod.view)) {
+      var section = document.createElement('section');
+      section.id = 'view-' + mod.view;
+      section.hidden = true;
+      section.innerHTML =
+        '<div class="topbar"><div><h1>' + mod.title + '</h1><p>' + mod.subtitle + '</p></div></div>' +
+        '<div class="view"><div class="panel"><div class="panel-head"><h2>Próximamente</h2></div>' +
+        '<div class="empty-note">Este módulo está en diseño — se construirá cuando se valide el alcance completo con el cliente.</div>' +
+        '</div></div>';
+      document.querySelector('main').appendChild(section);
+    }
+  });
+}
+
+function removeRestrictedModuleNav_() {
+  RESTRICTED_MODULES_.forEach(function (mod) {
+    var moreItem = document.getElementById('moreSheet_' + mod.view);
+    if (moreItem) moreItem.remove();
+    var navItem = document.querySelector('.nav-item[data-view="' + mod.view + '"]');
+    if (navItem) navItem.remove();
+    var section = document.getElementById('view-' + mod.view);
+    if (section) section.remove();
+  });
 }
 
 function handleCreateUserSubmit(e) {
@@ -1297,6 +1372,7 @@ function openTransformer(id) {
     resetMatrixStateFromTransformer();
     resetWindingStateFromTransformer();
     resetOilStateFromTransformer();
+    resetInsulationStateFromTransformer();
   }
 
   return Promise.all([
@@ -1313,6 +1389,7 @@ function openTransformer(id) {
     resetMatrixStateFromTransformer();
     resetWindingStateFromTransformer();
     resetOilStateFromTransformer();
+    resetInsulationStateFromTransformer();
   }).catch(function (err) {
     if (err.status === 402 || err.status === 403) return;
     if (!cached) {
@@ -2109,6 +2186,158 @@ function submitOil() {
 }
 
 // ---------------------------------------------------------------
+// Formulario de Resistencia de Aislamiento (Megger) — DAR / IP
+//
+// Réplica en frontend de darRating_/ipRating_ en Código.gs: DAR y umbrales
+// de calculateInsulation_ (backend real). El backend solo necesita
+// readings.measurements[fase] = { r30sMegaohm, r60sMegaohm, r10minMegaohm }
+// — NO existe un campo "1 min" separado de "60 s" (60 s === 1 min), así que
+// solo se captura una vez. La temperatura de devanado se guarda junto a las
+// lecturas para el registro, pero calculateInsulation_ no la usa en el
+// cálculo (documentado también en CLAUDE.md).
+// ---------------------------------------------------------------
+
+function darRating_(dar) {
+  if (dar < 1.0) return 'MALO';
+  if (dar < 1.25) return 'CUESTIONABLE';
+  if (dar < 1.6) return 'BUENO';
+  return 'EXCELENTE';
+}
+function ipRating_(ip) {
+  if (ip < 1.0) return 'MALO';
+  if (ip < 2.0) return 'CUESTIONABLE';
+  if (ip < 4.0) return 'BUENO';
+  return 'EXCELENTE';
+}
+
+function defaultInsulationPhases_() {
+  var p = {};
+  getPhaseKeys().forEach(function (k) { p[TTR_TO_WR_PHASE_MAP[k] || k] = { r30sMegaohm: 0, r60sMegaohm: 0, r10minMegaohm: 0 }; });
+  return p;
+}
+
+function resetInsulationStateFromTransformer() {
+  var draft = loadDraft_('mya_draft_insulation_' + state.currentTransformerId);
+  state.insulation = draft || { windingTemperatureC: 20, phases: defaultInsulationPhases_() };
+  if (!state.insulation.phases) state.insulation.phases = defaultInsulationPhases_();
+  var evidenceInput = document.getElementById('insulationEvidence');
+  if (evidenceInput) evidenceInput.value = '';
+}
+
+function renderInsulationFormContext() {
+  var t = state.currentTransformer;
+  document.getElementById('insulationFormSubtitle').textContent = t.serial_number + ' · DAR e IP por fase';
+  document.getElementById('insulationTenantChip').textContent = state.username + ' · ' + state.role;
+}
+
+function renderInsulationPhaseEntries() {
+  var wrap = document.getElementById('insulationPhaseEntries');
+  if (!wrap) return;
+  document.getElementById('insulationTemp').value = state.insulation.windingTemperatureC;
+  wrap.innerHTML = Object.keys(state.insulation.phases).map(function (k) {
+    var r = state.insulation.phases[k];
+    return '<div class="phase-entry">' +
+      '<div class="ph-name">' + k.replace('-', ' &ndash; ') + '</div>' +
+      '<div class="field"><label>R 30 s (M&Omega;)</label><input class="mono" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*" value="' + r.r30sMegaohm + '" oninput="updateInsulationPhase_(\'' + k + '\', \'r30sMegaohm\', this.value)"></div>' +
+      '<div class="field"><label>R 60 s / 1 min (M&Omega;)</label><input class="mono" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*" value="' + r.r60sMegaohm + '" oninput="updateInsulationPhase_(\'' + k + '\', \'r60sMegaohm\', this.value)"></div>' +
+      '<div class="field"><label>R 10 min (M&Omega;)</label><input class="mono" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*" value="' + r.r10minMegaohm + '" oninput="updateInsulationPhase_(\'' + k + '\', \'r10minMegaohm\', this.value)"></div>' +
+      '</div>';
+  }).join('');
+}
+
+function updateInsulationPhase_(key, field, value) {
+  var v = parseDecimal_(value); if (isNaN(v)) v = 0;
+  state.insulation.phases[key][field] = v;
+  refreshInsulation();
+}
+
+function updateInsulationTemp(value) {
+  var v = parseDecimal_(value); if (isNaN(v)) v = 0;
+  state.insulation.windingTemperatureC = v;
+  refreshInsulation();
+}
+
+function computeInsulationPreview() {
+  var keys = Object.keys(state.insulation.phases);
+  var hasMalo = false, hasCuestionable = false;
+  var rows = keys.map(function (k) {
+    var r = state.insulation.phases[k];
+    var dar = r.r30sMegaohm > 0 ? (r.r60sMegaohm / r.r30sMegaohm) : 0;
+    var ip = r.r60sMegaohm > 0 ? (r.r10minMegaohm / r.r60sMegaohm) : 0;
+    var dRating = darRating_(dar);
+    var iRating = ipRating_(ip);
+    if (dRating === 'MALO' || iRating === 'MALO') hasMalo = true;
+    if (dRating === 'CUESTIONABLE' || iRating === 'CUESTIONABLE') hasCuestionable = true;
+    return { key: k, dar: dar, darRating: dRating, ip: ip, ipRating: iRating };
+  });
+  var verdict = hasMalo ? 'RECHAZADO' : (hasCuestionable ? 'OBSERVADO' : 'APROBADO');
+  return { rows: rows, verdict: verdict };
+}
+
+function ratingClass_(rating) {
+  if (rating === 'MALO') return 'bad';
+  if (rating === 'CUESTIONABLE') return 'warn';
+  return 'ok';
+}
+
+function renderInsulationPreview() {
+  var result = computeInsulationPreview();
+  document.getElementById('insulationPreviewRows').innerHTML = result.rows.map(function (r) {
+    return '<div class="preview-row"><span class="phase-name">' + r.key + '</span>' +
+      '<span class="num">DAR = ' + r.dar.toFixed(2) + '</span>' +
+      '<span class="err ' + ratingClass_(r.darRating) + '">' + r.darRating + '</span></div>' +
+      '<div class="preview-row"><span class="phase-name">' + r.key + '</span>' +
+      '<span class="num">IP = ' + r.ip.toFixed(2) + '</span>' +
+      '<span class="err ' + ratingClass_(r.ipRating) + '">' + r.ipRating + '</span></div>';
+  }).join('');
+  var banner = document.getElementById('insulationVerdictBanner');
+  banner.className = 'verdict-banner ' + (result.verdict === 'APROBADO' ? 'success' : result.verdict === 'OBSERVADO' ? 'warning' : 'danger');
+  banner.innerHTML = 'Veredicto: ' + result.verdict;
+}
+
+function buildInsulationRequestBody() {
+  return {
+    transformer_id: state.currentTransformerId,
+    instrument_used: document.getElementById('insulationInstrument').value,
+    readings: {
+      windingTemperatureC: state.insulation.windingTemperatureC,
+      measurements: state.insulation.phases
+    }
+  };
+}
+
+function refreshInsulation() {
+  renderInsulationPhaseEntries();
+  renderInsulationPreview();
+  saveDraft_('mya_draft_insulation_' + state.currentTransformerId, state.insulation);
+}
+
+function submitInsulation() {
+  var btn = document.getElementById('submitInsulationBtn');
+  var status = document.getElementById('insulationSubmitStatus');
+  btn.disabled = true;
+  setStatus_(status, 'Enviando…', false);
+
+  readFileAsBase64_(document.getElementById('insulationEvidence'))
+    .then(function (evidence) {
+      var body = buildInsulationRequestBody();
+      if (evidence) { body.file_base64 = evidence.base64; body.file_mime_type = evidence.mimeType; }
+      return callApi('submitInsulationTest', 'POST', body);
+    })
+    .then(function (data) {
+      setStatus_(status, 'Prueba registrada · veredicto: ' + data.calculated_results.overallVerdict, true);
+      clearDraft_('mya_draft_insulation_' + state.currentTransformerId);
+      return callApi('listTests', 'GET', { transformer_id: state.currentTransformerId });
+    })
+    .then(function (tests) { state.currentTests = tests || []; saveDraft_('mya_cache_tests_' + state.currentTransformerId, state.currentTests); renderDetail(); })
+    .catch(function (err) {
+      // Las lecturas quedan intactas en state.insulation y en el borrador local: se puede reintentar sin volver a digitar.
+      if (!err || (err.status !== 402 && err.status !== 403)) setStatus_(status, formatNetworkAwareError_(err || {}), false, true);
+    })
+    .then(function () { btn.disabled = false; });
+}
+
+// ---------------------------------------------------------------
 // Inicialización
 // ---------------------------------------------------------------
 
@@ -2151,6 +2380,7 @@ document.addEventListener('DOMContentLoaded', function () {
     document.getElementById('sidebarRole').textContent = state.role;
     document.getElementById('dashboardTenantLabel').textContent = state.username + ' · ' + state.role;
     renderAdminNavAndPanel();
+    renderRestrictedModuleNav_();
     loadSitesAndShow_();
   } else {
     showView('login');

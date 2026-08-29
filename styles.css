@@ -437,6 +437,7 @@ table.matrix-table input:disabled { background: var(--surface-alt); color: var(-
 .preview-row .err.ok { color: var(--success-text); }
 .preview-row .err.bad { color: var(--danger); }
 .preview-row .err.pending { color: var(--text-faint); font-weight: 400; }
+.preview-row .err.warn { color: var(--warning-text); }
 
 .submit-row { display: flex; align-items: center; gap: 12px; padding: 14px 18px; flex-wrap: wrap; }
 

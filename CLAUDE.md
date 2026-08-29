@@ -74,7 +74,39 @@ Sitio (Cliente/Proyecto)  →  Transformador (equipo)  →  Prueba (TTR / Resist
 | TTR (relación de transformación) | ✅ Completo | `calculateTtr_` |
 | Resistencia de devanados | ✅ Completo | `calculateWindingResistance_` |
 | Aceite dieléctrico | ✅ Completo — **tres secciones activables por checkbox**, ver abajo | `calculateOilAnalysis_` |
-| Aislamiento (Megger, DAR/IP) | Backend listo (`calculateInsulation_`), **sin formulario en el frontend** | — |
+| Resistencia de aislamiento (Megger, DAR/IP) | ✅ Completo | `calculateInsulation_` |
+
+### Resistencia de aislamiento — parámetros reales de `calculateInsulation_`
+
+El backend (`submitInsulationTest_`/`calculateInsulation_`) ya existía y no se
+tocó — el frontend se construyó leyendo primero qué esperaba, en vez de
+asumir. Dos cosas que **no** coinciden con lo que se pidió inicialmente para
+el formulario, reportadas explícitamente:
+
+- **Solo existen 3 lecturas por fase, no 4**: `r30sMegaohm`, `r60sMegaohm`,
+  `r10minMegaohm`. "60 s" y "1 min" son la misma medición (60 segundos = 1
+  minuto) — no hay un campo `r1minMegaohm` separado. El formulario captura
+  una sola lectura a los 60 s/1 min, etiquetada como tal para que no se
+  confunda con una cuarta lectura que el backend ignoraría.
+- **La temperatura de devanado se guarda pero no se usa en el cálculo** —
+  `calculateInsulation_` no la lee para nada, solo queda en
+  `raw_readings_json` como dato de registro (igual que en Resistencia de
+  devanados). Se captura una sola vez por envío (no por fase).
+
+Fórmulas y umbrales (idénticos en `darRating_`/`ipRating_` de `Código.gs` y
+su réplica en `app.js` — vista previa instantánea, el backend es la fuente
+de verdad):
+- `DAR = R(60s) / R(30s)` — < 1.0 MALO, < 1.25 CUESTIONABLE, < 1.6 BUENO, si
+  no EXCELENTE.
+- `IP = R(10min) / R(60s)` — < 1.0 MALO, < 2.0 CUESTIONABLE, < 4.0 BUENO, si
+  no EXCELENTE.
+- `overallVerdict`: si cualquier fase tiene DAR o IP en MALO → `RECHAZADO`;
+  si no pero alguna está en CUESTIONABLE → `OBSERVADO`; si no, `APROBADO`.
+
+Las fases usadas son las mismas de Resistencia de devanados
+(`getPhaseKeys()`/`TTR_TO_WR_PHASE_MAP` reusados tal cual: `H1-H2`/`H2-H3`/
+`H3-H1`, o solo `H1-H2` si el transformador es monofásico) — no hay concepto
+de TAP aquí, es una sola lectura por fase por visita.
 
 Cada envío de prueba acepta un adjunto opcional (`file_base64`/`file_mime_type`)
 que sube a Drive vía `persistTest_()` — ya funciona para los tres módulos
@@ -163,14 +195,77 @@ si vuelves a ver este panel en el sitio en vivo después de este commit,
 lo primero que hay que revisar es si el deploy a Pages realmente se hizo
 (push a `main`), no el código en sí.
 
+## Navegación (8 módulos)
+
+La barra lateral (`#mainnav` en `index.html`) y la hoja "Más" móvil
+(`#moreActionSheet`) están agrupadas en 8 módulos, con encabezados
+`.nav-label` marcando cada grupo:
+
+1. **Clientes y Proyectos** — Sitios (`view-sites`).
+2. **Equipos** — Transformadores (`view-dashboard`) + Detalle del equipo
+   (`view-detail`).
+3. **Pruebas** — TTR, Resistencia de devanados, Aceite dieléctrico,
+   Resistencia de aislamiento (`ttr-form`/`winding-form`/`oil-form`/
+   `insulation-form`) — accesible también desde la hoja "Nueva prueba"
+   (`#testActionSheet`, FAB móvil).
+4. **Comercial** — placeholder de navegación (`view-commercial`); Ofertas y
+   Licitaciones se construye después.
+5. **Calibraciones** — placeholder de navegación (`view-calibrations`).
+6. **Documentos e Informes** — placeholder de navegación (`view-documents`).
+7. **Panel General** — placeholder de navegación (`view-general-dashboard`).
+8. **Administración** — Gestión de usuarios (`view-admin`, sin cambios en su
+   lógica).
+
+Los 4 placeholders (puntos 4-7) ya están protegidos por rol (ver RBAC abajo)
+para que cuando se construya cada uno **no haga falta reabrir la
+navegación** — solo reemplazar el contenido `<div class="empty-note">
+Próximamente...</div>` de cada `view-*` por el formulario/panel real.
+Calibraciones y Documentos e Informes son estáticos en `index.html` (todos
+los roles tienen algún acceso); Comercial y Panel General se insertan por
+JS (`renderRestrictedModuleNav_()`/`removeRestrictedModuleNav_()` en
+`app.js`, mismo patrón que `renderAdminNavAndPanel`/
+`removeAdminNavAndPanel` — anclados con `insertAdjacentElement('afterend')`
+sobre `#navItemDocuments` en escritorio y `#moreSheetDocumentsItem` en
+móvil) porque son "Sin acceso" para Técnico y no deben existir en el DOM
+para ese rol.
+
 ## RBAC
 
 Roles vienen de Control de Acceso: `Administrador`, `Supervisor`, `Tecnico`.
-El panel "Gestión de usuarios" y los botones de eliminar (sitio/equipo) **no
-se agregan al DOM en absoluto** para roles que no son Administrador — no es
-solo `display:none` (ver `renderAdminNavAndPanel`/`removeAdminNavAndPanel`).
-`deleteTransformer`/`deleteSite` también lo validan en el backend
-(`auth.role !== 'Administrador'`), no confíes solo en el frontend.
+Matriz completa por módulo:
+
+| Módulo | Técnico | Supervisor | Administrador |
+|---|---|---|---|
+| Clientes y Proyectos | Full | Full | Full |
+| Equipos | Full | Full | Full |
+| Pruebas | Full | Full | Full |
+| Calibraciones | Solo lectura | Full | Full |
+| Documentos e Informes | Solo subir — no lista/descarga lo de otros | Full | Full |
+| Comercial | Sin acceso | Full | Full |
+| Panel General | Sin acceso | Full | Full |
+| Administración | Sin acceso | Sin acceso | Full |
+
+**Frontend**: "Sin acceso" siempre significa que el nodo **no se agrega al
+DOM en absoluto** para ese rol, nunca solo `display:none` — ver
+`renderAdminNavAndPanel`/`removeAdminNavAndPanel` (Administración, sin
+cambios) y `renderRestrictedModuleNav_`/`removeRestrictedModuleNav_`
+(Comercial y Panel General, mismo patrón). El panel "Gestión de usuarios" y
+los botones de eliminar (sitio/equipo) siguen esta regla igual que siempre.
+
+**Backend**: `deleteTransformer_`/`deleteSite_` ya rechazan explícitamente
+por rol (`auth.role !== 'Administrador'` → `403`), no confíes solo en el
+frontend. **Pendiente, a propósito**: Calibraciones, Comercial y Panel
+General todavía no tienen NINGUNA acción de backend (son puro placeholder de
+navegación hoy — no hay nada que rechazar todavía). El caso que sí importa
+es **Documentos e Informes**: cuando se construya la función real de
+listado/descarga (hoy no existe — no confundir con los adjuntos de prueba
+que ya sube `persistTest_()`, que no tienen esta restricción), **debe
+rechazar en el backend si `auth.role === 'Tecnico'`** salvo que el técnico
+esté pidiendo/subiendo su propio archivo, con el mismo patrón `if
+(auth.role === 'Tecnico') return jsonResponse_({status:403, ...})` que ya
+usan `deleteTransformer_`/`deleteSite_`. No se implementó todavía porque la
+función en sí no existe — quedó anotado aquí para que no se olvide cuando
+se construya.
 
 ## Convenciones de frontend que hay que respetar
 
@@ -293,14 +388,18 @@ No implementado todavía, evaluado pero no decidido con el usuario:
   red es "no perder lo digitado", no "funcionar sin señal".
 
 Módulos en diseño, pendientes de validar alcance con el cliente **antes de
-construir** (no empezar sin luz verde explícita):
-- **Ofertas y Licitaciones** — funnel pendiente/aprobada/rechazada/cierre; no
-  depende de que exista un Sitio.
-- **Calibraciones de instrumentos propios de M&A** — catálogo con semáforo de
-  vigencia, se cruza con `instrument_used` en las pruebas.
-- **Informes y Documentos** — carpeta de Drive por Sitio, certificados
-  automáticos + subida manual.
-- **Dashboard general consolidado.**
+construir el contenido real** (no empezar sin luz verde explícita) — ya
+tienen su entrada de navegación y protección por rol listas (ver
+"Navegación" y "RBAC" arriba), solo falta reemplazar el placeholder
+"Próximamente" por el formulario/panel real cuando se defina el alcance:
+- **Comercial → Ofertas y Licitaciones** — funnel pendiente/aprobada/
+  rechazada/cierre; no depende de que exista un Sitio.
+- **Calibraciones** — catálogo de instrumentos propios de M&A con semáforo
+  de vigencia, se cruza con `instrument_used` en las pruebas.
+- **Documentos e Informes** — carpeta de Drive por Sitio, certificados
+  automáticos + subida manual. Backend RBAC pendiente hasta que exista la
+  función real (ver nota en "RBAC" arriba).
+- **Panel General** — dashboard consolidado de todas las operaciones.
 
 Ver conversación con Gerson para el detalle completo de campos y KPIs
 propuestos — lo de arriba es solo el resumen de alcance, no el diseño final.
