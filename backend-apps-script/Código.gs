@@ -59,14 +59,18 @@ var SHEET_NAMES = {
 
 var HEADERS = {
   /** Cliente + Proyecto (Fase 1 de la jerarquía obligatoria). No confundir con "Clientes" de Control de Acceso (esos son usuarios de M&A, esto es la empresa/proyecto del equipo que se prueba). */
+  /* nit/ciudad se agregaron después del lanzamiento inicial — van al FINAL del arreglo,
+     nunca insertados entre columnas existentes, para no correr el índice de columna
+     de filas ya guardadas en Sheets (ver colIndex_/ensureAllSheets_). */
   SITIOS: [
-    'id', 'client_name', 'project_name', 'address', 'created_at'
+    'id', 'client_name', 'project_name', 'address', 'created_at', 'nit', 'ciudad'
   ],
   TRANSFORMADORES: [
     'id', 'site_id', 'serial_number', 'manufacturer', 'manufacture_year',
     'phase_type', 'vector_group', 'rated_power_kva', 'hv_nominal_voltage', 'lv_nominal_voltage',
     'tap_config_json', 'is_special_design', 'custom_tap_ratio_matrix_json',
-    'status', 'plate_photo_file_id', 'created_at', 'updated_at'
+    'status', 'plate_photo_file_id', 'created_at', 'updated_at',
+    'cooling_type', 'impedance_percent', 'insulation_type'
   ],
   PRUEBAS: [
     'id', 'transformer_id', 'test_type', 'raw_readings_json',
@@ -246,6 +250,14 @@ function ensureAllSheets_() {
       sheet = ss.insertSheet(SHEET_NAMES[key]);
       sheet.appendRow(HEADERS[key]);
       sheet.setFrozenRows(1);
+    } else {
+      // El esquema puede crecer entre versiones (columnas siempre agregadas al final,
+      // nunca insertadas en medio — ver comentario en HEADERS). Sincroniza la fila de
+      // encabezado si el arreglo tiene más columnas de las que ya existen en la hoja.
+      var expected = HEADERS[key];
+      if (sheet.getLastColumn() < expected.length) {
+        sheet.getRange(1, 1, 1, expected.length).setValues([expected]);
+      }
     }
   });
 }
@@ -302,6 +314,37 @@ function safeParseJson_(s) {
 // Sitios (Cliente + Proyecto) — Fase 1 de la jerarquía obligatoria
 // ---------------------------------------------------------------------------
 
+/** Algoritmo estándar DIAN de dígito de verificación (módulo 11, pesos fijos por posición). */
+function calcularDigitoVerificacionNit_(nitBase) {
+  var pesos = [3, 7, 13, 17, 19, 23, 29, 37, 41, 43, 47, 53, 59, 67, 71];
+  var digits = String(nitBase).split('').reverse();
+  var suma = 0;
+  for (var i = 0; i < digits.length; i++) {
+    suma += Number(digits[i]) * (pesos[i] || 0);
+  }
+  var residuo = suma % 11;
+  return (residuo === 0 || residuo === 1) ? residuo : (11 - residuo);
+}
+
+/** Acepta el NIT con o sin el dígito de verificación ya incluido ("900123456" o
+ *  "900.123.456-7"); si viene sin DV lo calcula y lo agrega, si viene con DV lo valida.
+ *  NIT es opcional: una cadena vacía es válida (nada que guardar). */
+function normalizeNit_(raw) {
+  if (!raw) return { ok: true, value: '' };
+  var cleaned = String(raw).replace(/[.\s]/g, '');
+  var match = cleaned.match(/^(\d+)(?:-(\d))?$/);
+  if (!match) {
+    return { ok: false, message: 'NIT inválido: usa solo números (y opcionalmente "-" seguido del dígito de verificación)' };
+  }
+  var base = match[1];
+  var providedDv = match[2];
+  var computedDv = calcularDigitoVerificacionNit_(base);
+  if (providedDv !== undefined && Number(providedDv) !== computedDv) {
+    return { ok: false, message: 'El dígito de verificación no coincide: para NIT ' + base + ' debería ser -' + computedDv };
+  }
+  return { ok: true, value: base + '-' + computedDv };
+}
+
 function findSiteRow_(id) {
   var sheet = getSheet_('SITIOS');
   var data = sheet.getDataRange().getValues();
@@ -318,6 +361,8 @@ function siteRowToJson_(row) {
     client_name: row.client_name,
     project_name: row.project_name,
     address: row.address,
+    nit: row.nit || '',
+    ciudad: row.ciudad || '',
     created_at: row.created_at
   };
 }
@@ -327,15 +372,45 @@ function createSite_(params) {
     if (!params.client_name || !params.project_name) {
       return jsonResponse_({ status: 400, message: 'client_name y project_name son obligatorios' });
     }
+    var nitResult = normalizeNit_(params.nit);
+    if (!nitResult.ok) return jsonResponse_({ status: 422, message: nitResult.message });
+
     var id = generateId_();
     appendRow_('SITIOS', {
       id: id,
       client_name: params.client_name,
       project_name: params.project_name,
       address: params.address || '',
-      created_at: new Date().toISOString()
+      created_at: new Date().toISOString(),
+      nit: nitResult.value,
+      ciudad: params.ciudad || ''
     });
-    return jsonResponse_({ status: 201, message: 'Cliente/Proyecto creado', data: { id: id } });
+    return jsonResponse_({ status: 201, message: 'Cliente/Proyecto creado', data: { id: id, nit: nitResult.value } });
+  });
+}
+
+/** POST de actualización — mismo patrón que updateTransformer_: solo escribe los campos presentes en el payload. */
+function updateSite_(params) {
+  return withLock_(function () {
+    if (!params.id) return jsonResponse_({ status: 400, message: 'id es obligatorio' });
+    var row = findSiteRow_(params.id);
+    if (!row) return jsonResponse_({ status: 404, message: 'Cliente/Proyecto no encontrado' });
+
+    var updates = {};
+    ['client_name', 'project_name', 'address', 'ciudad'].forEach(function (field) {
+      if (params[field] !== undefined) updates[field] = params[field];
+    });
+    if (params.nit !== undefined) {
+      var nitResult = normalizeNit_(params.nit);
+      if (!nitResult.ok) return jsonResponse_({ status: 422, message: nitResult.message });
+      updates.nit = nitResult.value;
+    }
+
+    var sheet = getSheet_('SITIOS');
+    Object.keys(updates).forEach(function (field) {
+      sheet.getRange(row._row, colIndex_('SITIOS', field)).setValue(updates[field]);
+    });
+    return jsonResponse_({ status: 200, message: 'Cliente/Proyecto actualizado' });
   });
 }
 
@@ -382,6 +457,9 @@ function transformerRowToJson_(row) {
     custom_tap_ratio_matrix: safeParseJson_(row.custom_tap_ratio_matrix_json),
     status: row.status,
     plate_photo_url: row.plate_photo_file_id ? driveFileUrl_(row.plate_photo_file_id) : null,
+    cooling_type: row.cooling_type || '',
+    impedance_percent: row.impedance_percent,
+    insulation_type: row.insulation_type || '',
     created_at: row.created_at,
     updated_at: row.updated_at
   };
@@ -427,7 +505,10 @@ function createTransformer_(params) {
       status: 'ACTIVO',
       plate_photo_file_id: attachmentId,
       created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString()
+      updated_at: new Date().toISOString(),
+      cooling_type: params.cooling_type || '',
+      impedance_percent: params.impedance_percent || '',
+      insulation_type: params.insulation_type || ''
     });
 
     return jsonResponse_({ status: 201, message: 'Transformador creado', data: { id: id } });
@@ -444,7 +525,8 @@ function updateTransformer_(params) {
 
     var updates = {};
     ['serial_number', 'manufacturer', 'manufacture_year', 'phase_type', 'vector_group', 'rated_power_kva',
-      'hv_nominal_voltage', 'lv_nominal_voltage', 'status', 'site_id'].forEach(function (field) {
+      'hv_nominal_voltage', 'lv_nominal_voltage', 'status', 'site_id',
+      'cooling_type', 'impedance_percent', 'insulation_type'].forEach(function (field) {
       if (params[field] !== undefined) updates[field] = params[field];
     });
     if (params.tap_config !== undefined) updates.tap_config_json = JSON.stringify(params.tap_config);
@@ -844,50 +926,92 @@ function calculateInsulation_(readings) {
 }
 
 // ---------------------------------------------------------------------------
-// Aceite dieléctrico (BDV, humedad, acidez, tensión interfacial)
+// Aceite dieléctrico — tres secciones independientes, activables por checkbox:
+// Fisicoquímico, Cromatografía de Gases Disueltos (DGA), Cromatografía de PCB.
+// El técnico marca solo las que aplican a esa visita; se exige al menos una.
 // ---------------------------------------------------------------------------
 
-/** Umbrales de la matriz de decisión, en orden de prioridad (ver informe de habilitación del módulo). */
+/** Umbrales de la matriz de decisión del Fisicoquímico, en orden de prioridad. */
 var OIL_ACIDEZ_MAX_MG_KOH_G = 0.15;
-var OIL_TENSION_INTERFACIAL_MIN_MN_M = 24;
+var OIL_TENSION_INTERFACIAL_MIN_MN_M = 24; // dinas/cm == mN/m, mismo valor numérico
 var OIL_RIGIDEZ_MIN_KV = 30;
 var OIL_HUMEDAD_MAX_PPM = 35;
+var OIL_PCB_LIMITE_PPM = 50; // Res. 222 de 2011, MinAmbiente
+
+var OIL_PCB_AROCLORES = ['aroclor_1016', 'aroclor_1221', 'aroclor_1232', 'aroclor_1242', 'aroclor_1248', 'aroclor_1254', 'aroclor_1260'];
+
+/** Exige que el valor sea numérico; usado solo para campos de una sección que SÍ está activa. */
+function requireNumber_(value, label) {
+  if (typeof value !== 'number' || isNaN(value)) {
+    throw new Error(label + ' es obligatorio y debe ser numérico si activaste esta sección');
+  }
+  return value;
+}
 
 /**
- * Matriz de reglas de negocio en orden de prioridad:
- *  1. acidez >= 0.15 mg KOH/g  O  tensión interfacial <= 24 mN/m  -> REQUIERE REGENERACIÓN / CAMBIO
- *  2. rigidez <= 30 kV  O  humedad >= 35 ppm                      -> REQUIERE TERMOVACÍO
- *  3. en otro caso                                                -> APROBADO
+ * Combina hasta tres veredictos independientes (Fisicoquímico, sin veredicto para DGA,
+ * PCB) en un solo `overallVerdict` para el historial/pill de la prueba, priorizando el
+ * más severo (severity 3 > 2 > 1). El detalle de CADA sección activa igual queda
+ * completo en `sections` para la vista de detalle — el overallVerdict es solo un resumen.
  */
-function calculateOilAnalysis_(rigidez, humedad, acidez, tension) {
-  [rigidez, humedad, acidez, tension].forEach(function (v) {
-    if (typeof v !== 'number' || isNaN(v)) {
-      throw new Error('Rigidez, humedad, acidez y tensión interfacial son obligatorios y deben ser numéricos');
-    }
-  });
+function calculateOilAnalysis_(readings) {
+  var sections = {};
+  var overallVerdict = null;
+  var overallSeverity = 0; // 0 = nada activo con veredicto, 1 = ok, 2 = alerta, 3 = crítico
 
-  var overallVerdict;
-  if (acidez >= OIL_ACIDEZ_MAX_MG_KOH_G || tension <= OIL_TENSION_INTERFACIAL_MIN_MN_M) {
-    overallVerdict = 'REQUIERE REGENERACIÓN / CAMBIO';
-  } else if (rigidez <= OIL_RIGIDEZ_MIN_KV || humedad >= OIL_HUMEDAD_MAX_PPM) {
-    overallVerdict = 'REQUIERE TERMOVACÍO';
-  } else {
-    overallVerdict = 'APROBADO';
+  function considerVerdict(verdict, severity) {
+    if (severity > overallSeverity) { overallSeverity = severity; overallVerdict = verdict; }
   }
 
-  return {
-    rigidezKv: rigidez,
-    humedadPpm: humedad,
-    acidezMgKohG: acidez,
-    tensionInterfacialMnM: tension,
-    thresholds: {
-      acidezMaxMgKohG: OIL_ACIDEZ_MAX_MG_KOH_G,
-      tensionInterfacialMinMnM: OIL_TENSION_INTERFACIAL_MIN_MN_M,
-      rigidezMinKv: OIL_RIGIDEZ_MIN_KV,
-      humedadMaxPpm: OIL_HUMEDAD_MAX_PPM
-    },
-    overallVerdict: overallVerdict
-  };
+  if (readings.fisicoquimico_realizado) {
+    var rigidez = requireNumber_(readings.rigidez_dielectrica_kv, 'Rigidez dieléctrica');
+    var agua = requireNumber_(readings.agua_ppm, 'Agua (ppm)');
+    var acidez = requireNumber_(readings.numero_acido_mg_koh_g, 'Número ácido');
+    var tension = requireNumber_(readings.tension_interfacial_dinas_cm, 'Tensión interfacial');
+
+    var fqVerdict, fqSeverity;
+    if (acidez >= OIL_ACIDEZ_MAX_MG_KOH_G || tension <= OIL_TENSION_INTERFACIAL_MIN_MN_M) {
+      fqVerdict = 'REQUIERE REGENERACIÓN / CAMBIO'; fqSeverity = 3;
+    } else if (rigidez <= OIL_RIGIDEZ_MIN_KV || agua >= OIL_HUMEDAD_MAX_PPM) {
+      fqVerdict = 'REQUIERE TERMOVACÍO'; fqSeverity = 2;
+    } else {
+      fqVerdict = 'APROBADO'; fqSeverity = 1;
+    }
+
+    sections.fisicoquimico = {
+      verdict: fqVerdict,
+      thresholds: {
+        acidezMaxMgKohG: OIL_ACIDEZ_MAX_MG_KOH_G,
+        tensionInterfacialMinDinasCm: OIL_TENSION_INTERFACIAL_MIN_MN_M,
+        rigidezMinKv: OIL_RIGIDEZ_MIN_KV,
+        aguaMaxPpm: OIL_HUMEDAD_MAX_PPM
+      }
+    };
+    considerVerdict(fqVerdict, fqSeverity);
+  }
+
+  if (readings.dga_realizado) {
+    // Solo captura de datos — sin matriz de interpretación automática todavía.
+    sections.dga = { registrado: true };
+  }
+
+  if (readings.pcb_realizado) {
+    var total = 0;
+    OIL_PCB_AROCLORES.forEach(function (key) {
+      var v = readings[key];
+      if (typeof v === 'number' && !isNaN(v)) total += v;
+    });
+    var contaminado = total >= OIL_PCB_LIMITE_PPM;
+    var pcbVerdict = contaminado
+      ? 'Contaminado — requiere manejo especial (Res. 222 de 2011, MinAmbiente)'
+      : 'No contaminado';
+    sections.pcb = { totalPcbPpm: total, verdict: pcbVerdict, limitePpm: OIL_PCB_LIMITE_PPM };
+    considerVerdict(pcbVerdict, contaminado ? 3 : 1);
+  }
+
+  if (!overallVerdict) overallVerdict = 'REGISTRADO'; // ninguna sección con veredicto propio (p. ej. solo DGA)
+
+  return { sections: sections, overallVerdict: overallVerdict };
 }
 
 function submitOilAnalysisTest_(params, auth) {
@@ -898,16 +1022,18 @@ function submitOilAnalysisTest_(params, auth) {
     if (!params.readings) return jsonResponse_({ status: 400, message: 'readings es obligatorio' });
 
     var r = params.readings;
+    if (!r.fisicoquimico_realizado && !r.dga_realizado && !r.pcb_realizado) {
+      return jsonResponse_({ status: 400, message: 'Activa al menos una sección (Fisicoquímico, DGA o PCB) antes de enviar' });
+    }
+
     var calculated;
     try {
-      calculated = calculateOilAnalysis_(r.rigidezKv, r.humedadPpm, r.acidezMgKohG, r.tensionInterfacialMnM);
-      calculated.colorObservado = r.color || '';
-      calculated.aspectoVisual = r.visual || '';
+      calculated = calculateOilAnalysis_(r);
     } catch (calcErr) {
       return jsonResponse_({ status: 422, message: calcErr.message });
     }
 
-    var saved = persistTest_(transformer, 'ACEITE_DIELECTRICO', params.readings, calculated, params, auth);
+    var saved = persistTest_(transformer, 'ACEITE_DIELECTRICO', r, calculated, params, auth);
     return jsonResponse_({ status: 201, message: 'Prueba de aceite dieléctrico registrada', data: saved });
   });
 }
@@ -946,6 +1072,7 @@ function driveFileUrl_(fileId) {
 
 var POST_ACTIONS = {
   createSite: createSite_,
+  updateSite: updateSite_,
   createTransformer: createTransformer_,
   updateTransformer: updateTransformer_,
   deleteTransformer: deleteTransformer_,

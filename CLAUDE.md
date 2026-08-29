@@ -44,6 +44,28 @@ Sitio (Cliente/Proyecto)  →  Transformador (equipo)  →  Prueba (TTR / Resist
   (`openContextModal_()` en `app.js`), sin sacarlo de donde estaba. Las
   páginas completas de "Clientes/Proyectos" y "Equipos" también existen para
   navegación normal.
+- **Sitio** tiene `nit` (validado con dígito de verificación DIAN, ver más
+  abajo) y `ciudad`, ambos opcionales. **Transformador** tiene un bloque de
+  "características de placa" — todas opcionales —: `manufacturer`,
+  `vector_group`, `rated_power_kva`, `hv_nominal_voltage`,
+  `lv_nominal_voltage`, `manufacture_year`, `cooling_type` (ONAN/ONAF),
+  `impedance_percent`, `insulation_type`. Ambas entidades tienen edición real
+  (`updateSite`/`updateTransformer`), no solo creación — modales `#editSiteModal`
+  / `#editTransformerModal` en `index.html`, reusan la clase `.modal` genérica.
+- **NIT (Colombia)**: `calcularDigitoVerificacionNit_()` implementa el
+  algoritmo DIAN estándar (módulo 11, pesos fijos por posición) — existe
+  **duplicado a propósito** en `Código.gs` y en `app.js` (el backend es la
+  fuente de verdad que de verdad valida; el frontend solo da vista previa
+  instantánea mientras se escribe). Si cambias el algoritmo, cámbialo en los
+  dos lados. `normalizeNit_()` acepta el NIT con o sin el DV ya puesto —
+  si no lo trae, lo calcula y lo agrega; si lo trae, lo valida.
+- **Migraciones de esquema**: `HEADERS.SITIOS`/`HEADERS.TRANSFORMADORES` en
+  `Código.gs` han crecido más de una vez. La regla es siempre agregar
+  columnas **al final del arreglo**, nunca insertarlas entre columnas
+  existentes — insertar en medio correría el índice de columna de TODAS las
+  filas ya guardadas en Sheets. `ensureAllSheets_()` sincroniza la fila de
+  encabezado de una hoja ya existente si el arreglo creció (no solo al crear
+  la hoja por primera vez).
 
 ## Módulos de prueba
 
@@ -51,13 +73,56 @@ Sitio (Cliente/Proyecto)  →  Transformador (equipo)  →  Prueba (TTR / Resist
 |---|---|---|
 | TTR (relación de transformación) | ✅ Completo | `calculateTtr_` |
 | Resistencia de devanados | ✅ Completo | `calculateWindingResistance_` |
-| Aceite dieléctrico | ✅ Completo | `calculateOilAnalysis_` (matriz: acidez/tensión interfacial → regeneración; rigidez/humedad → termovacío; si no, aprobado) |
+| Aceite dieléctrico | ✅ Completo — **tres secciones activables por checkbox**, ver abajo | `calculateOilAnalysis_` |
 | Aislamiento (Megger, DAR/IP) | Backend listo (`calculateInsulation_`), **sin formulario en el frontend** | — |
-| Análisis PCB (Bifenilos) | Solo placeholder — nav deshabilitado | Falta definir umbral regulatorio con el cliente antes de construirlo |
 
 Cada envío de prueba acepta un adjunto opcional (`file_base64`/`file_mime_type`)
 que sube a Drive vía `persistTest_()` — ya funciona para los tres módulos
 completos, no hace falta tocar el backend para agregar evidencia a uno nuevo.
+
+### Aceite dieléctrico — estructura por secciones
+
+El formulario NO es un solo bloque de campos obligatorios: son **tres
+secciones independientes**, cada una activada por un checkbox, y el envío
+exige al menos una activa (`fisicoquimico_realizado` / `dga_realizado` /
+`pcb_realizado`, las tres viajan siempre en `readings` como booleanos).
+
+- **Fisicoquímico** — 7 ensayos ASTM (agua, rigidez dieléctrica, tensión
+  interfacial, número ácido, densidad relativa, color ASTM D1500, examen
+  visual). Es la única sección con la matriz de decisión original: acidez ≥
+  0.15 mg KOH/g O tensión interfacial ≤ 24 dinas/cm → `REQUIERE
+  REGENERACIÓN / CAMBIO`; si no, rigidez ≤ 30 kV O agua ≥ 35 ppm →
+  `REQUIERE TERMOVACÍO`; si no, `APROBADO`.
+- **DGA** (cromatografía de gases disueltos) — 9 gases en ppm (H2, O2, N2,
+  CH4, CO, CO2, C2H2, C2H4, C2H6). Solo captura datos, **sin veredicto
+  automático todavía** — nadie ha definido la matriz de interpretación.
+- **PCB** (cromatografía) — 7 Aroclores en ppm; `total_pcb_ppm` se calcula
+  sumándolos, y ≥ 50 ppm → `Contaminado — requiere manejo especial (Res.
+  222 de 2011, MinAmbiente)`, si no → `No contaminado`.
+
+**Convención de veredicto combinado**: si dos secciones con veredicto propio
+están activas a la vez (Fisicoquímico y PCB — DGA nunca aporta veredicto),
+`overallVerdict` (el que se guarda en la columna `verdict` y colorea el pill
+del historial) es el **más severo de los dos**, no una concatenación de
+texto. Severidad: 3 = crítico (`REQUIERE REGENERACIÓN / CAMBIO`,
+`Contaminado...`), 2 = alerta (`REQUIERE TERMOVACÍO`), 1 = ok (`APROBADO`,
+`No contaminado`). El desglose de **cada** sección activa (con su propio
+veredicto) igual queda completo en `calculated_results.sections` para la
+vista de detalle — `overallVerdict` es solo el resumen para el historial, no
+reemplaza el detalle. Si ninguna sección activa tiene veredicto propio (por
+ejemplo, solo DGA), `overallVerdict` cae en `REGISTRADO` (pill neutro).
+
+Esta misma lógica está **duplicada intencionalmente** en `Código.gs`
+(`calculateOilAnalysis_`) y `app.js` (`calculateOilPreview_`, para la vista
+previa instantánea) — si cambias los umbrales o la prioridad, cámbialos en
+los dos lados.
+
+Regla de guardado: **una sección desactivada envía sus campos en `null`,
+nunca en `0`** (`buildOilRequestBody()` en `app.js`) — un 0 real en número
+ácido o en un Aroclor es un dato válido, no debe confundirse con "no
+medido". Si agregas un campo nuevo a una sección existente, síguelo
+metiendo dentro del `if (seccion_realizado) {...} else {...}` de esa
+función, no lo dejes fuera.
 
 ## RBAC
 
@@ -137,5 +202,7 @@ No implementado todavía, evaluado pero no decidido con el usuario:
 - Migrar a offline real (service worker + IndexedDB) — hoy la resiliencia de
   red es "no perder lo digitado", no "funcionar sin señal".
 
-Base de datos en vivo: limpia de datos de prueba a partir del 2026-08-26 (se
-borraron todos los sitios/equipos creados durante verificación).
+Base de datos en vivo: limpia de datos de prueba (última verificación
+2026-08-29 tras habilitar NIT/ciudad, características de placa y el
+rediseño de Aceite — todo lo creado durante esas pruebas se borró al
+terminar).

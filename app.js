@@ -27,6 +27,21 @@ const OIL_ACIDEZ_MAX = 0.15;
 const OIL_TENSION_INTERFACIAL_MIN = 24;
 const OIL_RIGIDEZ_MIN = 30;
 const OIL_HUMEDAD_MAX = 35;
+const OIL_PCB_LIMITE_PPM = 50; // Res. 222 de 2011, MinAmbiente
+
+const OIL_DGA_GASES = [
+  { key: 'h2', label: 'Hidrógeno (H₂)' },
+  { key: 'o2', label: 'Oxígeno (O₂)' },
+  { key: 'n2', label: 'Nitrógeno (N₂)' },
+  { key: 'ch4', label: 'Metano (CH₄)' },
+  { key: 'co', label: 'Monóxido de carbono (CO)' },
+  { key: 'co2', label: 'Dióxido de carbono (CO₂)' },
+  { key: 'c2h2', label: 'Acetileno (C₂H₂)' },
+  { key: 'c2h4', label: 'Etileno (C₂H₄)' },
+  { key: 'c2h6', label: 'Etano (C₂H₆)' }
+];
+
+const OIL_PCB_AROCLORES = ['aroclor_1016', 'aroclor_1221', 'aroclor_1232', 'aroclor_1242', 'aroclor_1248', 'aroclor_1254', 'aroclor_1260'];
 
 // ---------------------------------------------------------------
 // Estado global de la aplicación
@@ -171,10 +186,10 @@ function fmtDate_(iso) {
 }
 
 function verdictPillClass_(verdict) {
-  if (verdict === 'APROBADO') return 'success';
-  if (verdict === 'RECHAZADO' || verdict === 'REQUIERE REGENERACIÓN / CAMBIO') return 'danger';
+  if (verdict === 'APROBADO' || verdict === 'No contaminado') return 'success';
+  if (verdict === 'RECHAZADO' || verdict === 'REQUIERE REGENERACIÓN / CAMBIO' || (verdict && verdict.indexOf('Contaminado') === 0)) return 'danger';
   if (verdict === 'OBSERVADO' || verdict === 'REQUIERE TERMOVACÍO') return 'warning';
-  return 'neutral';
+  return 'neutral'; // incluye 'REGISTRADO' (solo DGA, sin veredicto propio)
 }
 
 function syntaxHighlight(obj) {
@@ -253,7 +268,7 @@ function showView(name) {
     removeAdminNavAndPanel();
   }
 
-  ['sites', 'dashboard', 'detail', 'ttr-form', 'winding-form', 'oil-form', 'pcb-form', 'admin'].forEach(function (v) {
+  ['sites', 'dashboard', 'detail', 'ttr-form', 'winding-form', 'oil-form', 'admin'].forEach(function (v) {
     var el = document.getElementById('view-' + v);
     if (el) el.hidden = (name !== v);
   });
@@ -274,7 +289,7 @@ function viewNeedsSite_(name) {
   return name === 'dashboard';
 }
 function viewNeedsTransformer_(name) {
-  return name === 'ttr-form' || name === 'winding-form' || name === 'oil-form' || name === 'pcb-form';
+  return name === 'ttr-form' || name === 'winding-form' || name === 'oil-form';
 }
 
 // ---------------------------------------------------------------
@@ -522,21 +537,107 @@ function renderSites() {
   if (!tbody) return;
 
   if (state.sites.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="4" class="empty-note">No hay clientes/proyectos todavía. Crea el primero arriba para empezar (Fase 1).</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="6" class="empty-note">No hay clientes/proyectos todavía. Crea el primero arriba para empezar (Fase 1).</td></tr>';
     return;
   }
 
   tbody.innerHTML = state.sites.map(function (s) {
+    var editBtn = '<button type="button" class="btn" style="min-height:36px; padding:4px 10px;" title="Editar" onclick="event.stopPropagation(); openEditSiteModal_(\'' + s.id + '\')">Editar</button>';
     var deleteBtn = state.role === 'Administrador'
       ? '<button type="button" class="matrix-remove" title="Eliminar" onclick="event.stopPropagation(); handleDeleteSite_(\'' + s.id + '\')">&times;</button>'
       : '';
     return '<tr class="rowlink" onclick="selectSite(\'' + s.id + '\')">' +
       '<td>' + escapeHtml_(s.client_name) + '</td>' +
       '<td>' + escapeHtml_(s.project_name) + '</td>' +
+      '<td>' + escapeHtml_(s.ciudad || '—') + '</td>' +
+      '<td class="mono">' + escapeHtml_(s.nit || '—') + '</td>' +
       '<td>' + escapeHtml_(s.address || '—') + '</td>' +
-      '<td style="display:flex; align-items:center; justify-content:flex-end; gap:8px;"><span class="pill neutral">Seleccionar &rarr;</span>' + deleteBtn + '</td>' +
+      '<td style="display:flex; align-items:center; justify-content:flex-end; gap:8px;">' + editBtn + deleteBtn + '</td>' +
       '</tr>';
   }).join('');
+}
+
+/** Algoritmo estándar DIAN de dígito de verificación (módulo 11, pesos fijos por posición) —
+ *  debe replicar EXACTAMENTE calcularDigitoVerificacionNit_ en Código.gs. */
+function calcularDigitoVerificacionNit_(nitBase) {
+  var pesos = [3, 7, 13, 17, 19, 23, 29, 37, 41, 43, 47, 53, 59, 67, 71];
+  var digits = String(nitBase).split('').reverse();
+  var suma = 0;
+  for (var i = 0; i < digits.length; i++) {
+    suma += Number(digits[i]) * (pesos[i] || 0);
+  }
+  var residuo = suma % 11;
+  return (residuo === 0 || residuo === 1) ? residuo : (11 - residuo);
+}
+
+function normalizeNit_(raw) {
+  if (!raw) return { ok: true, value: '' };
+  var cleaned = String(raw).replace(/[.\s]/g, '');
+  var match = cleaned.match(/^(\d+)(?:-(\d))?$/);
+  if (!match) return { ok: false, message: 'NIT inválido: solo números (y opcionalmente "-" con el dígito de verificación)' };
+  var base = match[1];
+  var providedDv = match[2];
+  var computedDv = calcularDigitoVerificacionNit_(base);
+  if (providedDv !== undefined && Number(providedDv) !== computedDv) {
+    return { ok: false, message: 'El DV no coincide: para ' + base + ' debería ser -' + computedDv };
+  }
+  return { ok: true, value: base + '-' + computedDv };
+}
+
+/** Vista previa en vivo del dígito de verificación mientras el técnico escribe el NIT. */
+function updateNitPreview_(inputEl, hintElId) {
+  var hint = document.getElementById(hintElId);
+  if (!hint) return;
+  var result = normalizeNit_(inputEl.value);
+  if (!inputEl.value) { hint.textContent = ''; return; }
+  hint.textContent = result.ok ? ('Se guardará como ' + result.value) : result.message;
+  hint.style.color = result.ok ? 'var(--success-text)' : 'var(--danger)';
+}
+
+function openEditSiteModal_(id) {
+  var site = state.sites.filter(function (s) { return s.id === id; })[0];
+  if (!site) return;
+  document.getElementById('editSiteForm').dataset.siteId = id;
+  document.getElementById('editSiteClient').value = site.client_name || '';
+  document.getElementById('editSiteProject').value = site.project_name || '';
+  document.getElementById('editSiteAddress').value = site.address || '';
+  document.getElementById('editSiteNit').value = site.nit || '';
+  document.getElementById('editSiteCiudad').value = site.ciudad || '';
+  setStatus_(document.getElementById('editSiteStatus'), '', false);
+  document.getElementById('editSiteNitHint').textContent = '';
+  document.getElementById('editSiteModal').classList.add('open');
+  document.getElementById('editSiteModalBackdrop').classList.add('open');
+}
+
+function closeEditSiteModal_() {
+  document.getElementById('editSiteModal').classList.remove('open');
+  document.getElementById('editSiteModalBackdrop').classList.remove('open');
+}
+
+function handleEditSiteSubmit(e) {
+  e.preventDefault();
+  var id = document.getElementById('editSiteForm').dataset.siteId;
+  var statusEl = document.getElementById('editSiteStatus');
+  var nitResult = normalizeNit_(document.getElementById('editSiteNit').value.trim());
+  if (!nitResult.ok) { setStatus_(statusEl, nitResult.message, false, true); return; }
+
+  setStatus_(statusEl, 'Guardando…', false);
+  callApi('updateSite', 'POST', {
+    id: id,
+    client_name: document.getElementById('editSiteClient').value.trim(),
+    project_name: document.getElementById('editSiteProject').value.trim(),
+    address: document.getElementById('editSiteAddress').value.trim(),
+    nit: nitResult.value,
+    ciudad: document.getElementById('editSiteCiudad').value.trim()
+  })
+    .then(function () {
+      clearDraft_('mya_cache_sites');
+      closeEditSiteModal_();
+      return loadSitesAndShow_();
+    })
+    .catch(function (err) {
+      if (err.status !== 402 && err.status !== 403) setStatus_(statusEl, formatNetworkAwareError_(err), false, true);
+    });
 }
 
 /** Solo Administrador (el backend también lo exige). Se rechaza si el sitio aún tiene equipos. */
@@ -570,14 +671,18 @@ function handleCreateSiteSubmit(e) {
   var clientName = document.getElementById('newSiteClient').value.trim();
   var projectName = document.getElementById('newSiteProject').value.trim();
   var address = document.getElementById('newSiteAddress').value.trim();
+  var ciudad = document.getElementById('newSiteCiudad').value.trim();
   if (!clientName || !projectName) return;
 
   var btn = document.getElementById('createSiteBtn');
   var status = document.getElementById('createSiteStatus');
+  var nitResult = normalizeNit_(document.getElementById('newSiteNit').value.trim());
+  if (!nitResult.ok) { setStatus_(status, nitResult.message, false, true); return; }
+
   btn.disabled = true;
   setStatus_(status, 'Creando…', false);
 
-  callApi('createSite', 'POST', { client_name: clientName, project_name: projectName, address: address })
+  callApi('createSite', 'POST', { client_name: clientName, project_name: projectName, address: address, nit: nitResult.value, ciudad: ciudad })
     .then(function () {
       setStatus_(status, 'Cliente/Proyecto creado', true);
       document.getElementById('createSiteForm').reset();
@@ -652,6 +757,7 @@ function handleCreateTransformerSubmit(e) {
   var lv = parseDecimal_(document.getElementById('newTrfLv').value);
   var year = document.getElementById('newTrfYear').value.trim();
   var power = parseDecimal_(document.getElementById('newTrfPower').value);
+  var impedance = parseDecimal_(document.getElementById('newTrfImpedance').value);
   var btn = document.getElementById('createTransformerBtn');
   var status = document.getElementById('createTransformerStatus');
   btn.disabled = true;
@@ -687,6 +793,9 @@ function handleCreateTransformerSubmit(e) {
         lv_nominal_voltage: isNaN(lv) ? null : lv,
         manufacture_year: year || null,
         rated_power_kva: isNaN(power) ? null : power,
+        cooling_type: document.getElementById('newTrfCooling').value || null,
+        impedance_percent: isNaN(impedance) ? null : impedance,
+        insulation_type: document.getElementById('newTrfInsulation').value.trim() || null,
         is_special_design: false,
         tap_config: {
           nominalVoltage: nominalForTaps,
@@ -709,6 +818,62 @@ function handleCreateTransformerSubmit(e) {
       if (!err || (err.status !== 402 && err.status !== 403)) setStatus_(status, formatNetworkAwareError_(err || {}), false, true);
     })
     .then(function () { btn.disabled = false; });
+}
+
+function openEditTransformerModal_() {
+  var t = state.currentTransformer;
+  if (!t) return;
+  document.getElementById('editTrfSerial').value = t.serial_number || '';
+  document.getElementById('editTrfManufacturer').value = t.manufacturer || '';
+  document.getElementById('editTrfVectorGroup').value = t.vector_group || '';
+  document.getElementById('editTrfPower').value = t.rated_power_kva || '';
+  document.getElementById('editTrfHv').value = t.hv_nominal_voltage || '';
+  document.getElementById('editTrfLv').value = t.lv_nominal_voltage || '';
+  document.getElementById('editTrfCooling').value = t.cooling_type || '';
+  document.getElementById('editTrfImpedance').value = t.impedance_percent || '';
+  document.getElementById('editTrfInsulation').value = t.insulation_type || '';
+  document.getElementById('editTrfYear').value = t.manufacture_year || '';
+  setStatus_(document.getElementById('editTransformerStatus'), '', false);
+  document.getElementById('editTransformerModal').classList.add('open');
+  document.getElementById('editTransformerModalBackdrop').classList.add('open');
+}
+
+function closeEditTransformerModal_() {
+  document.getElementById('editTransformerModal').classList.remove('open');
+  document.getElementById('editTransformerModalBackdrop').classList.remove('open');
+}
+
+function handleEditTransformerSubmit(e) {
+  e.preventDefault();
+  var statusEl = document.getElementById('editTransformerStatus');
+  var hv = parseDecimal_(document.getElementById('editTrfHv').value);
+  var lv = parseDecimal_(document.getElementById('editTrfLv').value);
+  var power = parseDecimal_(document.getElementById('editTrfPower').value);
+  var impedance = parseDecimal_(document.getElementById('editTrfImpedance').value);
+  var year = document.getElementById('editTrfYear').value.trim();
+
+  setStatus_(statusEl, 'Guardando…', false);
+  callApi('updateTransformer', 'POST', {
+    id: state.currentTransformerId,
+    serial_number: document.getElementById('editTrfSerial').value.trim(),
+    manufacturer: document.getElementById('editTrfManufacturer').value.trim(),
+    vector_group: document.getElementById('editTrfVectorGroup').value.trim() || null,
+    rated_power_kva: isNaN(power) ? null : power,
+    hv_nominal_voltage: isNaN(hv) ? null : hv,
+    lv_nominal_voltage: isNaN(lv) ? null : lv,
+    cooling_type: document.getElementById('editTrfCooling').value || null,
+    impedance_percent: isNaN(impedance) ? null : impedance,
+    insulation_type: document.getElementById('editTrfInsulation').value.trim() || null,
+    manufacture_year: year || null
+  })
+    .then(function () {
+      clearDraft_('mya_cache_transformers_' + state.currentSiteId);
+      closeEditTransformerModal_();
+      return openTransformer(state.currentTransformerId);
+    })
+    .catch(function (err) {
+      if (err.status !== 402 && err.status !== 403) setStatus_(statusEl, formatNetworkAwareError_(err), false, true);
+    });
 }
 
 function buildDefaultTapPositions_(nominalVoltage) {
@@ -973,10 +1138,13 @@ function renderDetail() {
 
   var cfg = t.tap_config || {};
   document.getElementById('detailSpecGrid').innerHTML = [
-    ['Tensión HV nominal', fmtVoltage_(t.hv_nominal_voltage)],
-    ['Tensión LV nominal', fmtVoltage_(t.lv_nominal_voltage)],
+    ['Tensión primaria', fmtVoltage_(t.hv_nominal_voltage)],
+    ['Tensión secundaria', fmtVoltage_(t.lv_nominal_voltage)],
     ['Potencia nominal', t.rated_power_kva ? (t.rated_power_kva + ' kVA') : '—'],
     ['Año de fabricación', t.manufacture_year || '—'],
+    ['Refrigeración', t.cooling_type || '—'],
+    ['Impedancia', t.impedance_percent ? (t.impedance_percent + ' %') : '—'],
+    ['Tipo de aislamiento', escapeHtml_(t.insulation_type || '—')],
     ['TAPs configurados', (cfg.positions || []).length],
     ['Paso por TAP', cfg.stepPercentage != null ? (cfg.stepPercentage + ' %') : '—'],
     ['Foto de placa', t.plate_photo_url ? ('<a href="' + t.plate_photo_url + '" target="_blank" rel="noopener">Ver foto</a>') : '—']
@@ -1484,85 +1652,236 @@ function submitWinding() {
 
 function renderOilFormContext() {
   var t = state.currentTransformer;
-  document.getElementById('oilFormSubtitle').textContent = t.serial_number + ' · Rigidez, humedad, acidez y tensión interfacial';
+  document.getElementById('oilFormSubtitle').textContent = t.serial_number + ' · marca solo las secciones que apliquen a esta visita';
   document.getElementById('oilTenantChip').textContent = state.username + ' · ' + state.role;
+}
+
+/** Genera los campos repetitivos de DGA (9 gases) y PCB (7 Aroclores) una sola vez —
+ *  se llama en DOMContentLoaded, no en cada apertura del formulario. */
+function buildOilDgaGrid_() {
+  var grid = document.getElementById('oilDgaGrid');
+  if (!grid || grid.childElementCount) return;
+  grid.innerHTML = OIL_DGA_GASES.map(function (g) {
+    return '<div class="field"><label>' + g.label + ' (ppm)</label>' +
+      '<input class="mono" id="oilDga_' + g.key + '" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*" oninput="refreshOil()"></div>';
+  }).join('');
+}
+function buildOilPcbGrid_() {
+  var grid = document.getElementById('oilPcbGrid');
+  if (!grid || grid.childElementCount) return;
+  grid.innerHTML = OIL_PCB_AROCLORES.map(function (key) {
+    return '<div class="field"><label>Aroclor ' + key.split('_')[1] + ' (ppm)</label>' +
+      '<input class="mono" id="oilPcb_' + key + '" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*" oninput="refreshOil()"></div>';
+  }).join('');
+}
+
+function emptyOilState_() {
+  return {
+    sampleBy: '', sampleDate: '',
+    fisicoquimico_realizado: false, dga_realizado: false, pcb_realizado: false,
+    agua_ppm: null, rigidez_dielectrica_kv: null, tension_interfacial_dinas_cm: null,
+    numero_acido_mg_koh_g: null, densidad_relativa: null, color_astm: '', examen_visual: '',
+    dga: {}, pcb: {}
+  };
 }
 
 function resetOilStateFromTransformer() {
   var draft = loadDraft_('mya_draft_oil_' + state.currentTransformerId);
-  state.oil = draft || { rigidez: null, humedad: null, acidez: null, tension: null };
-  var fields = { oilRigidez: 'rigidez', oilHumedad: 'humedad', oilAcidez: 'acidez', oilTension: 'tension' };
-  Object.keys(fields).forEach(function (id) {
-    var el = document.getElementById(id);
-    if (el) el.value = state.oil[fields[id]] != null ? state.oil[fields[id]] : '';
+  state.oil = draft || emptyOilState_();
+  var certificateInput = document.getElementById('oilCertificate');
+  if (certificateInput) certificateInput.value = '';
+  if (!state.oil.dga) state.oil.dga = {};
+  if (!state.oil.pcb) state.oil.pcb = {};
+
+  document.getElementById('oilSampleBy').value = state.oil.sampleBy || '';
+  document.getElementById('oilSampleDate').value = state.oil.sampleDate || '';
+
+  document.getElementById('oilSectionFisicoquimico').checked = !!state.oil.fisicoquimico_realizado;
+  document.getElementById('oilBodyFisicoquimico').hidden = !state.oil.fisicoquimico_realizado;
+  document.getElementById('oilAgua').value = state.oil.agua_ppm != null ? state.oil.agua_ppm : '';
+  document.getElementById('oilRigidez').value = state.oil.rigidez_dielectrica_kv != null ? state.oil.rigidez_dielectrica_kv : '';
+  document.getElementById('oilTension').value = state.oil.tension_interfacial_dinas_cm != null ? state.oil.tension_interfacial_dinas_cm : '';
+  document.getElementById('oilAcidez').value = state.oil.numero_acido_mg_koh_g != null ? state.oil.numero_acido_mg_koh_g : '';
+  document.getElementById('oilDensidad').value = state.oil.densidad_relativa != null ? state.oil.densidad_relativa : '';
+  document.getElementById('oilColorAstm').value = state.oil.color_astm || '';
+  document.getElementById('oilExamenVisual').value = state.oil.examen_visual || '';
+
+  document.getElementById('oilSectionDga').checked = !!state.oil.dga_realizado;
+  document.getElementById('oilBodyDga').hidden = !state.oil.dga_realizado;
+  OIL_DGA_GASES.forEach(function (g) {
+    var el = document.getElementById('oilDga_' + g.key);
+    if (el) el.value = state.oil.dga[g.key] != null ? state.oil.dga[g.key] : '';
+  });
+
+  document.getElementById('oilSectionPcb').checked = !!state.oil.pcb_realizado;
+  document.getElementById('oilBodyPcb').hidden = !state.oil.pcb_realizado;
+  OIL_PCB_AROCLORES.forEach(function (key) {
+    var el = document.getElementById('oilPcb_' + key);
+    if (el) el.value = state.oil.pcb[key] != null ? state.oil.pcb[key] : '';
   });
 }
 
-/** Debe replicar EXACTAMENTE calculateOilAnalysis_ en Código.gs: misma matriz, mismo orden de prioridad. */
-function calculateOilPreview_(rigidez, humedad, acidez, tension) {
-  if ([rigidez, humedad, acidez, tension].some(function (v) { return v == null || isNaN(v); })) {
-    return { overallVerdict: 'PENDIENTE' };
+function toggleOilSection_(section) {
+  var checkboxIds = { fisicoquimico: 'oilSectionFisicoquimico', dga: 'oilSectionDga', pcb: 'oilSectionPcb' };
+  var bodyIds = { fisicoquimico: 'oilBodyFisicoquimico', dga: 'oilBodyDga', pcb: 'oilBodyPcb' };
+  var checked = document.getElementById(checkboxIds[section]).checked;
+  document.getElementById(bodyIds[section]).hidden = !checked;
+  state.oil[section + '_realizado'] = checked;
+  refreshOil();
+}
+
+/** Debe replicar EXACTAMENTE calculateOilAnalysis_ en Código.gs: misma matriz de
+ *  Fisicoquímico, mismo umbral de PCB, mismo criterio de "más severo gana" para
+ *  combinar hasta dos veredictos (Fisicoquímico + PCB) en un solo overallVerdict.
+ *  DGA nunca aporta veredicto — es solo captura de datos. */
+function calculateOilPreview_(readings) {
+  var sections = {};
+  var overallVerdict = null;
+  var overallSeverity = 0;
+  function consider(verdict, severity) {
+    if (severity > overallSeverity) { overallSeverity = severity; overallVerdict = verdict; }
   }
-  var overallVerdict;
-  if (acidez >= OIL_ACIDEZ_MAX || tension <= OIL_TENSION_INTERFACIAL_MIN) {
-    overallVerdict = 'REQUIERE REGENERACIÓN / CAMBIO';
-  } else if (rigidez <= OIL_RIGIDEZ_MIN || humedad >= OIL_HUMEDAD_MAX) {
-    overallVerdict = 'REQUIERE TERMOVACÍO';
-  } else {
-    overallVerdict = 'APROBADO';
+
+  if (readings.fisicoquimico_realizado) {
+    var rigidez = readings.rigidez_dielectrica_kv, agua = readings.agua_ppm,
+      acidez = readings.numero_acido_mg_koh_g, tension = readings.tension_interfacial_dinas_cm;
+    var complete = [rigidez, agua, acidez, tension].every(function (v) { return typeof v === 'number' && !isNaN(v); });
+    if (complete) {
+      var fqVerdict, fqSeverity;
+      if (acidez >= OIL_ACIDEZ_MAX || tension <= OIL_TENSION_INTERFACIAL_MIN) { fqVerdict = 'REQUIERE REGENERACIÓN / CAMBIO'; fqSeverity = 3; }
+      else if (rigidez <= OIL_RIGIDEZ_MIN || agua >= OIL_HUMEDAD_MAX) { fqVerdict = 'REQUIERE TERMOVACÍO'; fqSeverity = 2; }
+      else { fqVerdict = 'APROBADO'; fqSeverity = 1; }
+      sections.fisicoquimico = { verdict: fqVerdict, complete: true };
+      consider(fqVerdict, fqSeverity);
+    } else {
+      sections.fisicoquimico = { verdict: 'Faltan datos', complete: false };
+    }
   }
-  return { overallVerdict: overallVerdict };
+
+  if (readings.dga_realizado) {
+    sections.dga = { registrado: true };
+  }
+
+  if (readings.pcb_realizado) {
+    var total = 0;
+    OIL_PCB_AROCLORES.forEach(function (key) {
+      var v = readings[key];
+      if (typeof v === 'number' && !isNaN(v)) total += v;
+    });
+    var contaminado = total >= OIL_PCB_LIMITE_PPM;
+    var pcbVerdict = contaminado ? 'Contaminado — requiere manejo especial (Res. 222 de 2011, MinAmbiente)' : 'No contaminado';
+    sections.pcb = { totalPcbPpm: total, verdict: pcbVerdict };
+    consider(pcbVerdict, contaminado ? 3 : 1);
+  }
+
+  if (!overallVerdict && (readings.fisicoquimico_realizado || readings.dga_realizado || readings.pcb_realizado)) {
+    overallVerdict = 'REGISTRADO';
+  }
+
+  return { sections: sections, overallVerdict: overallVerdict };
 }
 
 function renderOilPreview() {
-  var o = state.oil;
-  var result = calculateOilPreview_(o.rigidez, o.humedad, o.acidez, o.tension);
-  var rows = [
-    ['Rigidez dieléctrica (BDV)', o.rigidez, 'kV', o.rigidez != null && o.rigidez <= OIL_RIGIDEZ_MIN],
-    ['Humedad', o.humedad, 'ppm', o.humedad != null && o.humedad >= OIL_HUMEDAD_MAX],
-    ['Acidez', o.acidez, 'mg KOH/g', o.acidez != null && o.acidez >= OIL_ACIDEZ_MAX],
-    ['Tensión interfacial', o.tension, 'mN/m', o.tension != null && o.tension <= OIL_TENSION_INTERFACIAL_MIN]
-  ];
-  document.getElementById('oilPreviewRows').innerHTML = rows.map(function (r) {
-    var valTxt = r[1] != null ? r[1] + ' ' + r[2] : '—';
-    var cls = r[1] == null ? 'pending' : (r[3] ? 'bad' : 'ok');
-    return '<div class="preview-row"><span class="phase-name">' + r[0] + '</span><span class="num"></span>' +
-      '<span class="err ' + cls + '">' + valTxt + '</span></div>';
-  }).join('');
+  var readings = buildOilRequestBody().readings;
+  var result = calculateOilPreview_(readings);
+  var rows = [];
+
+  if (state.oil.fisicoquimico_realizado) {
+    var fq = result.sections.fisicoquimico;
+    rows.push(['Fisicoquímico', fq.verdict, !fq.complete ? 'pending' : (fq.verdict === 'APROBADO' ? 'ok' : 'bad')]);
+  }
+  if (state.oil.dga_realizado) {
+    rows.push(['DGA', 'Registrado (sin veredicto automático)', 'pending']);
+  }
+  if (state.oil.pcb_realizado) {
+    var pcb = result.sections.pcb;
+    rows.push(['PCB · Total', pcb.totalPcbPpm.toFixed(2) + ' ppm', 'pending']);
+    rows.push(['PCB · Veredicto', pcb.verdict, pcb.verdict === 'No contaminado' ? 'ok' : 'bad']);
+    document.getElementById('oilPcbTotal').textContent = pcb.totalPcbPpm.toFixed(2) + ' ppm';
+    document.getElementById('oilPcbVerdictLabel').textContent = pcb.verdict;
+  }
+
+  document.getElementById('oilPreviewRows').innerHTML = rows.length
+    ? rows.map(function (r) {
+        return '<div class="preview-row"><span class="phase-name">' + r[0] + '</span><span class="num"></span>' +
+          '<span class="err ' + r[2] + '">' + r[1] + '</span></div>';
+      }).join('')
+    : '<div class="empty-note">Activa al menos una sección para ver la vista previa.</div>';
 
   var banner = document.getElementById('oilVerdictBanner');
+  if (!result.overallVerdict) {
+    banner.className = 'verdict-banner';
+    banner.innerHTML = 'Activa al menos una sección';
+    return;
+  }
   var bannerCls = 'verdict-banner';
-  if (result.overallVerdict === 'APROBADO') bannerCls += ' success';
+  if (result.overallVerdict === 'APROBADO' || result.overallVerdict === 'No contaminado') bannerCls += ' success';
   else if (result.overallVerdict === 'REQUIERE TERMOVACÍO') bannerCls += ' warning';
-  else if (result.overallVerdict === 'REQUIERE REGENERACIÓN / CAMBIO') bannerCls += ' danger';
+  else if (result.overallVerdict === 'REQUIERE REGENERACIÓN / CAMBIO' || result.overallVerdict.indexOf('Contaminado') === 0) bannerCls += ' danger';
   banner.className = bannerCls;
   banner.innerHTML = 'Dictamen: ' + result.overallVerdict;
 }
 
+function parseOilNum_(id) {
+  var el = document.getElementById(id);
+  if (!el) return null;
+  var v = parseDecimal_(el.value);
+  return isNaN(v) ? null : v;
+}
+
+/** Cada sección desactivada envía sus campos en null (nunca 0 por defecto) — un 0 en
+ *  número ácido o en un Aroclor es un dato real, no debe confundirse con "no medido". */
 function buildOilRequestBody() {
-  return {
-    transformer_id: state.currentTransformerId,
-    instrument_used: document.getElementById('oilInstrument').value,
-    readings: {
-      rigidezKv: state.oil.rigidez,
-      humedadPpm: state.oil.humedad,
-      acidezMgKohG: state.oil.acidez,
-      tensionInterfacialMnM: state.oil.tension,
-      color: document.getElementById('oilColor').value || null,
-      visual: document.getElementById('oilVisual').value || null
-    }
+  var readings = {
+    fisicoquimico_realizado: !!state.oil.fisicoquimico_realizado,
+    dga_realizado: !!state.oil.dga_realizado,
+    pcb_realizado: !!state.oil.pcb_realizado,
+    sample_taken_by: state.oil.sampleBy || null,
+    sample_date: state.oil.sampleDate || null
   };
+
+  if (state.oil.fisicoquimico_realizado) {
+    readings.agua_ppm = state.oil.agua_ppm;
+    readings.rigidez_dielectrica_kv = state.oil.rigidez_dielectrica_kv;
+    readings.tension_interfacial_dinas_cm = state.oil.tension_interfacial_dinas_cm;
+    readings.numero_acido_mg_koh_g = state.oil.numero_acido_mg_koh_g;
+    readings.densidad_relativa = state.oil.densidad_relativa;
+    readings.color_astm = state.oil.color_astm || null;
+    readings.examen_visual = state.oil.examen_visual || null;
+  } else {
+    readings.agua_ppm = null;
+    readings.rigidez_dielectrica_kv = null;
+    readings.tension_interfacial_dinas_cm = null;
+    readings.numero_acido_mg_koh_g = null;
+    readings.densidad_relativa = null;
+    readings.color_astm = null;
+    readings.examen_visual = null;
+  }
+
+  OIL_DGA_GASES.forEach(function (g) {
+    readings[g.key] = state.oil.dga_realizado ? state.oil.dga[g.key] : null;
+  });
+  OIL_PCB_AROCLORES.forEach(function (key) {
+    readings[key] = state.oil.pcb_realizado ? state.oil.pcb[key] : null;
+  });
+
+  return { transformer_id: state.currentTransformerId, readings: readings };
 }
 
 function refreshOil() {
-  var r = parseDecimal_(document.getElementById('oilRigidez').value);
-  var h = parseDecimal_(document.getElementById('oilHumedad').value);
-  var a = parseDecimal_(document.getElementById('oilAcidez').value);
-  var t = parseDecimal_(document.getElementById('oilTension').value);
-  state.oil.rigidez = isNaN(r) ? null : r;
-  state.oil.humedad = isNaN(h) ? null : h;
-  state.oil.acidez = isNaN(a) ? null : a;
-  state.oil.tension = isNaN(t) ? null : t;
+  state.oil.sampleBy = document.getElementById('oilSampleBy').value.trim();
+  state.oil.sampleDate = document.getElementById('oilSampleDate').value;
+
+  state.oil.agua_ppm = parseOilNum_('oilAgua');
+  state.oil.rigidez_dielectrica_kv = parseOilNum_('oilRigidez');
+  state.oil.tension_interfacial_dinas_cm = parseOilNum_('oilTension');
+  state.oil.numero_acido_mg_koh_g = parseOilNum_('oilAcidez');
+  state.oil.densidad_relativa = parseOilNum_('oilDensidad');
+  state.oil.color_astm = document.getElementById('oilColorAstm').value || '';
+  state.oil.examen_visual = document.getElementById('oilExamenVisual').value || '';
+
+  OIL_DGA_GASES.forEach(function (g) { state.oil.dga[g.key] = parseOilNum_('oilDga_' + g.key); });
+  OIL_PCB_AROCLORES.forEach(function (key) { state.oil.pcb[key] = parseOilNum_('oilPcb_' + key); });
 
   renderOilPreview();
   var el = document.getElementById('jsonOil');
@@ -1574,8 +1893,8 @@ function submitOil() {
   var btn = document.getElementById('submitOilBtn');
   var status = document.getElementById('oilSubmitStatus');
 
-  if (state.oil.rigidez == null || state.oil.humedad == null || state.oil.acidez == null || state.oil.tension == null) {
-    setStatus_(status, 'Rigidez, humedad, acidez y tensión interfacial son obligatorios', false, true);
+  if (!state.oil.fisicoquimico_realizado && !state.oil.dga_realizado && !state.oil.pcb_realizado) {
+    setStatus_(status, 'Activa al menos una sección (Fisicoquímico, DGA o PCB) antes de enviar', false, true);
     return;
   }
 
@@ -1610,6 +1929,8 @@ document.addEventListener('DOMContentLoaded', function () {
   document.getElementById('changePasswordForm').addEventListener('submit', handleChangePasswordSubmit);
   document.getElementById('createSiteForm').addEventListener('submit', handleCreateSiteSubmit);
   document.getElementById('createTransformerForm').addEventListener('submit', handleCreateTransformerSubmit);
+  document.getElementById('editSiteForm').addEventListener('submit', handleEditSiteSubmit);
+  document.getElementById('editTransformerForm').addEventListener('submit', handleEditTransformerSubmit);
 
   document.querySelectorAll('.nav-item[data-view], .bottom-nav-item[data-view], .action-sheet-item[data-view]').forEach(function (el) {
     el.addEventListener('click', function () { showView(el.dataset.view); });
@@ -1620,6 +1941,11 @@ document.addEventListener('DOMContentLoaded', function () {
   document.getElementById('testSheetBackdrop').addEventListener('click', function () { closeActionSheet_('testActionSheet'); });
   document.getElementById('moreSheetBackdrop').addEventListener('click', function () { closeActionSheet_('moreActionSheet'); });
   document.getElementById('contextModalBackdrop').addEventListener('click', function () { closeContextModal_(); });
+  document.getElementById('editSiteModalBackdrop').addEventListener('click', function () { closeEditSiteModal_(); });
+  document.getElementById('editTransformerModalBackdrop').addEventListener('click', function () { closeEditTransformerModal_(); });
+
+  buildOilDgaGrid_();
+  buildOilPcbGrid_();
 
   attachRippleDelegation_();
 

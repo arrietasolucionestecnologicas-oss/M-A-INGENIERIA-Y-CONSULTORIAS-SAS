@@ -118,10 +118,6 @@
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 1.5c2 2.6 4 5.1 4 7.3a4 4 0 1 1-8 0c0-2.2 2-4.7 4-7.3z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>
         Aceite dieléctrico
       </div>
-      <div class="nav-item disabled" data-view="pcb-form" title="Próximamente: falta el modelo de cálculo (umbrales de Bifenilos Policlorados)">
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="5" cy="5" r="1.6" stroke="currentColor" stroke-width="1.3"/><circle cx="11" cy="5" r="1.6" stroke="currentColor" stroke-width="1.3"/><circle cx="8" cy="11" r="1.6" stroke="currentColor" stroke-width="1.3"/><path d="M6.3 5.9 7 9.3M9.7 5.9 9 9.3M6.6 5H9.4" stroke="currentColor" stroke-width="1.2"/></svg>
-        Análisis PCB <span class="tag soon">Próximamente</span>
-      </div>
       <div class="nav-label" id="navLabelPreview">Cuenta</div>
       <div class="nav-item" data-view="login" style="font-size:12.5px;">
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M6 2H3.5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1H6M10 11l3-3-3-3M13 8H6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -165,6 +161,15 @@
               <label>Dirección (opcional)</label>
               <input id="newSiteAddress">
             </div>
+            <div class="field" style="min-width:170px;">
+              <label>NIT (opcional)</label>
+              <input class="mono" id="newSiteNit" placeholder="900123456-7" oninput="updateNitPreview_(this, 'newSiteNitHint')">
+              <div class="field-note" id="newSiteNitHint"></div>
+            </div>
+            <div class="field" style="min-width:150px;">
+              <label>Ciudad (opcional)</label>
+              <input id="newSiteCiudad" placeholder="Barranquilla">
+            </div>
             <button class="btn primary" type="submit" id="createSiteBtn">Crear</button>
           </form>
           <div class="status-line" id="createSiteStatus" hidden style="padding:0 18px 14px;"></div>
@@ -177,13 +182,65 @@
           </div>
           <div style="overflow-x: auto;">
             <table>
-              <thead><tr><th>Cliente</th><th>Proyecto</th><th>Dirección</th><th></th></tr></thead>
-              <tbody id="sitesRows"><tr><td colspan="4" class="empty-note">Cargando&hellip;</td></tr></tbody>
+              <thead><tr><th>Cliente</th><th>Proyecto</th><th>Ciudad</th><th>NIT</th><th>Dirección</th><th></th></tr></thead>
+              <tbody id="sitesRows"><tr><td colspan="6" class="empty-note">Cargando&hellip;</td></tr></tbody>
             </table>
           </div>
         </div>
       </div>
     </section>
+
+    <!-- Modal de edición de Cliente/Proyecto -->
+    <div class="modal-backdrop" id="editSiteModalBackdrop"></div>
+    <div class="modal" id="editSiteModal" role="dialog" aria-modal="true" aria-labelledby="editSiteModalTitle">
+      <div class="modal-head">
+        <h3 id="editSiteModalTitle">Editar Cliente / Proyecto</h3>
+        <button type="button" class="modal-close" onclick="closeEditSiteModal_()" aria-label="Cerrar">&times;</button>
+      </div>
+      <form class="modal-body" id="editSiteForm">
+        <div class="field"><label>Cliente</label><input class="mono" id="editSiteClient" required></div>
+        <div class="field"><label>Proyecto / Subestación</label><input class="mono" id="editSiteProject" required></div>
+        <div class="field"><label>Dirección (opcional)</label><input id="editSiteAddress"></div>
+        <div class="field">
+          <label>NIT (opcional)</label>
+          <input class="mono" id="editSiteNit" oninput="updateNitPreview_(this, 'editSiteNitHint')">
+          <div class="field-note" id="editSiteNitHint"></div>
+        </div>
+        <div class="field"><label>Ciudad (opcional)</label><input id="editSiteCiudad"></div>
+        <button class="btn primary" type="submit" style="width:100%;">Guardar cambios</button>
+        <span class="status-line" id="editSiteStatus" hidden></span>
+      </form>
+    </div>
+
+    <!-- Modal de edición de Equipo (características de placa) -->
+    <div class="modal-backdrop" id="editTransformerModalBackdrop"></div>
+    <div class="modal" id="editTransformerModal" role="dialog" aria-modal="true" aria-labelledby="editTransformerModalTitle">
+      <div class="modal-head">
+        <h3 id="editTransformerModalTitle">Editar equipo</h3>
+        <button type="button" class="modal-close" onclick="closeEditTransformerModal_()" aria-label="Cerrar">&times;</button>
+      </div>
+      <form class="modal-body" id="editTransformerForm">
+        <div class="field"><label>N&uacute;mero de serie</label><input class="mono" id="editTrfSerial" required></div>
+        <div class="field"><label>Fabricante</label><input id="editTrfManufacturer"></div>
+        <div class="field"><label>Grupo de conexi&oacute;n</label><input class="mono" id="editTrfVectorGroup"></div>
+        <div class="field"><label>Potencia nominal (kVA)</label><input class="mono" id="editTrfPower" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*"></div>
+        <div class="field"><label>Tensi&oacute;n primaria (V)</label><input class="mono" id="editTrfHv" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*"></div>
+        <div class="field"><label>Tensi&oacute;n secundaria (V)</label><input class="mono" id="editTrfLv" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*"></div>
+        <div class="field">
+          <label>Tipo de refrigeraci&oacute;n</label>
+          <select id="editTrfCooling">
+            <option value="">&mdash; sin dato &mdash;</option>
+            <option value="ONAN">ONAN</option>
+            <option value="ONAF">ONAF</option>
+          </select>
+        </div>
+        <div class="field"><label>Impedancia (%)</label><input class="mono" id="editTrfImpedance" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*"></div>
+        <div class="field"><label>Tipo de aislamiento</label><input id="editTrfInsulation"></div>
+        <div class="field"><label>A&ntilde;o de fabricaci&oacute;n</label><input class="mono" id="editTrfYear" type="text" inputmode="numeric" pattern="[0-9]*"></div>
+        <button class="btn primary" type="submit" style="width:100%;">Guardar cambios</button>
+        <span class="status-line" id="editTransformerStatus" hidden></span>
+      </form>
+    </div>
 
     <!-- ============ FASE 2: EQUIPOS (scoped al sitio activo) ============ -->
     <section id="view-dashboard" hidden>
@@ -217,49 +274,75 @@
 
         <div class="panel">
           <div class="panel-head"><h2>Nuevo equipo</h2></div>
-          <form id="createTransformerForm" class="form-field-block" style="align-items:flex-end;">
-            <div class="field" style="flex:1; min-width:150px;">
-              <label>N&uacute;mero de serie</label>
-              <input class="mono" id="newTrfSerial" placeholder="TRF-1187-B" required>
+          <form id="createTransformerForm">
+            <div class="form-field-block">
+              <div class="field" style="flex:1; min-width:150px;">
+                <label>N&uacute;mero de serie</label>
+                <input class="mono" id="newTrfSerial" placeholder="TRF-1187-B" required>
+              </div>
+              <div class="field" style="min-width:130px;">
+                <label>Fases</label>
+                <select id="newTrfPhaseType">
+                  <option value="TRIFASICO">Trif&aacute;sico</option>
+                  <option value="MONOFASICO">Monof&aacute;sico</option>
+                </select>
+              </div>
             </div>
-            <div class="field" style="flex:1; min-width:130px;">
-              <label>Fabricante</label>
-              <input id="newTrfManufacturer">
+
+            <div class="form-field-block" style="border-bottom:none; padding-bottom:0;">
+              <span class="nav-label" style="padding:0; color:var(--text-faint);">Características de placa (opcional)</span>
             </div>
-            <div class="field" style="min-width:130px;">
-              <label>Fases</label>
-              <select id="newTrfPhaseType">
-                <option value="TRIFASICO">Trif&aacute;sico</option>
-                <option value="MONOFASICO">Monof&aacute;sico</option>
-              </select>
+            <div class="form-field-block">
+              <div class="field" style="min-width:130px;">
+                <label>Fabricante</label>
+                <input id="newTrfManufacturer">
+              </div>
+              <div class="field" style="min-width:120px;">
+                <label>Grupo de conexi&oacute;n</label>
+                <input class="mono" id="newTrfVectorGroup" placeholder="Dyn11">
+              </div>
+              <div class="field" style="min-width:140px;">
+                <label>Potencia nominal (kVA)</label>
+                <input class="mono" id="newTrfPower" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*" placeholder="112.5">
+              </div>
+              <div class="field" style="min-width:140px;">
+                <label>Tensi&oacute;n primaria (V)</label>
+                <input class="mono" id="newTrfHv" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*">
+              </div>
+              <div class="field" style="min-width:140px;">
+                <label>Tensi&oacute;n secundaria (V)</label>
+                <input class="mono" id="newTrfLv" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*">
+              </div>
+              <div class="field" style="min-width:150px;">
+                <label>Tipo de refrigeraci&oacute;n</label>
+                <select id="newTrfCooling">
+                  <option value="">&mdash; sin dato &mdash;</option>
+                  <option value="ONAN">ONAN</option>
+                  <option value="ONAF">ONAF</option>
+                </select>
+              </div>
+              <div class="field" style="min-width:120px;">
+                <label>Impedancia (%)</label>
+                <input class="mono" id="newTrfImpedance" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*" placeholder="4.5">
+              </div>
+              <div class="field" style="min-width:150px;">
+                <label>Tipo de aislamiento</label>
+                <input id="newTrfInsulation" placeholder="Papel/aceite">
+              </div>
+              <div class="field" style="min-width:110px;">
+                <label>A&ntilde;o de fabricaci&oacute;n</label>
+                <input class="mono" id="newTrfYear" type="text" inputmode="numeric" pattern="[0-9]*" placeholder="2019">
+              </div>
+              <div class="field" style="min-width:170px;">
+                <label>Foto de la placa</label>
+                <input id="newTrfPlatePhoto" type="file" accept="image/*" capture="environment">
+              </div>
             </div>
-            <div class="field" style="min-width:120px;">
-              <label>Grupo de conexi&oacute;n</label>
-              <input class="mono" id="newTrfVectorGroup" placeholder="Dyn11">
+            <div class="submit-row">
+              <button class="btn primary" type="submit" id="createTransformerBtn">Crear equipo</button>
             </div>
-            <div class="field" style="min-width:140px;">
-              <label>Tensi&oacute;n HV (V)</label>
-              <input class="mono" id="newTrfHv" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*">
-            </div>
-            <div class="field" style="min-width:140px;">
-              <label>Tensi&oacute;n LV (V)</label>
-              <input class="mono" id="newTrfLv" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*">
-            </div>
-            <div class="field" style="min-width:110px;">
-              <label>A&ntilde;o de fabricaci&oacute;n</label>
-              <input class="mono" id="newTrfYear" type="text" inputmode="numeric" pattern="[0-9]*" placeholder="2019">
-            </div>
-            <div class="field" style="min-width:140px;">
-              <label>Potencia nominal (kVA)</label>
-              <input class="mono" id="newTrfPower" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*" placeholder="112.5">
-            </div>
-            <div class="field" style="min-width:170px;">
-              <label>Foto de la placa</label>
-              <input id="newTrfPlatePhoto" type="file" accept="image/*" capture="environment">
-            </div>
-            <button class="btn primary" type="submit" id="createTransformerBtn">Crear equipo</button>
           </form>
-          <div class="field-note" style="padding:0 18px 8px;">Se crea con un <code>tap_config</code> por defecto (5 TAPs, ±2.5&nbsp;%) &mdash; edítalo desde el detalle del equipo si es distinto. La foto de placa es opcional y se sube a Drive junto con el registro.</div>
+          <div class="field-note" style="padding:0 18px 8px;">Se crea con un <code>tap_config</code> por defecto (5 TAPs, ±2.5&nbsp;%) &mdash; edítalo desde el detalle del equipo si es distinto. Todas las características de placa son opcionales y se pueden completar después desde "Editar equipo".</div>
           <div class="status-line" id="createTransformerStatus" hidden style="padding:0 18px 14px;"></div>
         </div>
 
@@ -302,7 +385,7 @@
             <div class="badges" id="detailBadges"></div>
           </div>
           <div class="actions">
-            <button class="btn" disabled title="Próximamente">Análisis PCB</button>
+            <button class="btn" onclick="openEditTransformerModal_()">Editar equipo</button>
             <button class="btn" onclick="showView('oil-form')">Aceite dieléctrico</button>
             <button class="btn" onclick="showView('winding-form')">Resistencia de devanados</button>
             <button class="btn primary" onclick="showView('ttr-form')">Registrar lectura TTR</button>
@@ -510,7 +593,7 @@
       <div class="topbar">
         <div>
           <h1>Nueva prueba &middot; Aceite diel&eacute;ctrico</h1>
-          <p id="oilFormSubtitle">Rigidez diel&eacute;ctrica (BDV), humedad, acidez y tensi&oacute;n interfacial</p>
+          <p id="oilFormSubtitle">Marca solo las secciones que apliquen a esta visita</p>
         </div>
         <div class="tenant-chip" id="oilTenantChip">&mdash;</div>
       </div>
@@ -518,75 +601,120 @@
       <div class="view">
         <span class="back-link" onclick="showView('detail')">&larr; Volver al transformador</span>
 
-        <div class="context-strip">
-          <div><span class="k">Requiere regeneraci&oacute;n/cambio si</span><span class="v">Acidez &ge; 0.15 &oacute; Tensi&oacute;n &le; 24</span></div>
-          <div><span class="k">Requiere termovac&iacute;o si</span><span class="v">Rigidez &le; 30 &oacute; Humedad &ge; 35</span></div>
-        </div>
-
         <div class="test-grid">
           <div>
+            <!-- Datos comunes de la muestra (siempre visibles) -->
             <div class="panel">
               <div class="panel-head">
-                <h2>Resultados del laboratorio</h2>
+                <h2>Datos de la muestra</h2>
                 <span class="hint">Se envían con POST submitOilAnalysisTest</span>
               </div>
               <div class="form-field-block">
                 <div class="field">
-                  <label>Laboratorio / instrumento</label>
-                  <input class="mono" id="oilInstrument" value="Laboratorio de aceites &middot; ASTM D877/D1533">
-                </div>
-              </div>
-              <div class="phase-entry-grid" style="grid-template-columns: repeat(2, 1fr);">
-                <div class="field">
-                  <label>Rigidez diel&eacute;ctrica &mdash; BDV (kV) <span style="color:var(--danger);">*</span></label>
-                  <input class="mono" id="oilRigidez" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*" oninput="refreshOil()" required>
+                  <label>Muestra tomada por</label>
+                  <input id="oilSampleBy" oninput="refreshOil()">
                 </div>
                 <div class="field">
-                  <label>Humedad (ppm) <span style="color:var(--danger);">*</span></label>
-                  <input class="mono" id="oilHumedad" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*" oninput="refreshOil()" required>
-                </div>
-                <div class="field">
-                  <label>Acidez (mg KOH/g) <span style="color:var(--danger);">*</span></label>
-                  <input class="mono" id="oilAcidez" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*" oninput="refreshOil()" required>
-                </div>
-                <div class="field">
-                  <label>Tensi&oacute;n interfacial (mN/m) <span style="color:var(--danger);">*</span></label>
-                  <input class="mono" id="oilTension" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*" oninput="refreshOil()" required>
+                  <label>Fecha de muestreo</label>
+                  <input type="date" id="oilSampleDate" onchange="refreshOil()">
                 </div>
               </div>
               <div class="form-field-block">
                 <div class="field">
-                  <label>Color (opcional)</label>
-                  <select id="oilColor" onchange="refreshOil()">
-                    <option value="">&mdash; sin observar &mdash;</option>
-                    <option>Incoloro</option>
-                    <option>Amarillo claro</option>
-                    <option>Amarillo oscuro</option>
-                    <option>Marr&oacute;n</option>
-                    <option>Negro</option>
-                  </select>
-                </div>
-                <div class="field">
-                  <label>Aspecto visual (opcional)</label>
-                  <select id="oilVisual" onchange="refreshOil()">
-                    <option value="">&mdash; sin observar &mdash;</option>
-                    <option>Claro, sin part&iacute;culas</option>
-                    <option>Con part&iacute;culas en suspensi&oacute;n</option>
-                    <option>Con sedimentos</option>
-                    <option>Turbio</option>
-                  </select>
-                </div>
-              </div>
-              <div class="form-field-block">
-                <div class="field">
-                  <label>Certificado de laboratorio (PDF)</label>
+                  <label>Certificado del ente acreditado (PDF/foto)</label>
                   <input id="oilCertificate" type="file" accept="application/pdf,image/*">
                 </div>
               </div>
-              <div class="submit-row">
-                <button class="btn primary" id="submitOilBtn" onclick="submitOil()">Enviar prueba de aceite</button>
-                <span class="status-line" id="oilSubmitStatus" hidden></span>
+            </div>
+
+            <!-- Sección A: Fisicoquímico -->
+            <div class="panel" id="oilPanelFisicoquimico">
+              <label class="panel-head oil-section-head">
+                <span class="oil-section-toggle-group">
+                  <input type="checkbox" id="oilSectionFisicoquimico" onchange="toggleOilSection_('fisicoquimico')">
+                  <h2>Fisicoquímico</h2>
+                </span>
+                <span class="hint">7 ensayos ASTM</span>
+              </label>
+              <div id="oilBodyFisicoquimico" hidden>
+                <div class="phase-entry-grid" style="grid-template-columns: repeat(2, 1fr);">
+                  <div class="field">
+                    <label>Agua &mdash; ASTM D1533-20 (ppm)</label>
+                    <input class="mono" id="oilAgua" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*" oninput="refreshOil()">
+                  </div>
+                  <div class="field">
+                    <label>Rigidez diel&eacute;ctrica, VDE 2mm &mdash; ASTM D1816-12(2019) (kV)</label>
+                    <input class="mono" id="oilRigidez" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*" oninput="refreshOil()">
+                  </div>
+                  <div class="field">
+                    <label>Tensi&oacute;n interfacial &mdash; ASTM D971-20 (dinas/cm)</label>
+                    <input class="mono" id="oilTension" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*" oninput="refreshOil()">
+                  </div>
+                  <div class="field">
+                    <label>N&uacute;mero &aacute;cido &mdash; ASTM D974-22 (mg KOH/g)</label>
+                    <input class="mono" id="oilAcidez" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*" oninput="refreshOil()">
+                  </div>
+                  <div class="field">
+                    <label>Densidad relativa &mdash; ASTM D1298-12b(2017)e1</label>
+                    <input class="mono" id="oilDensidad" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*" oninput="refreshOil()">
+                  </div>
+                  <div class="field">
+                    <label>Color &mdash; ASTM D1500-24 (0.5&ndash;8.0)</label>
+                    <select id="oilColorAstm" onchange="refreshOil()">
+                      <option value="">&mdash;</option>
+                      <option>0.5</option><option>1.0</option><option>1.5</option><option>2.0</option>
+                      <option>2.5</option><option>3.0</option><option>3.5</option><option>4.0</option>
+                      <option>4.5</option><option>5.0</option><option>5.5</option><option>6.0</option>
+                      <option>6.5</option><option>7.0</option><option>7.5</option><option>8.0</option>
+                    </select>
+                  </div>
+                  <div class="field">
+                    <label>Examen visual &mdash; ASTM D1524-15(2022)</label>
+                    <select id="oilExamenVisual" onchange="refreshOil()">
+                      <option value="">&mdash; sin observar &mdash;</option>
+                      <option>Claro, sin part&iacute;culas</option>
+                      <option>Con part&iacute;culas en suspensi&oacute;n</option>
+                      <option>Con sedimentos</option>
+                      <option>Turbio</option>
+                    </select>
+                  </div>
+                </div>
               </div>
+            </div>
+
+            <!-- Sección B: DGA -->
+            <div class="panel" id="oilPanelDga">
+              <label class="panel-head oil-section-head">
+                <span class="oil-section-toggle-group">
+                  <input type="checkbox" id="oilSectionDga" onchange="toggleOilSection_('dga')">
+                  <h2>Cromatograf&iacute;a de Gases Disueltos (DGA)</h2>
+                </span>
+                <span class="hint">ASTM D3612-02(2017), M&eacute;todo C</span>
+              </label>
+              <div id="oilBodyDga" hidden>
+                <div class="phase-entry-grid" id="oilDgaGrid" style="grid-template-columns: repeat(3, 1fr);"></div>
+              </div>
+            </div>
+
+            <!-- Sección C: PCB -->
+            <div class="panel" id="oilPanelPcb">
+              <label class="panel-head oil-section-head">
+                <span class="oil-section-toggle-group">
+                  <input type="checkbox" id="oilSectionPcb" onchange="toggleOilSection_('pcb')">
+                  <h2>Cromatograf&iacute;a de PCB</h2>
+                </span>
+                <span class="hint">ASTM D4059-00(2018) &middot; ente acreditado IDEAM</span>
+              </label>
+              <div id="oilBodyPcb" hidden>
+                <div class="phase-entry-grid" id="oilPcbGrid" style="grid-template-columns: repeat(3, 1fr);"></div>
+                <div class="result-row"><span class="phase-name">Total PCB</span><span class="mono" id="oilPcbTotal">&mdash;</span></div>
+                <div class="result-row"><span class="phase-name">Veredicto PCB</span><span class="mono" id="oilPcbVerdictLabel">&mdash;</span></div>
+              </div>
+            </div>
+
+            <div class="submit-row">
+              <button class="btn primary" id="submitOilBtn" onclick="submitOil()">Enviar prueba de aceite</button>
+              <span class="status-line" id="oilSubmitStatus" hidden></span>
             </div>
           </div>
 
@@ -597,7 +725,7 @@
                 <span class="hint">Local, no oficial</span>
               </div>
               <div id="oilPreviewRows"></div>
-              <div class="verdict-banner" id="oilVerdictBanner">Dictamen: &mdash;</div>
+              <div class="verdict-banner" id="oilVerdictBanner">Activa al menos una sección</div>
             </div>
 
             <div class="panel">
@@ -609,25 +737,6 @@
       </div>
     </section>
 
-    <!-- ============ ANÁLISIS PCB (estructura preparada, sin motor de cálculo aún) ============ -->
-    <section id="view-pcb-form" hidden>
-      <div class="topbar">
-        <div>
-          <h1>An&aacute;lisis de Bifenilos Policlorados (PCB)</h1>
-          <p>Concentraci&oacute;n en ppm sobre muestra de aceite</p>
-        </div>
-        <div class="tenant-chip">Pr&oacute;ximamente</div>
-      </div>
-      <div class="view">
-        <span class="back-link" onclick="showView('detail')">&larr; Volver al transformador</span>
-        <div class="panel">
-          <div class="panel-head"><h2>M&oacute;dulo en preparaci&oacute;n</h2></div>
-          <div class="empty-note" style="padding:40px 18px;">
-            La estructura de navegaci&oacute;n y de vista ya est&aacute; lista. Falta definir el umbral regulatorio de ppm (t&iacute;picamente 50&nbsp;ppm) y si el resultado proviene de un laboratorio externo (carga de certificado) o de un equipo de campo, antes de construir el motor de c&aacute;lculo.
-          </div>
-        </div>
-      </div>
-    </section>
   </main>
 
   <!-- ============ NAVEGACIÓN INFERIOR (móvil, operación a una mano) ============ -->
@@ -670,10 +779,6 @@
     <button type="button" class="action-sheet-item" data-view="oil-form">
       <svg width="18" height="18" viewBox="0 0 16 16" fill="none"><path d="M8 1.5c2 2.6 4 5.1 4 7.3a4 4 0 1 1-8 0c0-2.2 2-4.7 4-7.3z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>
       Aceite dieléctrico
-    </button>
-    <button type="button" class="action-sheet-item disabled" disabled>
-      <svg width="18" height="18" viewBox="0 0 16 16" fill="none"><circle cx="5" cy="5" r="1.6" stroke="currentColor" stroke-width="1.3"/><circle cx="11" cy="5" r="1.6" stroke="currentColor" stroke-width="1.3"/><circle cx="8" cy="11" r="1.6" stroke="currentColor" stroke-width="1.3"/><path d="M6.3 5.9 7 9.3M9.7 5.9 9 9.3M6.6 5H9.4" stroke="currentColor" stroke-width="1.2"/></svg>
-      Análisis PCB <span class="tag soon">Próximamente</span>
     </button>
   </div>
 
