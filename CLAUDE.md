@@ -396,32 +396,52 @@ completo, `createCalibracion`/`updateCalibracion`/`deleteCalibracion`
 devuelven 403 real cada uno por separado, y la vista no muestra ni el
 formulario ni los enlaces de escritura.
 
-### `instrument_used` — decisión reportada, integración pendiente de confirmar
+### `instrument_used` — cruce no bloqueante con Calibraciones (completo)
 
 El campo `instrument_used` (texto libre) existe en **TTR, Resistencia de
 devanados y Resistencia de aislamiento** — no en Aceite dieléctrico (ese
 módulo no tiene ningún campo equivalente; su "Certificado del ente
 acreditado" es del laboratorio que analiza la muestra, no de un instrumento
-de M&A). Decisión evaluada y reportada al usuario, **implementación
-pendiente de confirmación explícita antes de tocar los 3 formularios**:
+de M&A). Decisión evaluada, reportada y confirmada por el usuario: **se
+descartó el selector obligatorio** — forzaría a que el catálogo exista y
+esté completo antes de poder enviar cualquier prueba, bloqueando a un
+técnico en campo con un instrumento nuevo aún no registrado (choca con el
+principio ya establecido de esta app de nunca bloquear al técnico por una
+dependencia externa) y dejaría huérfano todo el `instrument_used` de texto
+libre ya guardado en producción. El campo **sigue siendo texto libre puro**,
+sin ningún cambio de esquema ni de contrato con el backend:
 
-- **No convertir en selector obligatorio** — forzaría a que el catálogo
-  exista y esté completo antes de poder enviar cualquier prueba, lo que
-  bloquearía a un técnico en campo con un instrumento nuevo aún no
-  registrado. Choca directo con el principio ya establecido de esta app
-  (resiliencia de red, local-first): nunca bloquear al técnico por una
-  dependencia externa. También dejaría huérfano todo el `instrument_used`
-  de texto libre ya guardado en producción.
-- **Recomendado**: mantener `<input>` de texto libre, agregar un
-  `<datalist>` alimentado por el catálogo (autocompleta mientras se escribe,
-  el valor sigue siendo texto libre puro) + una validación difusa
-  client-side al enviar la prueba (normalizar y comparar contra
-  `modelo`/`numero_serie` del catálogo) que muestre una advertencia **no
-  bloqueante** si encuentra coincidencia con un instrumento `Vencido` o `Por
-  vencer`. Cero cambio de esquema, cero riesgo para datos ya guardados.
-- **No implementado todavía** — a la espera de que el usuario confirme el
-  enfoque antes de tocar TTR/Resistencia de devanados/Resistencia de
-  aislamiento, como pidió explícitamente.
+- **`<datalist id="instrumentCatalogList">`** (una sola, compartida por los
+  3 `<input list="instrumentCatalogList">`, en `index.html`) —
+  `loadInstrumentCatalogForTestForms_()` en `app.js` la llena con
+  `"modelo · numero_serie"` de cada instrumento del catálogo cada vez que se
+  abre uno de los 3 formularios (`showView()`, casos `ttr-form`/
+  `winding-form`/`insulation-form`). Falla en silencio si `listCalibraciones`
+  no responde — es una ayuda opcional, nunca debe interrumpir un formulario
+  de prueba real.
+- **Comparación difusa** (`normalizeInstrumentText_`/`findMatchingCalibracion_`
+  en `app.js`): minúsculas, sin acentos (`.normalize('NFD')` + filtro
+  alfanumérico — el filtro alfanumérico ya elimina las marcas diacríticas
+  sobrantes de la descomposición NFD, no hace falta un rango Unicode
+  explícito), luego contención de substring en cualquier dirección contra
+  `modelo` o `numero_serie` normalizados. Exige mínimo 3 caracteres
+  normalizados a ambos lados para evitar falsos positivos con textos cortos.
+- **Advertencia no bloqueante** (`warnIfInstrumentExpired_`): se llama justo
+  después de construir el payload en `submitTtr`/`submitWinding`/
+  `submitInsulation`, **antes** de `callApi(...)` pero sin esperar ni
+  condicionar el envío — si el texto coincide con un instrumento `Vencido` o
+  `Por vencer`, muestra un toast (`showToast_(msg, 'warning', 6000)`, nueva
+  variante de color agregada en `styles.css` junto a `success`/`error`); si
+  no hay coincidencia o el instrumento está `Vigente`, no hace nada. El
+  envío real sigue su curso exactamente igual en ambos casos.
+- **Verificado en vivo en los 3 formularios**: instrumento vencido
+  (coincidencia por modelo, por número de serie, y con variaciones de
+  escritura/texto adicional alrededor) → toast de advertencia visible y la
+  prueba se registró igual (o llegó igual de lejos hasta una validación de
+  negocio no relacionada, en el caso de Aislamiento con lecturas en cero);
+  texto sin ninguna relación con el catálogo → cero advertencias falsas,
+  envío normal. `<datalist>` confirmado con las opciones reales del catálogo
+  en los 3 inputs (`list="instrumentCatalogList"`).
 
 ## Comercial — Ofertas y Licitaciones
 
@@ -888,14 +908,10 @@ No implementado todavía, evaluado pero no decidido con el usuario:
 - Migrar a offline real (service worker + IndexedDB) — hoy la resiliencia de
   red es "no perder lo digitado", no "funcionar sin señal".
 
-No quedan módulos en diseño pendientes de construir — Calibraciones era el
-último (ver su sección dedicada arriba), y con eso se cierra el alcance
-funcional completo de los 8 módulos de navegación. La única pieza
-explícitamente diferida es la integración de `instrument_used` con el
-catálogo de Calibraciones en los 3 formularios de prueba que lo usan (TTR,
-Resistencia de devanados, Resistencia de aislamiento) — decisión evaluada y
-reportada, implementación pendiente de confirmación del usuario (ver
-"`instrument_used`" en la sección de Calibraciones).
+No quedan módulos en diseño pendientes de construir ni piezas diferidas —
+Calibraciones (incluida la integración `instrument_used` con sus 3
+formularios de prueba, ver sección dedicada arriba) fue lo último, y con eso
+se cierra el alcance funcional completo de los 8 módulos de navegación.
 
 **Hallazgo fuera de alcance, sin corregir a propósito**: durante la
 verificación de Panel General (2026-08-30) apareció en "Documentos
@@ -918,8 +934,10 @@ verificación 2026-08-30, migración + Comercial + Panel General/estado_equipo
 certificado real en Drive, varias Ofertas de prueba incluyendo el flujo de
 vincular-y-mover-adjunto, transformadores de prueba para verificar
 `estado_equipo`/el fix de conflicto de serie/los KPIs de Panel General, e
-instrumentos de prueba en los tres estados del semáforo de Calibraciones —
-todo lo creado durante esas verificaciones se borró al terminar, usando
+instrumentos de prueba en los tres estados del semáforo de Calibraciones, y
+un Sitio + Transformador + instrumento vencido adicionales para verificar el
+cruce no bloqueante de `instrument_used` en los 3 formularios — todo lo
+creado durante esas verificaciones se borró al terminar, usando
 `deleteOferta_`/`deleteTransformer_`/`deleteSite_`/`deleteCalibracion_`). La
 hoja/carpeta viejas (cuenta Arrieta Soluciones) ya estaban vacías desde la
 limpieza de 2026-08-29 y quedaron así, sin usarse desde la migración.

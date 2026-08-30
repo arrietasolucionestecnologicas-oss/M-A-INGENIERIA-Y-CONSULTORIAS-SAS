@@ -485,7 +485,7 @@
               <div class="form-field-block">
                 <div class="field">
                   <label>Instrumento utilizado</label>
-                  <input class="mono" id="ttrInstrument" value="TTR-2000 · Serie 4471">
+                  <input class="mono" id="ttrInstrument" value="TTR-2000 · Serie 4471" list="instrumentCatalogList">
                 </div>
                 <div class="field" style="max-width:150px;">
                   <label>Tensión de prueba (V)</label>
@@ -571,7 +571,7 @@
             <div class="form-field-block">
               <div class="field">
                 <label>Instrumento utilizado</label>
-                <input class="mono" id="wrInstrument" value="Micro-ohmmeter DLRO-10">
+                <input class="mono" id="wrInstrument" value="Micro-ohmmeter DLRO-10" list="instrumentCatalogList">
               </div>
             </div>
             <div class="tap-chip-row" id="wrTapChipRow"></div>
@@ -808,7 +808,7 @@
             <div class="form-field-block">
               <div class="field">
                 <label>Instrumento utilizado</label>
-                <input class="mono" id="insulationInstrument" value="Megóhmetro 5kV">
+                <input class="mono" id="insulationInstrument" value="Megóhmetro 5kV" list="instrumentCatalogList">
               </div>
               <div class="field" style="max-width:220px;">
                 <label>Temperatura de devanado (&deg;C) <span style="color:var(--danger);">*</span></label>
@@ -964,6 +964,11 @@
     </div>
     <div class="modal-body" id="contextModalBody"></div>
   </div>
+
+  <!-- Sugerencias para "Instrumento utilizado" (TTR/Devanados/Aislamiento) —
+       alimentado desde el catálogo de Calibraciones, el campo sigue siendo
+       texto libre por debajo (ver CLAUDE.md, sección instrument_used). -->
+  <datalist id="instrumentCatalogList"></datalist>
 </div>
 
 <script src="app.js"></script>

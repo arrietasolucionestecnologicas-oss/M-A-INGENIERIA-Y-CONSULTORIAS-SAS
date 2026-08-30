@@ -313,10 +313,10 @@ function showView(name) {
   closeActionSheet_('moreActionSheet');
   window.scrollTo(0, 0);
 
-  if (name === 'ttr-form') { renderTtrFormContext(); renderMatrixRows(); renderTapChips(); renderPhaseEntries(); refreshTtr(); }
-  if (name === 'winding-form') { renderWindingFormContext(); refreshWinding(); }
+  if (name === 'ttr-form') { renderTtrFormContext(); renderMatrixRows(); renderTapChips(); renderPhaseEntries(); refreshTtr(); loadInstrumentCatalogForTestForms_(); }
+  if (name === 'winding-form') { renderWindingFormContext(); refreshWinding(); loadInstrumentCatalogForTestForms_(); }
   if (name === 'oil-form') { renderOilFormContext(); refreshOil(); }
-  if (name === 'insulation-form') { renderInsulationFormContext(); refreshInsulation(); }
+  if (name === 'insulation-form') { renderInsulationFormContext(); refreshInsulation(); loadInstrumentCatalogForTestForms_(); }
   if (name === 'documents') { renderDocumentsView_(); }
   if (name === 'commercial') { renderCommercialView_(); }
   if (name === 'general-dashboard') { renderGeneralDashboardView_(); }
@@ -1795,6 +1795,7 @@ function submitTtr() {
   readFileAsBase64_(document.getElementById('ttrEvidence'))
     .then(function (evidence) {
       var body = buildTtrRequestBody();
+      warnIfInstrumentExpired_(body.instrument_used);
       if (evidence) { body.file_base64 = evidence.base64; body.file_mime_type = evidence.mimeType; }
       return callApi('submitTtrTest', 'POST', body);
     })
@@ -2039,6 +2040,7 @@ function submitWinding() {
   readFileAsBase64_(document.getElementById('wrEvidence'))
     .then(function (evidence) {
       var body = buildWindingRequestBody();
+      warnIfInstrumentExpired_(body.instrument_used);
       if (evidence) { body.file_base64 = evidence.base64; body.file_mime_type = evidence.mimeType; }
       return callApi('submitWindingResistanceTest', 'POST', body);
     })
@@ -2469,6 +2471,7 @@ function submitInsulation() {
   readFileAsBase64_(document.getElementById('insulationEvidence'))
     .then(function (evidence) {
       var body = buildInsulationRequestBody();
+      warnIfInstrumentExpired_(body.instrument_used);
       if (evidence) { body.file_base64 = evidence.base64; body.file_mime_type = evidence.mimeType; }
       return callApi('submitInsulationTest', 'POST', body);
     })
@@ -2841,6 +2844,76 @@ function handleDeleteCalibracion_(id) {
       if (err.status === 402 || err.status === 403) return;
       alert('No se pudo eliminar: ' + err.message);
     });
+}
+
+// ---------------------------------------------------------------
+// instrument_used (TTR/Resistencia de devanados/Resistencia de
+// aislamiento) — cruce NO bloqueante contra el catálogo de Calibraciones.
+// Decisión explícita: el campo sigue siendo texto libre (ver CLAUDE.md,
+// sección "instrument_used" dentro de Calibraciones) — un <datalist>
+// sugiere instrumentos reales mientras se escribe, y una comparación
+// difusa al enviar avisa si el texto coincide con un instrumento Vencido o
+// Por vencer, sin impedir el envío. Aceite dieléctrico no tiene este campo
+// a propósito (no usa un instrumento propio de M&A).
+// ---------------------------------------------------------------
+
+/** Carga el catálogo (para la comparación difusa) y llena el <datalist>
+ *  compartido por los 3 formularios. Falla en silencio a propósito: es una
+ *  ayuda opcional, un fallo de red aquí nunca debe interrumpir ni ensuciar
+ *  un formulario de prueba real. */
+function loadInstrumentCatalogForTestForms_() {
+  callApi('listCalibraciones', 'GET', {})
+    .then(function (calibraciones) {
+      state.calibraciones = calibraciones || [];
+      var datalist = document.getElementById('instrumentCatalogList');
+      if (!datalist) return;
+      datalist.innerHTML = state.calibraciones.map(function (c) {
+        var label = c.modelo + (c.numero_serie ? ' · ' + c.numero_serie : '');
+        return '<option value="' + escapeHtml_(label) + '"></option>';
+      }).join('');
+    })
+    .catch(function () { /* silencioso, ver comentario arriba */ });
+}
+
+/** Minúsculas, sin acentos, solo alfanumérico — para que "TTR-2000" y
+ *  "ttr 2000" comparen igual. */
+function normalizeInstrumentText_(s) {
+  return String(s || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+/** Coincidencia difusa por contención de substring (en cualquier
+ *  dirección) contra `modelo` o `numero_serie` normalizados. Exige al
+ *  menos 3 caracteres normalizados a ambos lados de la comparación para no
+ *  disparar falsos positivos con textos cortos. */
+function findMatchingCalibracion_(text) {
+  var normalized = normalizeInstrumentText_(text);
+  if (normalized.length < 3) return null;
+  var match = null;
+  state.calibraciones.forEach(function (c) {
+    if (match) return;
+    var modelo = normalizeInstrumentText_(c.modelo);
+    var serie = normalizeInstrumentText_(c.numero_serie);
+    if (modelo.length >= 3 && (normalized.indexOf(modelo) !== -1 || modelo.indexOf(normalized) !== -1)) { match = c; return; }
+    if (serie.length >= 3 && (normalized.indexOf(serie) !== -1 || serie.indexOf(normalized) !== -1)) { match = c; }
+  });
+  return match;
+}
+
+/** Advertencia NO bloqueante — se llama justo antes de enviar la prueba,
+ *  nunca detiene ni retrasa el envío real. Sin coincidencia o instrumento
+ *  Vigente: no hace nada. */
+function warnIfInstrumentExpired_(instrumentText) {
+  var match = findMatchingCalibracion_(instrumentText);
+  if (!match || (match.estado !== 'Vencido' && match.estado !== 'Por vencer')) return;
+  showToast_(
+    'Instrumento "' + match.modelo + ' · ' + match.numero_serie + '" está ' + match.estado.toLowerCase() + ' en Calibraciones — la prueba se envía igual, revisa su certificado cuando puedas.',
+    'warning',
+    6000
+  );
 }
 
 // ---------------------------------------------------------------

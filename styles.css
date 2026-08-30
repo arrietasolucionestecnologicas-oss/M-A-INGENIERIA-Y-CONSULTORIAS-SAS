@@ -562,6 +562,7 @@ table.matrix-table input:disabled { background: var(--surface-alt); color: var(-
 .toast.show { opacity: 1; transform: translateY(0); }
 .toast.success { background: var(--success-bg); border-color: var(--success-border); color: var(--success-text); }
 .toast.error { background: var(--danger-bg); border-color: var(--danger-border); color: var(--danger); }
+.toast.warning { background: var(--warning-bg); border-color: var(--warning-border); color: var(--warning-text); }
 
 /* Pill clicable (reintentar sincronización de un registro pendiente/con error) */
 .pill.pill-btn { cursor: pointer; font-family: inherit; }
