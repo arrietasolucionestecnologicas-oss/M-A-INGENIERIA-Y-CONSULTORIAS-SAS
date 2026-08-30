@@ -94,6 +94,14 @@ Sitio (Cliente/Proyecto)  →  Transformador (equipo)  →  Prueba (TTR / Resist
 | Aceite dieléctrico | ✅ Completo — **tres secciones activables por checkbox**, ver abajo | `calculateOilAnalysis_` |
 | Resistencia de aislamiento (Megger, DAR/IP) | ✅ Completo — **3 combinaciones de devanado**, ver abajo | `calculateInsulation_` |
 
+**Corregido — TTR no pintaba nada al abrir el formulario.** `renderTapChips()`
+y `renderPhaseEntries()` solo se llamaban desde dentro de `selectTap()` —
+nunca al montar `view-ttr-form` la primera vez, así que `#tapChipRow` y
+`#ttrPhaseEntries` podían aparecer vacíos hasta que el técnico interactuara
+con algo que ya no estaba ahí para hacer clic. `showView()` ahora llama a
+ambas explícitamente al mostrar `ttr-form`, además de lo que ya hacía
+(`renderTtrFormContext`/`renderMatrixRows`/`refreshTtr`).
+
 ### Resistencia de devanados — primario (multi-TAP) + secundario
 
 **Corregido — auditoría IEEE C57.12.90.** El formulario ya soportaba varios
@@ -393,6 +401,16 @@ se construya.
     de serie (`checkSerialExists_`) tampoco entra en el patrón — se queda
     bloqueante a propósito (lectura rápida, crítica para no duplicar un
     activo) y solo el POST de creación pasa a segundo plano después.
+  - **Corregido**: `retryPendingTransformer_` reenviaba el `_retryPayload`
+    guardado a ciegas, sin volver a comprobar el número de serie — si otro
+    dispositivo había registrado esa serie mientras el equipo quedó
+    pendiente, el reintento lo duplicaba. Ahora vuelve a correr
+    `checkSerialExists_(payload.serial_number)` antes de reenviar; si
+    encuentra un match con un `id` distinto al del registro pendiente, NO
+    reenvía — lo marca `_error` con un mensaje explícito de conflicto y
+    avisa por `showToast_`, igual que cualquier otro fallo de sincronización.
+    Un reintento de **edición** que encuentra su propio id no cuenta como
+    conflicto (es el mismo equipo con su serie sin cambios).
 - **Sesión persistente en `sessionStorage`, nunca en memoria sola ni en
   `localStorage`**: al hacer login (o tras un cambio de contraseña forzado),
   `saveSession_()` guarda `{token, username, role, allowedApps}` en

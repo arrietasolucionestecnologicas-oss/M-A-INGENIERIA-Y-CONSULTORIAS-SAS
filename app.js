@@ -308,7 +308,7 @@ function showView(name) {
   closeActionSheet_('moreActionSheet');
   window.scrollTo(0, 0);
 
-  if (name === 'ttr-form') { renderTtrFormContext(); renderMatrixRows(); refreshTtr(); }
+  if (name === 'ttr-form') { renderTtrFormContext(); renderMatrixRows(); renderTapChips(); renderPhaseEntries(); refreshTtr(); }
   if (name === 'winding-form') { renderWindingFormContext(); refreshWinding(); }
   if (name === 'oil-form') { renderOilFormContext(); refreshOil(); }
   if (name === 'insulation-form') { renderInsulationFormContext(); refreshInsulation(); }
@@ -981,7 +981,17 @@ function retryPendingTransformer_(id) {
   var action = rec._retryAction;
   var payload = rec._retryPayload;
 
-  callApi(action, 'POST', payload)
+  // El número de serie pudo haberse registrado desde otro dispositivo mientras
+  // este registro estaba pendiente — se revalida antes de reenviar a ciegas.
+  // En un reintento de EDICIÓN, un match contra el propio id no es conflicto
+  // (es el mismo equipo con su serie sin cambios).
+  checkSerialExists_(payload.serial_number)
+    .then(function (existing) {
+      if (existing && existing.id !== id) {
+        return Promise.reject({ __serialConflict: true, existing: existing });
+      }
+      return callApi(action, 'POST', payload);
+    })
     .then(function () { return callApi('listTransformers', 'GET', { site_id: siteId }); })
     .then(function (transformers) {
       if (state.currentSiteId !== siteId) return;
@@ -993,10 +1003,14 @@ function retryPendingTransformer_(id) {
     .catch(function (err) {
       if (err.status === 402 || err.status === 403) return;
       var r = state.transformers.filter(function (t) { return t.id === id; })[0];
-      if (r) { r._pending = false; r._error = true; r._errorMessage = formatNetworkAwareError_(err); }
+      var isConflict = err && err.__serialConflict;
+      var message = isConflict
+        ? 'Conflicto: el número de serie "' + payload.serial_number + '" ya quedó registrado desde otro dispositivo mientras este registro estaba pendiente. No se reenvió — revísalo antes de reintentar.'
+        : formatNetworkAwareError_(err);
+      if (r) { r._pending = false; r._error = true; r._errorMessage = message; }
       saveDraft_('mya_cache_transformers_' + siteId, state.transformers);
       if (state.currentSiteId === siteId) renderDashboard();
-      showToast_('Sigue sin poder sincronizarse. ' + formatNetworkAwareError_(err), 'error');
+      showToast_(isConflict ? message : ('Sigue sin poder sincronizarse. ' + message), 'error');
     });
 }
 
