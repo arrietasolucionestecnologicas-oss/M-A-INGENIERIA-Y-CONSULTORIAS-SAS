@@ -242,6 +242,14 @@
         <button type="button" class="modal-close" onclick="closeEditTransformerModal_()" aria-label="Cerrar">&times;</button>
       </div>
       <form class="modal-body" id="editTransformerForm">
+        <div class="field">
+          <label>Estado del equipo</label>
+          <select id="editTrfEstadoEquipo">
+            <option value="Activo">Activo</option>
+            <option value="Fuera de servicio">Fuera de servicio</option>
+            <option value="Dado de baja">Dado de baja</option>
+          </select>
+        </div>
         <div class="field"><label>N&uacute;mero de serie</label><input class="mono" id="editTrfSerial" required></div>
         <div class="field"><label>Fabricante</label><input id="editTrfManufacturer"></div>
         <div class="field"><label>Grupo de conexi&oacute;n</label><input class="mono" id="editTrfVectorGroup"></div>

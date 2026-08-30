@@ -132,6 +132,27 @@ Sitio (Cliente/Proyecto)  →  Transformador (equipo)  →  Prueba (TTR / Resist
   instantánea mientras se escribe). Si cambias el algoritmo, cámbialo en los
   dos lados. `normalizeNit_()` acepta el NIT con o sin el DV ya puesto —
   si no lo trae, lo calcula y lo agrega; si lo trae, lo valida.
+- **`estado_equipo`** (Transformador): `Activo` / `Fuera de servicio` / `Dado
+  de baja` — semáforo operativo del equipo, no una característica de placa.
+  Reutiliza una columna `status` que ya existía en `HEADERS.TRANSFORMADORES`
+  (siempre fija en `'ACTIVO'`, sin control de edición real en la UI) en vez
+  de agregar una columna paralela — se renombró en el mismo índice
+  (`normalizeEstadoEquipo_`/`ESTADO_EQUIPO_VALUES` en `Código.gs`), así que
+  no hubo migración de datos, solo un rename seguro (el único efecto es
+  cosmético: la celda de encabezado en Sheets sigue diciendo "status" salvo
+  que el arreglo vuelva a crecer). Migración perezosa: cualquier fila vieja
+  con `'ACTIVO'` (mayúsculas, valor legado) o vacía se normaliza como
+  `Activo` al leer. Por defecto `Activo` en equipos nuevos
+  (`createTransformer_`); editable desde `#editTransformerModal`
+  (`updateTransformer_` valida contra los 3 valores permitidos, rechaza
+  cualquier otro con 400). Se muestra como badge en la lista de Equipos
+  (`renderDashboard`) y en el detalle (`renderDetail` → `detailStatusChip`).
+  Alimenta el KPI "Transformadores activos" de Panel General (ver abajo).
+  Verificado en vivo: crear equipo → `Activo` por defecto; editar a `Fuera
+  de servicio` desde el modal real → badge de lista y detalle se actualizan,
+  el cambio persiste en el backend (confirmado con `getTransformer` tras el
+  guardado), y el KPI de Panel General baja de 1 a 0 y vuelve a subir a 1 al
+  revertir.
 - **Migraciones de esquema**: `HEADERS.SITIOS`/`HEADERS.TRANSFORMADORES` en
   `Código.gs` han crecido más de una vez. La regla es siempre agregar
   columnas **al final del arreglo**, nunca insertarlas entre columnas
@@ -307,10 +328,9 @@ sube el sistema, nunca a mano).
 
 ### RBAC — caso real, ya implementado
 
-A diferencia de Calibraciones/Comercial/Panel General (que siguen sin
-ninguna acción de backend), Documentos e Informes **sí tiene la función
-real**, así que el rechazo por rol documentado antes como "pendiente" ya
-está hecho: `listDocuments_(params, auth)` devuelve `403` de una si
+A diferencia de Calibraciones (que sigue sin ninguna acción de backend),
+Documentos e Informes **sí tiene la función real**, así que el rechazo por
+rol documentado antes como "pendiente" ya está hecho: `listDocuments_(params, auth)` devuelve `403` de una si
 `auth.role === 'Tecnico'`, mismo patrón que `deleteTransformer_`/
 `deleteSite_`. `uploadDocument_` **no** rechaza por rol — Técnico tiene
 `Full` para subir, según la matriz. En el frontend, `renderDocumentsView_()`
@@ -411,6 +431,64 @@ gráficas" que el resto de la app: `computeComercialStats_()` da los KPIs
 (pipeline, ganado, conversión, tiempo de respuesta) y
 `renderComercialMonthlyTable_()` agrupa por mes (`fecha_envio.slice(0,7)`)
 en una tabla, no un canvas.
+
+## Panel General
+
+Módulo completo (dejó de ser placeholder). Dashboard de una sola pantalla,
+consolidado, **sin ninguna entidad ni acción de backend propia** (salvo
+`estado_equipo`, ver arriba) — solo consume lo que ya exponen
+`listTransformers`/`listTests`/`listOfertas`/`listDocuments` y **reutiliza
+directamente `computeComercialStats_()`** (la misma función del dashboard de
+Comercial) para no duplicar ningún cálculo. `renderGeneralDashboardView_()`/
+`loadGeneralDashboardAndRender_()` en `app.js`, contenedor
+`#generalDashboardViewBody` creado dinámicamente igual que Comercial (ver
+"Navegación" abajo).
+
+- **Transformadores activos**: cuenta `listTransformers({})` (todos los
+  sitios) filtrando `estado_equipo === 'Activo'` — no es el total de
+  equipos, es el conteo real de activos.
+- **Pruebas del mes**: cuenta `listTests({})` (todos los tipos: TTR +
+  Devanados + Aceite + Aislamiento juntos, ya que `PRUEBAS` es una sola hoja
+  con `test_type`) cuyo `created_at` cae en el mes en curso
+  (`String(created_at).slice(0,7)` — seguro porque `created_at` siempre se
+  genera con `new Date().toISOString()` y llega ya serializado como string
+  en el JSON de respuesta, aunque Sheets lo haya guardado como `Date`
+  interno; no aplica el mismo gotcha de `computeOfertaEstado_` porque eso
+  ocurre solo si se hace concatenación de texto directo sobre el valor crudo
+  de Sheets dentro del backend, no sobre el JSON ya serializado).
+- **Comercial** (valor en pipeline, valor ganado, tasa de conversión):
+  llama a `computeComercialStats_(ofertas)` con el resultado de
+  `listOfertas({})` — literalmente la misma función, no una reimplementación.
+  Verificado en vivo que los tres números coinciden exactamente con los que
+  muestra el dashboard propio de Comercial para el mismo dato.
+- **Calibraciones**: muestra "Módulo pendiente" en vez de un número — no
+  existe ningún semáforo ni acción de backend para Calibraciones todavía
+  (sigue siendo placeholder puro, ver "Estado / pendientes conocidos"), así
+  que no hay nada que reutilizar. Cuando se construya Calibraciones, esta
+  tarjeta es lo único que hay que reemplazar en Panel General.
+- **Documentos recientes**: últimos 8 de `listDocuments({})` (todos los
+  clientes), ordenados por `created_at` descendente, con fecha + cliente
+  (resuelto contra `listSites`) + tipo (`DOCUMENT_CATEGORY_LABELS`, la misma
+  constante que usa Documentos e Informes).
+- **Pruebas por mes**: tabla (no canvas, mismo criterio que el resto de la
+  app) agrupando `listTests({})` por mes y `test_type`.
+
+### RBAC — sin acción de backend propia que proteger
+
+A diferencia de Comercial/Documentos, Panel General no introduce ningún
+endpoint nuevo, así que no hay nada propio que rechazar por rol a nivel de
+backend. La protección real es la misma de siempre para módulos "Sin
+acceso": frontend 100% (nav-item y `#view-general-dashboard` no se agregan
+al DOM para Técnico, mismo patrón que Comercial). De los cuatro endpoints
+que Panel General consume, `listOfertas_`/`listDocuments_` **ya** rechazan a
+Técnico con 403 por su cuenta (así que ni llamándolos directo un Técnico ve
+esos números); `listTransformers_`/`listTests_` se dejan **abiertos a
+propósito** — Técnico tiene `Full` en Equipos y Pruebas según la matriz de
+RBAC, y esos dos endpoints son compartidos con esos módulos, no exclusivos
+de Panel General. Verificado en vivo con el token real de
+`test.tecnico.verificacion`: sin nav-item ni sección en el DOM, `listOfertas`
+y `listDocuments` devuelven 403 real, `listTransformers` sigue funcionando
+(como debe ser, para su propio módulo Equipos).
 
 ### Aceite dieléctrico — estructura por secciones
 
@@ -518,23 +596,28 @@ La barra lateral (`#mainnav` en `index.html`) y la hoja "Más" móvil
 5. **Calibraciones** — placeholder de navegación (`view-calibrations`).
 6. **Documentos e Informes** — módulo completo (`view-documents`), ver
    sección dedicada arriba. Ya no es placeholder.
-7. **Panel General** — placeholder de navegación (`view-general-dashboard`).
+7. **Panel General** — módulo completo (`view-general-dashboard`, contenido
+   en `#generalDashboardViewBody`), ver sección dedicada arriba. Ya no es
+   placeholder.
 8. **Administración** — Gestión de usuarios (`view-admin`, sin cambios en su
    lógica).
 
-Comercial, Calibraciones y Panel General siguen como placeholder — ya están
-protegidos por rol (ver RBAC abajo) para que cuando se construyan **no haga
-falta reabrir la navegación** — solo reemplazar el contenido
-`<div class="empty-note">Próximamente...</div>` de cada `view-*` por el
-formulario/panel real. Calibraciones y Documentos e Informes son estáticos
-en `index.html` (todos
-los roles tienen algún acceso); Comercial y Panel General se insertan por
-JS (`renderRestrictedModuleNav_()`/`removeRestrictedModuleNav_()` en
-`app.js`, mismo patrón que `renderAdminNavAndPanel`/
-`removeAdminNavAndPanel` — anclados con `insertAdjacentElement('afterend')`
-sobre `#navItemDocuments` en escritorio y `#moreSheetDocumentsItem` en
-móvil) porque son "Sin acceso" para Técnico y no deben existir en el DOM
-para ese rol.
+Solo Calibraciones sigue como placeholder — ya está protegido por rol (ver
+RBAC abajo) para que cuando se construya **no haga falta reabrir la
+navegación** — solo reemplazar el contenido
+`<div class="empty-note">Próximamente...</div>` de `view-calibrations` por
+el formulario/panel real. Calibraciones y Documentos e Informes son
+estáticos en `index.html` (todos los roles tienen algún acceso); Comercial
+y Panel General se insertan por JS
+(`renderRestrictedModuleNav_()`/`removeRestrictedModuleNav_()` en `app.js`,
+mismo patrón que `renderAdminNavAndPanel`/`removeAdminNavAndPanel` —
+anclados con `insertAdjacentElement('afterend')` sobre `#navItemDocuments`
+en escritorio y `#moreSheetDocumentsItem` en móvil) porque son "Sin acceso"
+para Técnico y no deben existir en el DOM para ese rol. Dentro de esa misma
+función, `mod.view === 'commercial'`/`mod.view === 'general-dashboard'` son
+los dos casos especiales que arman un contenedor real
+(`#commercialViewBody`/`#generalDashboardViewBody`) en vez del placeholder
+genérico.
 
 ## RBAC
 
@@ -565,10 +648,14 @@ frontend. **Documentos e Informes también** — `listDocuments_` rechaza con
 `403` si `auth.role === 'Tecnico'`, mismo patrón (ver sección dedicada
 arriba). **Comercial también, y es el más estricto**: `checkComercialAccess_`
 rechaza a Técnico en TODAS las acciones (no solo listar), verificado con un
-token real (ver sección de Comercial arriba). **Sigue pendiente, a
-propósito**: Calibraciones y Panel General todavía no tienen NINGUNA acción
-de backend (son puro placeholder de navegación hoy — no hay nada que
-rechazar todavía).
+token real (ver sección de Comercial arriba). **Panel General no tiene
+ninguna acción de backend propia** (ver sección dedicada arriba) — su
+protección real es 100% frontend; de los endpoints que consume,
+`listOfertas_`/`listDocuments_` ya rechazan a Técnico por su cuenta, y
+`listTransformers_`/`listTests_` se dejan abiertos a propósito porque son
+compartidos con Equipos/Pruebas (Full para Técnico ahí). **Sigue pendiente,
+a propósito**: Calibraciones todavía no tiene NINGUNA acción de backend (es
+puro placeholder de navegación hoy — no hay nada que rechazar todavía).
 
 ## Convenciones de frontend que hay que respetar
 
@@ -711,11 +798,22 @@ tienen su entrada de navegación y protección por rol listas (ver
 - **Calibraciones** — catálogo de instrumentos propios de M&A con semáforo
   de vigencia, se cruza con `instrument_used` en las pruebas. La carpeta de
   Drive (`Calibraciones/` a nivel de proyecto) ya existe — ver "Documentos e
-  Informes" arriba — pero nada la usa todavía.
-- **Panel General** — dashboard consolidado de todas las operaciones.
+  Informes" arriba — pero nada la usa todavía. Es también la única pieza
+  pendiente de la tarjeta "Calibraciones" en Panel General (hoy muestra
+  "Módulo pendiente").
 
-(Documentos e Informes y Comercial ya no están en esta lista — se
-construyeron completos, ver sus secciones dedicadas arriba.)
+(Documentos e Informes, Comercial y Panel General ya no están en esta
+lista — se construyeron completos, ver sus secciones dedicadas arriba.)
+
+**Hallazgo fuera de alcance, sin corregir a propósito**: durante la
+verificación de Panel General (2026-08-30) apareció en "Documentos
+recientes" una fila huérfana de la hoja `DOCUMENTOS` (`aislamiento_MIGR-
+TEST-...`, cliente en blanco) — de una limpieza de datos de prueba anterior
+donde se borró el Sitio (`deleteSite_`) pero la fila en `DOCUMENTOS` que
+apuntaba a ese `site_id` no se borró en cascada (a diferencia de
+`deleteTransformer_`, que sí borra en cascada las filas de `PRUEBAS`). No es
+nada de hoy — se reporta aquí para no perderlo, pendiente de decidir si
+`deleteSite_` debería limpiar también `DOCUMENTOS` o si se deja así.
 
 Ver conversación con Gerson para el detalle completo de campos y KPIs
 propuestos — lo de arriba es solo el resumen de alcance, no el diseño final.
@@ -723,13 +821,15 @@ propuestos — lo de arriba es solo el resumen de alcance, no el diseño final.
 Base de datos en vivo: **desde 2026-08-30 vive en la cuenta dedicada nueva**
 (ver "Infraestructura / cuentas" arriba), creada desde cero — no es la misma
 hoja de antes de la migración. Limpia de datos de prueba (última
-verificación 2026-08-30, migración + módulo Comercial: Sitio + Transformador
-+ prueba de Aislamiento con certificado real en Drive, y 3 Ofertas de
-prueba incluyendo el flujo de vincular-y-mover-adjunto — todo lo creado
-durante esas verificaciones se borró al terminar, usando `deleteOferta_`
-para las ofertas). La hoja/carpeta viejas (cuenta Arrieta Soluciones) ya
-estaban vacías desde la limpieza de 2026-08-29 y quedaron así, sin usarse
-desde la migración.
+verificación 2026-08-30, migración + módulo Comercial + Panel General/
+estado_equipo: Sitio + Transformador + prueba de Aislamiento con
+certificado real en Drive, 3+1 Ofertas de prueba incluyendo el flujo de
+vincular-y-mover-adjunto, y un Sitio + Transformador + Oferta adicionales
+para verificar `estado_equipo` y los KPIs de Panel General en vivo — todo lo
+creado durante esas verificaciones se borró al terminar, usando
+`deleteOferta_`/`deleteTransformer_`/`deleteSite_`). La hoja/carpeta viejas
+(cuenta Arrieta Soluciones) ya estaban vacías desde la limpieza de
+2026-08-29 y quedaron así, sin usarse desde la migración.
 
 **Cuenta de prueba activa**: `test.tecnico.verificacion` (rol Técnico) se
 creó para verificar en vivo el rechazo 403 de Comercial con un token real —

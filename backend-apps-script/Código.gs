@@ -69,11 +69,19 @@ var HEADERS = {
     'id', 'client_name', 'project_name', 'address', 'created_at', 'nit', 'ciudad',
     'drive_client_folder_id', 'drive_certificados_folder_id', 'drive_ofertas_folder_id', 'drive_documentos_folder_id'
   ],
+  /* La columna 'status' se renombró a 'estado_equipo' (mismo índice, no se
+     movió) para el semáforo del equipo (Activo/Fuera de servicio/Dado de
+     baja) que consume Panel General — antes solo existía silenciosamente
+     como 'ACTIVO' fijo, sin control de edición en la UI. Ver
+     normalizeEstadoEquipo_/ESTADO_EQUIPO_VALUES. Efecto puramente cosmético:
+     la celda de encabezado ya escrita en Sheets sigue diciendo "status"
+     salvo que crezca el arreglo (ensureAllSheets_ solo reescribe el
+     encabezado completo cuando el número de columnas aumenta). */
   TRANSFORMADORES: [
     'id', 'site_id', 'serial_number', 'manufacturer', 'manufacture_year',
     'phase_type', 'vector_group', 'rated_power_kva', 'hv_nominal_voltage', 'lv_nominal_voltage',
     'tap_config_json', 'is_special_design', 'custom_tap_ratio_matrix_json',
-    'status', 'plate_photo_file_id', 'created_at', 'updated_at',
+    'estado_equipo', 'plate_photo_file_id', 'created_at', 'updated_at',
     'cooling_type', 'impedance_percent', 'insulation_type',
     'numero_posiciones_tap'
   ],
@@ -112,6 +120,14 @@ var DRIVE_CALIBRACIONES_FOLDER_NAME = 'Calibraciones';
 var DRIVE_PROSPECTOS_FOLDER_NAME = 'Comercial - Prospectos sin cliente';
 var TOLERANCE_PERCENT = 0.5;
 var UNBALANCE_THRESHOLD_PERCENT = 5.0;
+
+/** Valores válidos de estado_equipo (Transformador). Cualquier valor legado
+ *  ('ACTIVO' mayúsculas, de antes de este campo tenerse en cuenta) o vacío
+ *  se trata como 'Activo' — migración perezosa, no hay backfill de filas. */
+var ESTADO_EQUIPO_VALUES = ['Activo', 'Fuera de servicio', 'Dado de baja'];
+function normalizeEstadoEquipo_(value) {
+  return ESTADO_EQUIPO_VALUES.indexOf(value) !== -1 ? value : 'Activo';
+}
 
 /** Factor de relación línea-línea por grupo de conexión (ver TtrCalculator.kt en el backend Ktor). */
 var VECTOR_GROUP_MULTIPLIERS = {
@@ -485,7 +501,7 @@ function transformerRowToJson_(row) {
     tap_config: safeParseJson_(row.tap_config_json),
     is_special_design: isTruthy_(row.is_special_design),
     custom_tap_ratio_matrix: safeParseJson_(row.custom_tap_ratio_matrix_json),
-    status: row.status,
+    estado_equipo: normalizeEstadoEquipo_(row.estado_equipo),
     plate_photo_url: row.plate_photo_file_id ? driveFileUrl_(row.plate_photo_file_id) : null,
     cooling_type: row.cooling_type || '',
     impedance_percent: row.impedance_percent,
@@ -533,7 +549,7 @@ function createTransformer_(params) {
       tap_config_json: JSON.stringify(params.tap_config || {}),
       is_special_design: !!params.is_special_design,
       custom_tap_ratio_matrix_json: params.custom_tap_ratio_matrix ? JSON.stringify(params.custom_tap_ratio_matrix) : '',
-      status: 'ACTIVO',
+      estado_equipo: 'Activo',
       plate_photo_file_id: attachmentId,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
@@ -557,10 +573,16 @@ function updateTransformer_(params) {
 
     var updates = {};
     ['serial_number', 'manufacturer', 'manufacture_year', 'phase_type', 'vector_group', 'rated_power_kva',
-      'hv_nominal_voltage', 'lv_nominal_voltage', 'status', 'site_id',
+      'hv_nominal_voltage', 'lv_nominal_voltage', 'site_id',
       'cooling_type', 'impedance_percent', 'insulation_type', 'numero_posiciones_tap'].forEach(function (field) {
       if (params[field] !== undefined) updates[field] = params[field];
     });
+    if (params.estado_equipo !== undefined) {
+      if (ESTADO_EQUIPO_VALUES.indexOf(params.estado_equipo) === -1) {
+        return jsonResponse_({ status: 400, message: 'estado_equipo inválido: debe ser Activo, Fuera de servicio o Dado de baja' });
+      }
+      updates.estado_equipo = params.estado_equipo;
+    }
     if (params.tap_config !== undefined) updates.tap_config_json = JSON.stringify(params.tap_config);
     if (params.custom_tap_ratio_matrix !== undefined) updates.custom_tap_ratio_matrix_json = JSON.stringify(params.custom_tap_ratio_matrix);
     if (params.is_special_design !== undefined) updates.is_special_design = !!params.is_special_design;

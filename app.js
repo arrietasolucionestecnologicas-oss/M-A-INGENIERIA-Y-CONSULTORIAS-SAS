@@ -317,6 +317,7 @@ function showView(name) {
   if (name === 'insulation-form') { renderInsulationFormContext(); refreshInsulation(); }
   if (name === 'documents') { renderDocumentsView_(); }
   if (name === 'commercial') { renderCommercialView_(); }
+  if (name === 'general-dashboard') { renderGeneralDashboardView_(); }
 }
 
 function viewNeedsSite_(name) {
@@ -937,7 +938,7 @@ function handleCreateTransformerSubmit(e) {
       // el POST real (incluida la foto de placa) corre en segundo plano.
       var tempId = 'tmp_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
       state.transformers.push(Object.assign({
-        id: tempId, updated_at: new Date().toISOString(), status: 'ACTIVO', _pending: true
+        id: tempId, updated_at: new Date().toISOString(), estado_equipo: 'Activo', _pending: true
       }, payload));
       saveDraft_('mya_cache_transformers_' + siteId, state.transformers);
       renderDashboard();
@@ -1022,6 +1023,7 @@ function retryPendingTransformer_(id) {
 function openEditTransformerModal_() {
   var t = state.currentTransformer;
   if (!t) return;
+  document.getElementById('editTrfEstadoEquipo').value = t.estado_equipo || 'Activo';
   document.getElementById('editTrfSerial').value = t.serial_number || '';
   document.getElementById('editTrfManufacturer').value = t.manufacturer || '';
   document.getElementById('editTrfVectorGroup').value = t.vector_group || '';
@@ -1057,6 +1059,7 @@ function handleEditTransformerSubmit(e) {
   setStatus_(statusEl, '', false);
   var payload = {
     id: id,
+    estado_equipo: document.getElementById('editTrfEstadoEquipo').value,
     serial_number: document.getElementById('editTrfSerial').value.trim(),
     manufacturer: document.getElementById('editTrfManufacturer').value.trim(),
     vector_group: document.getElementById('editTrfVectorGroup').value.trim() || null,
@@ -1302,6 +1305,10 @@ function renderRestrictedModuleNav_() {
         section.innerHTML =
           '<div class="topbar"><div><h1>' + mod.title + '</h1><p>' + mod.subtitle + '</p></div></div>' +
           '<div class="view" id="commercialViewBody"></div>';
+      } else if (mod.view === 'general-dashboard') {
+        section.innerHTML =
+          '<div class="topbar"><div><h1>' + mod.title + '</h1><p>' + mod.subtitle + '</p></div></div>' +
+          '<div class="view" id="generalDashboardViewBody"></div>';
       } else {
         section.innerHTML =
           '<div class="topbar"><div><h1>' + mod.title + '</h1><p>' + mod.subtitle + '</p></div></div>' +
@@ -1359,6 +1366,12 @@ function handleCreateUserSubmit(e) {
 // Dashboard
 // ---------------------------------------------------------------
 
+function estadoEquipoPillClass_(estado) {
+  if (estado === 'Fuera de servicio') return 'danger';
+  if (estado === 'Dado de baja') return 'neutral';
+  return 'success'; // Activo
+}
+
 function renderDashboard() {
   var tbody = document.getElementById('dashboardRows');
   document.getElementById('statTransformerCount').textContent = state.transformers.length;
@@ -1382,7 +1395,7 @@ function renderDashboard() {
       var deleteBtn = state.role === 'Administrador'
         ? '<button type="button" class="matrix-remove" title="Eliminar" onclick="event.stopPropagation(); handleDeleteTransformer_(\'' + t.id + '\')">&times;</button>'
         : '';
-      statusCell = '<span class="pill neutral">' + escapeHtml_(t.status || 'ACTIVO') + '</span>' + deleteBtn;
+      statusCell = '<span class="pill ' + estadoEquipoPillClass_(t.estado_equipo) + '">' + escapeHtml_(t.estado_equipo || 'Activo') + '</span>' + deleteBtn;
     }
     var rowOpen = (isNew || t._pending) ? '<tr>' : '<tr class="rowlink" onclick="openTransformer(\'' + t.id + '\')">';
     return rowOpen +
@@ -1464,7 +1477,7 @@ function renderDetail() {
 
   document.getElementById('detailTopTitle').textContent = t.serial_number;
   document.getElementById('detailTitle').textContent = 'Transformador ' + t.serial_number;
-  document.getElementById('detailStatusChip').textContent = 'Estado: ' + (t.status || 'ACTIVO');
+  document.getElementById('detailStatusChip').textContent = 'Estado: ' + (t.estado_equipo || 'Activo');
 
   var phaseLabel = t.phase_type === 'MONOFASICO' ? 'Monofásico' : 'Trifásico';
   var powerLabel = t.rated_power_kva ? (t.rated_power_kva + ' kVA') : null;
@@ -2791,6 +2804,138 @@ function renderComercialMonthlyTable_() {
     return '<tr><td class="mono">' + m + '</td>' + OFERTA_ESTADOS.map(function (e) {
       return '<td>' + row[e].n + ' &middot; ' + fmtCOP_(row[e].v) + '</td>';
     }).join('') + '</tr>';
+  }).join('');
+}
+
+// ---------------------------------------------------------------
+// Panel General — dashboard consolidado
+//
+// RBAC: "Sin acceso" para Técnico, mismo patrón frontend que Comercial (ver
+// RESTRICTED_MODULES_ / renderRestrictedModuleNav_). No agrega ningún action
+// de backend nuevo: solo consume listTransformers/listTests/listOfertas/
+// listDocuments, que ya existen. listOfertas_/listDocuments_ ya rechazan a
+// Técnico con 403 por su cuenta; listTransformers_/listTests_ se dejan
+// abiertos a propósito (Técnico tiene Full en Equipos/Pruebas por su cuenta,
+// según la matriz RBAC) — la protección de Panel General en sí sigue siendo
+// 100% frontend, como Comercial.
+//
+// No duplica ningún cálculo: computeComercialStats_() es la MISMA función
+// que usa el dashboard propio de Comercial, llamada tal cual aquí.
+// Calibraciones no tiene todavía ningún semáforo ni acción de backend
+// construida (sigue siendo placeholder puro), así que esa tarjeta muestra
+// "Módulo pendiente" en vez de inventar un número.
+// ---------------------------------------------------------------
+
+function renderGeneralDashboardView_() {
+  var body = document.getElementById('generalDashboardViewBody');
+  if (!body) return;
+
+  body.innerHTML =
+    '<div class="stat-row" id="generalKpiRow"><div class="stat-card"><div class="label">Cargando&hellip;</div></div></div>' +
+    '<div class="panel">' +
+    '<div class="panel-head"><h2>Comercial</h2><span class="hint">Mismos números que el dashboard propio de Comercial</span></div>' +
+    '<div class="stat-row" id="generalComercialRow"></div>' +
+    '</div>' +
+    '<div class="panel">' +
+    '<div class="panel-head"><h2>Pruebas por mes</h2></div>' +
+    '<div style="overflow-x:auto;"><table><thead><tr><th>Mes</th><th>TTR</th><th>Devanados</th><th>Aceite</th><th>Aislamiento</th><th>Total</th></tr></thead>' +
+    '<tbody id="generalTestsMonthlyRows"><tr><td colspan="6" class="empty-note">Cargando&hellip;</td></tr></tbody></table></div>' +
+    '</div>' +
+    '<div class="panel">' +
+    '<div class="panel-head"><h2>Documentos recientes</h2></div>' +
+    '<div style="overflow-x:auto;"><table><thead><tr><th>Fecha</th><th>Cliente</th><th>Tipo</th><th>Nombre</th></tr></thead>' +
+    '<tbody id="generalRecentDocsRows"><tr><td colspan="4" class="empty-note">Cargando&hellip;</td></tr></tbody></table></div>' +
+    '</div>';
+
+  loadGeneralDashboardAndRender_();
+}
+
+function loadGeneralDashboardAndRender_() {
+  Promise.all([
+    callApi('listSites', 'GET', {}),
+    callApi('listTransformers', 'GET', {}),
+    callApi('listTests', 'GET', {}),
+    callApi('listOfertas', 'GET', {}),
+    callApi('listDocuments', 'GET', {})
+  ]).then(function (results) {
+    var sites = results[0] || [];
+    var transformers = results[1] || [];
+    var tests = results[2] || [];
+    var ofertas = results[3] || [];
+    var documents = results[4] || [];
+    renderGeneralKpis_(transformers, tests);
+    renderGeneralComercialStats_(ofertas);
+    renderGeneralTestsMonthlyTable_(tests);
+    renderGeneralRecentDocuments_(documents, sites);
+  }).catch(function (err) {
+    if (err.status === 402 || err.status === 403) return;
+    var row = document.getElementById('generalKpiRow');
+    if (row) row.innerHTML = '<div class="stat-card"><div class="label">' + escapeHtml_(formatNetworkAwareError_(err)) + '</div></div>';
+  });
+}
+
+function renderGeneralKpis_(transformers, tests) {
+  var row = document.getElementById('generalKpiRow');
+  if (!row) return;
+  var activeCount = transformers.filter(function (t) { return (t.estado_equipo || 'Activo') === 'Activo'; }).length;
+  var monthPrefix = new Date().toISOString().slice(0, 7);
+  var testsThisMonth = tests.filter(function (t) { return String(t.created_at || '').slice(0, 7) === monthPrefix; }).length;
+
+  row.innerHTML =
+    '<div class="stat-card"><div class="label">Transformadores activos</div><div class="value num">' + activeCount + '</div><div class="delta">De ' + transformers.length + ' registrados en total</div></div>' +
+    '<div class="stat-card"><div class="label">Pruebas del mes</div><div class="value num">' + testsThisMonth + '</div><div class="delta">TTR + Devanados + Aceite + Aislamiento, mes en curso</div></div>' +
+    '<div class="stat-card"><div class="label">Calibraciones</div><div class="value" style="font-size:15px;">Módulo pendiente</div><div class="delta">Sin catálogo de instrumentos construido todavía</div></div>';
+}
+
+function renderGeneralComercialStats_(ofertas) {
+  var row = document.getElementById('generalComercialRow');
+  if (!row) return;
+  var stats = computeComercialStats_(ofertas);
+  row.innerHTML =
+    '<div class="stat-card"><div class="label">Valor en pipeline</div><div class="value num">' + fmtCOP_(stats.pipelineValue) + '</div><div class="delta">Suma de ofertas Pendiente</div></div>' +
+    '<div class="stat-card"><div class="label">Valor ganado</div><div class="value num">' + fmtCOP_(stats.wonValue) + '</div><div class="delta">Suma de ofertas Aprobada</div></div>' +
+    '<div class="stat-card"><div class="label">Tasa de conversión</div><div class="value num">' + (stats.conversionRatePercent === null ? '—' : stats.conversionRatePercent.toFixed(1) + ' %') + '</div><div class="delta">Aprobada / resueltas</div></div>';
+}
+
+function renderGeneralTestsMonthlyTable_(tests) {
+  var tbody = document.getElementById('generalTestsMonthlyRows');
+  if (!tbody) return;
+  var byMonth = {};
+  tests.forEach(function (t) {
+    if (!t.created_at) return;
+    var month = String(t.created_at).slice(0, 7);
+    if (!byMonth[month]) byMonth[month] = { TTR: 0, RESISTENCIA_DEVANADOS: 0, ACEITE_DIELECTRICO: 0, AISLAMIENTO: 0 };
+    if (byMonth[month][t.test_type] !== undefined) byMonth[month][t.test_type]++;
+  });
+  var months = Object.keys(byMonth).sort().reverse();
+  if (months.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="6" class="empty-note">Sin pruebas registradas todavía.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = months.map(function (m) {
+    var row = byMonth[m];
+    var total = row.TTR + row.RESISTENCIA_DEVANADOS + row.ACEITE_DIELECTRICO + row.AISLAMIENTO;
+    return '<tr><td class="mono">' + m + '</td><td>' + row.TTR + '</td><td>' + row.RESISTENCIA_DEVANADOS + '</td><td>' + row.ACEITE_DIELECTRICO + '</td><td>' + row.AISLAMIENTO + '</td><td class="mono">' + total + '</td></tr>';
+  }).join('');
+}
+
+function renderGeneralRecentDocuments_(documents, sites) {
+  var tbody = document.getElementById('generalRecentDocsRows');
+  if (!tbody) return;
+  var recent = documents.slice().sort(function (a, b) { return new Date(b.created_at) - new Date(a.created_at); }).slice(0, 8);
+  if (recent.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="4" class="empty-note">Sin documentos subidos todavía.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = recent.map(function (d) {
+    var site = sites.filter(function (s) { return s.id === d.site_id; })[0];
+    var siteLabel = site ? (site.client_name + ' · ' + site.project_name) : '—';
+    return '<tr>' +
+      '<td>' + fmtDate_(d.created_at) + '</td>' +
+      '<td>' + escapeHtml_(siteLabel) + '</td>' +
+      '<td><span class="pill neutral">' + escapeHtml_(DOCUMENT_CATEGORY_LABELS[d.category] || d.category) + '</span></td>' +
+      '<td>' + escapeHtml_(d.file_name) + '</td>' +
+      '</tr>';
   }).join('');
 }
 
