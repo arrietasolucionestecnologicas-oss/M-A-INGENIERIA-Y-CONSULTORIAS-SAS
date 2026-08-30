@@ -67,7 +67,9 @@ var state = {
   wr: { currentTap: null, readings: {}, secondary: null },
   oil: { rigidez: null, humedad: null, acidez: null, tension: null },
   insulation: { windingTemperatureC: 20, phases: {} },
-  documents: []
+  documents: [],
+  ofertas: [],
+  currentOfertaId: null
 };
 
 /** "12,5" -> 12.5. parseFloat NUNCA debe usarse directo sobre un input de usuario: se detiene en la coma y trunca el valor sin avisar. */
@@ -314,6 +316,7 @@ function showView(name) {
   if (name === 'oil-form') { renderOilFormContext(); refreshOil(); }
   if (name === 'insulation-form') { renderInsulationFormContext(); refreshInsulation(); }
   if (name === 'documents') { renderDocumentsView_(); }
+  if (name === 'commercial') { renderCommercialView_(); }
 }
 
 function viewNeedsSite_(name) {
@@ -1289,16 +1292,23 @@ function renderRestrictedModuleNav_() {
       sidebarAnchor = navItem; // el siguiente módulo se ancla justo después de este
     }
 
-    // Vista placeholder (solo si no existe todavía)
+    // Vista real (Comercial) o placeholder (los demás módulos sin construir) —
+    // solo se crea si no existe todavía.
     if (!document.getElementById('view-' + mod.view)) {
       var section = document.createElement('section');
       section.id = 'view-' + mod.view;
       section.hidden = true;
-      section.innerHTML =
-        '<div class="topbar"><div><h1>' + mod.title + '</h1><p>' + mod.subtitle + '</p></div></div>' +
-        '<div class="view"><div class="panel"><div class="panel-head"><h2>Próximamente</h2></div>' +
-        '<div class="empty-note">Este módulo está en diseño — se construirá cuando se valide el alcance completo con el cliente.</div>' +
-        '</div></div>';
+      if (mod.view === 'commercial') {
+        section.innerHTML =
+          '<div class="topbar"><div><h1>' + mod.title + '</h1><p>' + mod.subtitle + '</p></div></div>' +
+          '<div class="view" id="commercialViewBody"></div>';
+      } else {
+        section.innerHTML =
+          '<div class="topbar"><div><h1>' + mod.title + '</h1><p>' + mod.subtitle + '</p></div></div>' +
+          '<div class="view"><div class="panel"><div class="panel-head"><h2>Próximamente</h2></div>' +
+          '<div class="empty-note">Este módulo está en diseño — se construirá cuando se valide el alcance completo con el cliente.</div>' +
+          '</div></div>';
+      }
       document.querySelector('main').appendChild(section);
     }
   });
@@ -2617,6 +2627,421 @@ function applyDocumentFilters_() {
       '<td><a href="' + d.url + '" target="_blank" rel="noopener">Ver / descargar</a></td>' +
       '</tr>';
   }).join('');
+}
+
+// ---------------------------------------------------------------
+// Comercial — Ofertas y Licitaciones
+//
+// RBAC: "Sin acceso" para Técnico — igual que Administración, ni el nav ni
+// la vista se agregan al DOM para ese rol (ver RESTRICTED_MODULES_ /
+// renderRestrictedModuleNav_). El backend además rechaza con 403 en TODAS
+// las acciones de este módulo (no solo listar, a diferencia de Documentos),
+// así que aunque alguien fuerce la llamada desde la consola no logra nada.
+// ---------------------------------------------------------------
+
+var OFERTA_TIPO_LABELS = { OFERTA_DIRECTA: 'Oferta directa', LICITACION_PUBLICA: 'Licitación pública' };
+var OFERTA_ESTADOS = ['Pendiente', 'Aprobada', 'Rechazada', 'Cierre'];
+
+function ofertaEstadoPillClass_(estado) {
+  if (estado === 'Aprobada') return 'success';
+  if (estado === 'Rechazada' || estado === 'Cierre') return 'danger';
+  return 'neutral'; // Pendiente
+}
+
+function renderCommercialView_() {
+  var body = document.getElementById('commercialViewBody');
+  if (!body) return;
+
+  body.innerHTML =
+    '<div class="stat-row" id="comercialStatRow"></div>' +
+    '<div class="panel">' +
+    '<div class="panel-head"><h2>Por mes</h2><span class="hint">Cantidad y valor cotizado por estado, agrupado por mes de envío</span></div>' +
+    '<div style="overflow-x:auto;"><table><thead><tr><th>Mes</th><th>Pendiente</th><th>Aprobada</th><th>Rechazada</th><th>Cierre</th></tr></thead>' +
+    '<tbody id="comercialMonthlyRows"><tr><td colspan="5" class="empty-note">Cargando…</td></tr></tbody></table></div>' +
+    '</div>' +
+    '<div class="panel" style="max-width:720px;">' +
+    '<div class="panel-head"><h2>Nueva oferta</h2></div>' +
+    '<form id="createOfertaForm" class="form-field-block" style="align-items:flex-end;">' +
+    '<div class="field" style="flex:1; min-width:200px;"><label>Cliente / prospecto</label><input id="newOfertaCliente" required></div>' +
+    '<div class="field" style="min-width:200px;"><label>Vincular a Sitio (opcional)</label><select id="newOfertaSite"><option value="">— sin vincular —</option></select></div>' +
+    '<div class="field" style="min-width:180px;"><label>Tipo</label><select id="newOfertaTipo"><option value="OFERTA_DIRECTA">Oferta directa</option><option value="LICITACION_PUBLICA">Licitación pública</option></select></div>' +
+    '<div class="field" style="flex:1; min-width:220px;"><label>Descripción / alcance</label><input id="newOfertaDescripcion"></div>' +
+    '<div class="field" style="min-width:150px;"><label>Valor cotizado</label><input class="mono" id="newOfertaValor" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*"></div>' +
+    '<div class="field" style="min-width:150px;"><label>Fecha de envío</label><input type="date" id="newOfertaFechaEnvio"></div>' +
+    '<div class="field" style="min-width:150px;"><label>Fecha de cierre</label><input type="date" id="newOfertaFechaCierre"></div>' +
+    '<div class="field" style="min-width:180px;"><label>Responsable</label><input id="newOfertaResponsable"></div>' +
+    '<div class="field" style="min-width:200px;"><label>Propuesta enviada (opcional)</label><input id="newOfertaFile" type="file" accept="application/pdf,image/*"></div>' +
+    '<button class="btn primary" type="submit" id="createOfertaBtn">Crear</button>' +
+    '</form>' +
+    '<div class="status-line" id="createOfertaStatus" hidden style="padding:0 18px 14px;"></div>' +
+    '</div>' +
+    '<div class="panel">' +
+    '<div class="panel-head"><h2>Ofertas</h2></div>' +
+    '<div class="form-field-block">' +
+    '<div class="field" style="min-width:170px;"><label>Estado</label><select id="filterOfertaEstado" onchange="applyComercialFilters_()"><option value="">Todos</option><option>Pendiente</option><option>Aprobada</option><option>Rechazada</option><option>Cierre</option></select></div>' +
+    '<div class="field" style="min-width:200px;"><label>Cliente / Sitio</label><select id="filterOfertaSite" onchange="applyComercialFilters_()"><option value="">Todos</option></select></div>' +
+    '<div class="field" style="min-width:180px;"><label>Tipo</label><select id="filterOfertaTipo" onchange="applyComercialFilters_()"><option value="">Todos</option><option value="OFERTA_DIRECTA">Oferta directa</option><option value="LICITACION_PUBLICA">Licitación pública</option></select></div>' +
+    '<div class="field"><label>Desde</label><input type="date" id="filterOfertaDateFrom" onchange="applyComercialFilters_()"></div>' +
+    '<div class="field"><label>Hasta</label><input type="date" id="filterOfertaDateTo" onchange="applyComercialFilters_()"></div>' +
+    '</div>' +
+    '<div style="overflow-x:auto;"><table>' +
+    '<thead><tr><th>Cliente</th><th>Tipo</th><th>Valor</th><th>Envío</th><th>Cierre</th><th>Estado</th><th></th></tr></thead>' +
+    '<tbody id="ofertasRows"><tr><td colspan="7" class="empty-note">Cargando…</td></tr></tbody>' +
+    '</table></div>' +
+    '</div>';
+
+  document.getElementById('createOfertaForm').addEventListener('submit', handleCreateOfertaSubmit);
+  ensureOfertaDetailModal_();
+
+  callApi('listSites', 'GET', {}).then(function (sites) {
+    state.sites = sites || [];
+    var options = state.sites.map(function (s) {
+      return '<option value="' + s.id + '">' + escapeHtml_(s.client_name + ' · ' + s.project_name) + '</option>';
+    }).join('');
+    document.getElementById('newOfertaSite').innerHTML = '<option value="">— sin vincular —</option>' + options;
+    document.getElementById('filterOfertaSite').innerHTML = '<option value="">Todos</option>' + options;
+  });
+
+  loadOfertasAndRender_();
+}
+
+function loadOfertasAndRender_() {
+  callApi('listOfertas', 'GET', {})
+    .then(function (ofertas) {
+      state.ofertas = ofertas || [];
+      renderComercialDashboard_();
+      applyComercialFilters_();
+    })
+    .catch(function (err) {
+      if (err.status === 402 || err.status === 403) return;
+      var tbody = document.getElementById('ofertasRows');
+      if (tbody) tbody.innerHTML = '<tr><td colspan="7" class="empty-note">' + escapeHtml_(formatNetworkAwareError_(err)) + '</td></tr>';
+    });
+}
+
+function computeComercialStats_(ofertas) {
+  var valueByEstado = { Pendiente: 0, Aprobada: 0, Rechazada: 0, Cierre: 0 };
+  var resolved = 0, approved = 0, responseDaysSum = 0, responseCount = 0;
+
+  ofertas.forEach(function (o) {
+    var v = parseFloat(o.valor_cotizado) || 0;
+    valueByEstado[o.estado] = (valueByEstado[o.estado] || 0) + v;
+    if (o.estado === 'Aprobada' || o.estado === 'Rechazada' || o.estado === 'Cierre') {
+      resolved++;
+      if (o.estado === 'Aprobada') approved++;
+      var endIso = o.estado_changed_at || (o.estado === 'Cierre' ? o.fecha_cierre : null);
+      if (endIso && o.fecha_envio) {
+        var days = (new Date(endIso) - new Date(o.fecha_envio)) / 86400000;
+        if (!isNaN(days) && days >= 0) { responseDaysSum += days; responseCount++; }
+      }
+    }
+  });
+
+  return {
+    valueByEstado: valueByEstado,
+    pipelineValue: valueByEstado.Pendiente,
+    wonValue: valueByEstado.Aprobada,
+    conversionRatePercent: resolved > 0 ? (approved / resolved * 100) : null,
+    avgResponseDays: responseCount > 0 ? (responseDaysSum / responseCount) : null
+  };
+}
+
+function fmtCOP_(v) {
+  return '$ ' + Math.round(v || 0).toLocaleString('es-CO');
+}
+
+function renderComercialDashboard_() {
+  var row = document.getElementById('comercialStatRow');
+  if (!row) return;
+  var stats = computeComercialStats_(state.ofertas);
+  var counts = { Pendiente: 0, Aprobada: 0, Rechazada: 0, Cierre: 0 };
+  state.ofertas.forEach(function (o) { counts[o.estado] = (counts[o.estado] || 0) + 1; });
+
+  row.innerHTML =
+    '<div class="stat-card"><div class="label">Funnel</div><div class="value" style="font-size:14px;">' +
+    'Pendiente ' + counts.Pendiente + ' &middot; Aprobada ' + counts.Aprobada + ' &middot; Rechazada ' + counts.Rechazada + ' &middot; Cierre ' + counts.Cierre +
+    '</div></div>' +
+    '<div class="stat-card"><div class="label">Valor en pipeline</div><div class="value num">' + fmtCOP_(stats.pipelineValue) + '</div><div class="delta">Suma de ofertas Pendiente</div></div>' +
+    '<div class="stat-card"><div class="label">Valor ganado</div><div class="value num">' + fmtCOP_(stats.wonValue) + '</div><div class="delta">Suma de ofertas Aprobada</div></div>' +
+    '<div class="stat-card"><div class="label">Tasa de conversión</div><div class="value num">' + (stats.conversionRatePercent === null ? '—' : stats.conversionRatePercent.toFixed(1) + ' %') + '</div><div class="delta">Aprobada / resueltas</div></div>' +
+    '<div class="stat-card"><div class="label">Tiempo prom. de respuesta</div><div class="value num">' + (stats.avgResponseDays === null ? '—' : stats.avgResponseDays.toFixed(1) + ' d') + '</div><div class="delta">Envío &rarr; cambio de estado</div></div>';
+
+  renderComercialMonthlyTable_();
+}
+
+function renderComercialMonthlyTable_() {
+  var tbody = document.getElementById('comercialMonthlyRows');
+  if (!tbody) return;
+  var byMonth = {};
+  state.ofertas.forEach(function (o) {
+    if (!o.fecha_envio) return;
+    var month = String(o.fecha_envio).slice(0, 7); // YYYY-MM
+    if (!byMonth[month]) byMonth[month] = { Pendiente: { n: 0, v: 0 }, Aprobada: { n: 0, v: 0 }, Rechazada: { n: 0, v: 0 }, Cierre: { n: 0, v: 0 } };
+    var v = parseFloat(o.valor_cotizado) || 0;
+    byMonth[month][o.estado].n++;
+    byMonth[month][o.estado].v += v;
+  });
+  var months = Object.keys(byMonth).sort().reverse();
+  if (months.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="5" class="empty-note">Sin ofertas registradas todavía.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = months.map(function (m) {
+    var row = byMonth[m];
+    return '<tr><td class="mono">' + m + '</td>' + OFERTA_ESTADOS.map(function (e) {
+      return '<td>' + row[e].n + ' &middot; ' + fmtCOP_(row[e].v) + '</td>';
+    }).join('') + '</tr>';
+  }).join('');
+}
+
+function applyComercialFilters_() {
+  var tbody = document.getElementById('ofertasRows');
+  if (!tbody) return;
+  var estado = document.getElementById('filterOfertaEstado').value;
+  var siteId = document.getElementById('filterOfertaSite').value;
+  var tipo = document.getElementById('filterOfertaTipo').value;
+  var dateFromEl = document.getElementById('filterOfertaDateFrom');
+  var dateToEl = document.getElementById('filterOfertaDateTo');
+  var dateFrom = dateFromEl.value ? new Date(dateFromEl.value) : null;
+  var dateTo = dateToEl.value ? new Date(dateToEl.value + 'T23:59:59') : null;
+
+  var rows = state.ofertas.filter(function (o) {
+    if (estado && o.estado !== estado) return false;
+    if (siteId && o.site_id !== siteId) return false;
+    if (tipo && o.tipo !== tipo) return false;
+    if (dateFrom || dateTo) {
+      var envio = o.fecha_envio ? new Date(o.fecha_envio) : null;
+      if (!envio) return false;
+      if (dateFrom && envio < dateFrom) return false;
+      if (dateTo && envio > dateTo) return false;
+    }
+    return true;
+  });
+
+  if (rows.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="7" class="empty-note">No hay ofertas que coincidan con el filtro.</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = rows.slice().reverse().map(function (o) {
+    return '<tr class="rowlink" onclick="openOfertaDetail_(\'' + o.id + '\')">' +
+      '<td>' + escapeHtml_(o.cliente_nombre) + '</td>' +
+      '<td>' + escapeHtml_(OFERTA_TIPO_LABELS[o.tipo] || o.tipo) + '</td>' +
+      '<td class="mono">' + fmtCOP_(o.valor_cotizado) + '</td>' +
+      '<td>' + fmtDate_(o.fecha_envio) + '</td>' +
+      '<td>' + fmtDate_(o.fecha_cierre) + '</td>' +
+      '<td><span class="pill ' + ofertaEstadoPillClass_(o.estado) + '">' + escapeHtml_(o.estado) + '</span></td>' +
+      '<td>' + (o.site_id ? '' : '<span class="pill neutral" title="Sin vincular a un Sitio">Prospecto</span>') + '</td>' +
+      '</tr>';
+  }).join('');
+}
+
+function handleCreateOfertaSubmit(e) {
+  e.preventDefault();
+  var status = document.getElementById('createOfertaStatus');
+  var btn = document.getElementById('createOfertaBtn');
+  var cliente = document.getElementById('newOfertaCliente').value.trim();
+  if (!cliente) { setStatus_(status, 'El cliente/prospecto es obligatorio', false, true); return; }
+
+  btn.disabled = true;
+  setStatus_(status, 'Creando…', false);
+
+  readFileAsBase64_(document.getElementById('newOfertaFile'))
+    .then(function (file) {
+      var body = {
+        cliente_nombre: cliente,
+        site_id: document.getElementById('newOfertaSite').value || null,
+        tipo: document.getElementById('newOfertaTipo').value,
+        descripcion: document.getElementById('newOfertaDescripcion').value.trim(),
+        valor_cotizado: parseDecimal_(document.getElementById('newOfertaValor').value) || null,
+        fecha_envio: document.getElementById('newOfertaFechaEnvio').value || null,
+        fecha_cierre: document.getElementById('newOfertaFechaCierre').value || null,
+        responsable: document.getElementById('newOfertaResponsable').value.trim()
+      };
+      if (file) { body.file_base64 = file.base64; body.file_mime_type = file.mimeType; body.file_name = document.getElementById('newOfertaFile').files[0].name; }
+      return callApi('createOferta', 'POST', body);
+    })
+    .then(function () {
+      setStatus_(status, 'Oferta creada', true);
+      document.getElementById('createOfertaForm').reset();
+      loadOfertasAndRender_();
+    })
+    .catch(function (err) {
+      if (err.status !== 402 && err.status !== 403) setStatus_(status, formatNetworkAwareError_(err), false, true);
+    })
+    .then(function () { btn.disabled = false; });
+}
+
+function ensureOfertaDetailModal_() {
+  if (document.getElementById('ofertaDetailModal')) return;
+  var backdrop = document.createElement('div');
+  backdrop.className = 'modal-backdrop';
+  backdrop.id = 'ofertaDetailModalBackdrop';
+  backdrop.addEventListener('click', closeOfertaDetailModal_);
+
+  var modal = document.createElement('div');
+  modal.className = 'modal';
+  modal.id = 'ofertaDetailModal';
+  modal.setAttribute('role', 'dialog');
+  modal.setAttribute('aria-modal', 'true');
+  modal.innerHTML =
+    '<div class="modal-head"><h3>Detalle de la oferta</h3><button type="button" class="modal-close" onclick="closeOfertaDetailModal_()" aria-label="Cerrar">&times;</button></div>' +
+    '<div class="modal-body" id="ofertaDetailBody"></div>';
+
+  document.body.appendChild(backdrop);
+  document.body.appendChild(modal);
+}
+
+function openOfertaDetail_(id) {
+  var oferta = state.ofertas.filter(function (o) { return o.id === id; })[0];
+  if (!oferta) return;
+  state.currentOfertaId = id;
+
+  var siteLabel = '—';
+  if (oferta.site_id) {
+    var site = state.sites.filter(function (s) { return s.id === oferta.site_id; })[0];
+    siteLabel = site ? (site.client_name + ' · ' + site.project_name) : oferta.site_id;
+  }
+
+  var siteLinkBlock = oferta.site_id
+    ? '<div class="field"><label>Sitio vinculado</label><div>' + escapeHtml_(siteLabel) + '</div></div>'
+    : '<div class="field"><label>Vincular a un Sitio</label>' +
+      '<select id="linkOfertaSite"><option value="">Selecciona…</option>' +
+      state.sites.map(function (s) { return '<option value="' + s.id + '">' + escapeHtml_(s.client_name + ' · ' + s.project_name) + '</option>'; }).join('') +
+      '</select>' +
+      '<button type="button" class="btn" style="margin-top:8px;" onclick="handleLinkOfertaToSite_()">Vincular (mueve los adjuntos a la carpeta del cliente)</button></div>';
+
+  var estadoActionsBlock = oferta.estado_real === 'Pendiente'
+    ? '<button type="button" class="btn primary" onclick="handleOfertaEstadoChange_(\'Aprobada\')">Aprobar</button>' +
+      '<button type="button" class="btn" onclick="handleOfertaEstadoChange_(\'Rechazada\')">Rechazar</button>'
+    : '';
+
+  var contratoBlock = oferta.estado_real === 'Aprobada'
+    ? '<div class="field"><label>Contrato / orden de compra' + (oferta.adjunto_contrato_url ? ' (ya subido, <a href="' + oferta.adjunto_contrato_url + '" target="_blank" rel="noopener">verlo</a>)' : '') + '</label>' +
+      '<input id="ofertaContratoFile" type="file" accept="application/pdf,image/*">' +
+      '<button type="button" class="btn" style="margin-top:8px;" onclick="handleUploadOfertaContrato_()">Subir contrato</button></div>'
+    : '';
+
+  var bitacoraHtml = oferta.bitacora.length === 0
+    ? '<div class="empty-note">Sin notas de seguimiento todavía.</div>'
+    : oferta.bitacora.slice().reverse().map(function (n) {
+        return '<div style="padding:8px 0; border-bottom:1px solid var(--border);">' +
+          '<div style="font-size:11px; color:var(--text-muted);">' + fmtDate_(n.fecha) + ' &middot; ' + escapeHtml_(n.autor) + '</div>' +
+          '<div>' + escapeHtml_(n.nota) + '</div></div>';
+      }).join('');
+
+  document.getElementById('ofertaDetailBody').innerHTML =
+    '<div class="field"><label>Cliente / prospecto</label><div>' + escapeHtml_(oferta.cliente_nombre) + '</div></div>' +
+    siteLinkBlock +
+    '<div class="field"><label>Tipo</label><div>' + escapeHtml_(OFERTA_TIPO_LABELS[oferta.tipo] || oferta.tipo) + '</div></div>' +
+    '<div class="field"><label>Descripción</label><div>' + escapeHtml_(oferta.descripcion || '—') + '</div></div>' +
+    '<div class="field"><label>Valor cotizado</label><div>' + fmtCOP_(oferta.valor_cotizado) + '</div></div>' +
+    '<div class="field"><label>Envío / Cierre</label><div>' + fmtDate_(oferta.fecha_envio) + ' &rarr; ' + fmtDate_(oferta.fecha_cierre) + '</div></div>' +
+    '<div class="field"><label>Responsable</label><div>' + escapeHtml_(oferta.responsable || '—') + '</div></div>' +
+    '<div class="field"><label>Propuesta enviada</label><div>' + (oferta.adjunto_propuesta_url ? '<a href="' + oferta.adjunto_propuesta_url + '" target="_blank" rel="noopener">Ver / descargar</a>' : '—') + '</div></div>' +
+    '<div class="field"><label>Estado</label><div><span class="pill ' + ofertaEstadoPillClass_(oferta.estado) + '">' + escapeHtml_(oferta.estado) + '</span></div></div>' +
+    (estadoActionsBlock ? '<div class="field">' + estadoActionsBlock + '</div>' : '') +
+    contratoBlock +
+    '<div class="field"><label>Bitácora de seguimiento</label>' + bitacoraHtml + '</div>' +
+    '<div class="field"><label>Agregar nota</label><input id="ofertaNuevaNota">' +
+    '<button type="button" class="btn" style="margin-top:8px;" onclick="handleAddOfertaNota_()">Agregar</button></div>' +
+    (state.role === 'Administrador'
+      ? '<button type="button" class="btn" style="margin-top:4px; color:var(--danger); border-color:var(--danger-border);" onclick="handleDeleteOferta_()">Eliminar oferta</button>'
+      : '') +
+    '<span class="status-line" id="ofertaDetailStatus" hidden></span>';
+
+  document.getElementById('ofertaDetailModal').classList.add('open');
+  document.getElementById('ofertaDetailModalBackdrop').classList.add('open');
+}
+
+function closeOfertaDetailModal_() {
+  document.getElementById('ofertaDetailModal').classList.remove('open');
+  document.getElementById('ofertaDetailModalBackdrop').classList.remove('open');
+  state.currentOfertaId = null;
+}
+
+function refreshOfertaDetailAfterChange_() {
+  loadOfertasAndRender_();
+  var id = state.currentOfertaId;
+  callApi('listOfertas', 'GET', {}).then(function (ofertas) {
+    state.ofertas = ofertas || [];
+    renderComercialDashboard_();
+    applyComercialFilters_();
+    if (id) openOfertaDetail_(id);
+  });
+}
+
+function handleOfertaEstadoChange_(estado) {
+  var id = state.currentOfertaId;
+  if (!id) return;
+  var statusEl = document.getElementById('ofertaDetailStatus');
+  setStatus_(statusEl, 'Guardando…', false);
+  callApi('updateOferta', 'POST', { id: id, estado: estado })
+    .then(function () { refreshOfertaDetailAfterChange_(); })
+    .catch(function (err) {
+      if (err.status !== 402 && err.status !== 403) setStatus_(statusEl, formatNetworkAwareError_(err), false, true);
+    });
+}
+
+function handleLinkOfertaToSite_() {
+  var id = state.currentOfertaId;
+  var siteId = document.getElementById('linkOfertaSite').value;
+  if (!id || !siteId) return;
+  var statusEl = document.getElementById('ofertaDetailStatus');
+  setStatus_(statusEl, 'Vinculando…', false);
+  callApi('updateOferta', 'POST', { id: id, site_id: siteId })
+    .then(function () { refreshOfertaDetailAfterChange_(); })
+    .catch(function (err) {
+      if (err.status !== 402 && err.status !== 403) setStatus_(statusEl, formatNetworkAwareError_(err), false, true);
+    });
+}
+
+function handleUploadOfertaContrato_() {
+  var id = state.currentOfertaId;
+  var fileInput = document.getElementById('ofertaContratoFile');
+  if (!id || !fileInput.files[0]) return;
+  var statusEl = document.getElementById('ofertaDetailStatus');
+  setStatus_(statusEl, 'Subiendo…', false);
+  readFileAsBase64_(fileInput)
+    .then(function (file) {
+      return callApi('updateOferta', 'POST', { id: id, file_base64: file.base64, file_mime_type: file.mimeType, file_name: fileInput.files[0].name, file_slot: 'contrato' });
+    })
+    .then(function () { refreshOfertaDetailAfterChange_(); })
+    .catch(function (err) {
+      if (err.status !== 402 && err.status !== 403) setStatus_(statusEl, formatNetworkAwareError_(err), false, true);
+    });
+}
+
+/** Solo Administrador — el botón ni se pinta para otros roles (ver
+ *  openOfertaDetail_), y el backend lo vuelve a exigir. */
+function handleDeleteOferta_() {
+  var id = state.currentOfertaId;
+  if (!id) return;
+  var oferta = state.ofertas.filter(function (o) { return o.id === id; })[0];
+  if (!oferta || !confirm('¿Eliminar la oferta de "' + oferta.cliente_nombre + '"? Esta acción no se puede deshacer.')) return;
+  callApi('deleteOferta', 'POST', { id: id })
+    .then(function () {
+      closeOfertaDetailModal_();
+      loadOfertasAndRender_();
+    })
+    .catch(function (err) {
+      if (err.status === 402 || err.status === 403) return;
+      alert('No se pudo eliminar: ' + err.message);
+    });
+}
+
+function handleAddOfertaNota_() {
+  var id = state.currentOfertaId;
+  var notaInput = document.getElementById('ofertaNuevaNota');
+  var nota = notaInput.value.trim();
+  if (!id || !nota) return;
+  var statusEl = document.getElementById('ofertaDetailStatus');
+  setStatus_(statusEl, 'Guardando…', false);
+  callApi('addOfertaNota', 'POST', { id: id, nota: nota })
+    .then(function () { refreshOfertaDetailAfterChange_(); })
+    .catch(function (err) {
+      if (err.status !== 402 && err.status !== 403) setStatus_(statusEl, formatNetworkAwareError_(err), false, true);
+    });
 }
 
 // ---------------------------------------------------------------

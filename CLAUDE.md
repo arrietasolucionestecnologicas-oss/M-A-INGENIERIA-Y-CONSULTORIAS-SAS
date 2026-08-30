@@ -318,6 +318,100 @@ ni siquiera arma el HTML de la sección de listado/filtro cuando
 `state.role === 'Tecnico'` (no se agrega al DOM, mismo criterio que el resto
 de "RBAC" abajo) — un Técnico solo ve el formulario de subida.
 
+## Comercial — Ofertas y Licitaciones
+
+Módulo completo (dejó de ser placeholder). Hoja nueva `OFERTAS`:
+
+```
+id, cliente_nombre, site_id, tipo, descripcion, valor_cotizado,
+fecha_envio, fecha_cierre, estado, responsable,
+adjunto_propuesta_file_id, adjunto_contrato_file_id, bitacora_json,
+estado_changed_at, created_at, updated_at
+```
+
+- **`cliente_nombre` es texto libre, siempre obligatorio** — una oferta NO
+  necesita que exista un Sitio todavía (a diferencia de Transformador, que
+  sí exige `site_id`). `site_id` es opcional y se puede vincular después.
+- **`tipo`**: `OFERTA_DIRECTA` | `LICITACION_PUBLICA`.
+- **`estado` guardado** solo puede ser `Pendiente` (default al crear,
+  forzado — no se puede crear directo en otro estado) → `Aprobada` /
+  `Rechazada` (transición manual vía `updateOferta_`). **`'Cierre'` NUNCA se
+  escribe en la hoja** — es un valor derivado que calcula
+  `computeOfertaEstado_(row)` al leer, cuando `estado` guardado sigue
+  `Pendiente` y `fecha_cierre` ya pasó. `ofertaRowToJson_` expone ambos:
+  `estado` (el efectivo, con Cierre ya aplicado) y `estado_real` (lo que
+  hay en la hoja) — el frontend usa `estado_real` para decidir si mostrar
+  los botones Aprobar/Rechazar (una oferta en Cierre derivado técnicamente
+  sigue "Pendiente" en la hoja, así que sí se puede aprobar/rechazar después
+  si llega respuesta tarde).
+- **Corregido durante la verificación en vivo**: `computeOfertaEstado_`
+  hacía `row.fecha_cierre + 'T23:59:59'` asumiendo que siempre era string —
+  pero Sheets **autoconvierte una celda que "parece fecha"** (escrita por
+  `appendRow_`/`setValue`) a un objeto `Date` real al leerla. Concatenar
+  texto sobre un `Date` llama a su `toString()` y produce basura que `new
+  Date()` no puede parsear (`Invalid Date`, sin lanzar error) — la
+  transición a Cierre nunca disparaba. Ya corregido: distingue si
+  `row.fecha_cierre instanceof Date` antes de decidir cómo construirlo. Ojo
+  con este mismo patrón si se agrega otro campo de fecha en cualquier hoja.
+- **`estado_changed_at`** solo se pone en las transiciones manuales
+  (Aprobada/Rechazada) — se usa para el KPI de tiempo de respuesta. Para una
+  oferta que cayó en Cierre derivado (nunca hubo transición manual), el
+  dashboard usa `fecha_cierre` como proxy del "fin" en su lugar.
+- **`bitacora_json`** es un array `[{fecha, autor, nota}]` — `addOfertaNota_`
+  hace *append*, no reemplaza; existe para poder agregar una nota de
+  seguimiento sin reabrir el formulario completo (el modal de detalle en
+  frontend lo maneja con una mini-caja de texto propia).
+
+### Adjuntos — carpeta según si hay Sitio vinculado o no
+
+Nueva carpeta a nivel de proyecto: `Comercial - Prospectos sin cliente/`
+(mismo nivel que `Calibraciones/`, ID persistido igual —
+`getProspectosSinClienteFolder_()`). Regla:
+
+- **Con `site_id`** (al crear, o ya vinculada): el adjunto va directo a
+  `[Cliente]/Ofertas y Contratos/` vía `ensureSiteFolders_(site)`.
+- **Sin `site_id`**: el adjunto va a `Comercial - Prospectos sin cliente/`.
+- **Al vincular una oferta sin Sitio a un Sitio real** (`updateOferta_` con
+  `site_id` nuevo): `moveOfertaAttachmentsToSite_()` **mueve** (no copia)
+  cualquier adjunto ya subido — `DriveApp.getFileById(id).moveTo(carpeta)`
+  conserva el mismo `fileId`, solo cambia de carpeta contenedora.
+  Confirmado en vivo: el `fileId`/URL del adjunto es idéntico antes y
+  después de vincular.
+- `updateOferta_` acepta un archivo nuevo en el mismo request que otros
+  cambios (`file_base64`/`file_slot: 'contrato'` para el contrato de una
+  oferta Aprobada, o sin `file_slot` para reemplazar la propuesta) — va
+  directo a la carpeta correcta según si ya hay Sitio vinculado o no, sin
+  pasar primero por prospectos.
+
+### RBAC — el caso más estricto del sistema
+
+**"Sin acceso" para Técnico en TODAS las acciones**, no solo lectura como
+Documentos — `checkComercialAccess_(auth)` se llama al inicio de
+`createOferta_`/`updateOferta_`/`addOfertaNota_`/`listOfertas_`/
+`deleteOferta_` y devuelve 403 antes de cualquier otra validación.
+Verificado en vivo con un token real de Técnico (cuenta de prueba
+`test.tecnico.verificacion`, creada con `createUser` para esta verificación
+y dejada activa como cuenta reutilizable para futuras pruebas de rol — no
+hay acción `deleteUser` en Control de Acceso para borrarla): tanto
+`listOfertas` como `createOferta` devolvieron 403 real, no simulado. En
+frontend, ni el nav-item ni `view-commercial` se agregan al DOM para
+Técnico (mismo patrón que Administración/Panel General).
+
+`deleteOferta_` es **más estricto que el resto del módulo**: solo
+Administrador, no Supervisor — mismo criterio que
+`deleteTransformer_`/`deleteSite_` (borrar es más sensible que crear/
+editar). El botón "Eliminar oferta" en el modal de detalle solo se pinta
+para ese rol.
+
+### Dashboard
+
+Todo calculado **client-side** desde el `listOfertas_` completo (sin acción
+de backend dedicada a estadísticas) — mismo criterio de "sin librería de
+gráficas" que el resto de la app: `computeComercialStats_()` da los KPIs
+(pipeline, ganado, conversión, tiempo de respuesta) y
+`renderComercialMonthlyTable_()` agrupa por mes (`fecha_envio.slice(0,7)`)
+en una tabla, no un canvas.
+
 ### Aceite dieléctrico — estructura por secciones
 
 El formulario NO es un solo bloque de campos obligatorios: son **tres
@@ -414,8 +508,13 @@ La barra lateral (`#mainnav` en `index.html`) y la hoja "Más" móvil
    Resistencia de aislamiento (`ttr-form`/`winding-form`/`oil-form`/
    `insulation-form`) — accesible también desde la hoja "Nueva prueba"
    (`#testActionSheet`, FAB móvil).
-4. **Comercial** — placeholder de navegación (`view-commercial`); Ofertas y
-   Licitaciones se construye después.
+4. **Comercial** — módulo completo (`view-commercial`, contenido en
+   `#commercialViewBody`), ver sección dedicada arriba. Ya no es
+   placeholder — a diferencia de Documentos e Informes, la sección
+   `view-commercial` la crea `renderRestrictedModuleNav_()` dinámicamente
+   por JS (es "Sin acceso" para Técnico), pero ya no le mete el HTML
+   genérico de "Próximamente": ve `mod.view === 'commercial'` y le arma el
+   contenedor real (`renderCommercialView_()` la llena al navegar ahí).
 5. **Calibraciones** — placeholder de navegación (`view-calibrations`).
 6. **Documentos e Informes** — módulo completo (`view-documents`), ver
    sección dedicada arriba. Ya no es placeholder.
@@ -464,10 +563,12 @@ los botones de eliminar (sitio/equipo) siguen esta regla igual que siempre.
 por rol (`auth.role !== 'Administrador'` → `403`), no confíes solo en el
 frontend. **Documentos e Informes también** — `listDocuments_` rechaza con
 `403` si `auth.role === 'Tecnico'`, mismo patrón (ver sección dedicada
-arriba; ya no está pendiente). **Sigue pendiente, a propósito**:
-Calibraciones, Comercial y Panel General todavía no tienen NINGUNA acción de
-backend (son puro placeholder de navegación hoy — no hay nada que rechazar
-todavía).
+arriba). **Comercial también, y es el más estricto**: `checkComercialAccess_`
+rechaza a Técnico en TODAS las acciones (no solo listar), verificado con un
+token real (ver sección de Comercial arriba). **Sigue pendiente, a
+propósito**: Calibraciones y Panel General todavía no tienen NINGUNA acción
+de backend (son puro placeholder de navegación hoy — no hay nada que
+rechazar todavía).
 
 ## Convenciones de frontend que hay que respetar
 
@@ -607,16 +708,14 @@ construir el contenido real** (no empezar sin luz verde explícita) — ya
 tienen su entrada de navegación y protección por rol listas (ver
 "Navegación" y "RBAC" arriba), solo falta reemplazar el placeholder
 "Próximamente" por el formulario/panel real cuando se defina el alcance:
-- **Comercial → Ofertas y Licitaciones** — funnel pendiente/aprobada/
-  rechazada/cierre; no depende de que exista un Sitio.
 - **Calibraciones** — catálogo de instrumentos propios de M&A con semáforo
   de vigencia, se cruza con `instrument_used` en las pruebas. La carpeta de
   Drive (`Calibraciones/` a nivel de proyecto) ya existe — ver "Documentos e
   Informes" arriba — pero nada la usa todavía.
 - **Panel General** — dashboard consolidado de todas las operaciones.
 
-(Documentos e Informes ya no está en esta lista — se construyó completo,
-ver la sección dedicada arriba.)
+(Documentos e Informes y Comercial ya no están en esta lista — se
+construyeron completos, ver sus secciones dedicadas arriba.)
 
 Ver conversación con Gerson para el detalle completo de campos y KPIs
 propuestos — lo de arriba es solo el resumen de alcance, no el diseño final.
@@ -624,8 +723,17 @@ propuestos — lo de arriba es solo el resumen de alcance, no el diseño final.
 Base de datos en vivo: **desde 2026-08-30 vive en la cuenta dedicada nueva**
 (ver "Infraestructura / cuentas" arriba), creada desde cero — no es la misma
 hoja de antes de la migración. Limpia de datos de prueba (última
-verificación 2026-08-30 tras migrar y probar Sitio + Transformador + prueba
-de Aislamiento con certificado real en Drive — todo lo creado durante esa
-verificación se borró al terminar). La hoja/carpeta viejas (cuenta Arrieta
-Soluciones) ya estaban vacías desde la limpieza de 2026-08-29 y quedaron
-así, sin usarse desde la migración.
+verificación 2026-08-30, migración + módulo Comercial: Sitio + Transformador
++ prueba de Aislamiento con certificado real en Drive, y 3 Ofertas de
+prueba incluyendo el flujo de vincular-y-mover-adjunto — todo lo creado
+durante esas verificaciones se borró al terminar, usando `deleteOferta_`
+para las ofertas). La hoja/carpeta viejas (cuenta Arrieta Soluciones) ya
+estaban vacías desde la limpieza de 2026-08-29 y quedaron así, sin usarse
+desde la migración.
+
+**Cuenta de prueba activa**: `test.tecnico.verificacion` (rol Técnico) se
+creó para verificar en vivo el rechazo 403 de Comercial con un token real —
+no hay acción `deleteUser` en Control de Acceso para borrarla, así que
+sigue existiendo. Es una cuenta de solo pruebas (contraseña temporal, forzó
+`debeCambiar`), reusable para verificar cualquier restricción de rol futura
+sin tener que crear una nueva cada vez.

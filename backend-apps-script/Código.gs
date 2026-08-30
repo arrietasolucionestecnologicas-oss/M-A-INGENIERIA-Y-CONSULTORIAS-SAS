@@ -55,7 +55,8 @@ var SHEET_NAMES = {
   SITIOS: 'Sitios',
   TRANSFORMADORES: 'Transformadores',
   PRUEBAS: 'Pruebas',
-  DOCUMENTOS: 'Documentos'
+  DOCUMENTOS: 'Documentos',
+  OFERTAS: 'Ofertas'
 };
 
 var HEADERS = {
@@ -87,6 +88,18 @@ var HEADERS = {
   DOCUMENTOS: [
     'id', 'site_id', 'category', 'file_name', 'file_id', 'mime_type',
     'uploaded_by', 'created_at'
+  ],
+  /** Comercial — Ofertas y Licitaciones. `estado` guardado es siempre
+   *  'Pendiente'/'Aprobada'/'Rechazada' — 'Cierre' NUNCA se escribe aquí, es
+   *  un valor derivado que calcula listOfertas_ al leer (ver
+   *  computeOfertaEstado_) cuando fecha_cierre ya pasó y sigue 'Pendiente'.
+   *  `estado_changed_at` solo se actualiza en transiciones manuales
+   *  (Aprobada/Rechazada) — se usa para el KPI de tiempo de respuesta. */
+  OFERTAS: [
+    'id', 'cliente_nombre', 'site_id', 'tipo', 'descripcion', 'valor_cotizado',
+    'fecha_envio', 'fecha_cierre', 'estado', 'responsable',
+    'adjunto_propuesta_file_id', 'adjunto_contrato_file_id', 'bitacora_json',
+    'estado_changed_at', 'created_at', 'updated_at'
   ]
 };
 
@@ -96,6 +109,7 @@ var HEADERS = {
 var ATTACHMENTS_FOLDER_NAME = 'TMS_Adjuntos';
 var DRIVE_ROOT_FOLDER_NAME = 'M&A Ingeniería y Consultoría SAS';
 var DRIVE_CALIBRACIONES_FOLDER_NAME = 'Calibraciones';
+var DRIVE_PROSPECTOS_FOLDER_NAME = 'Comercial - Prospectos sin cliente';
 var TOLERANCE_PERCENT = 0.5;
 var UNBALANCE_THRESHOLD_PERCENT = 5.0;
 
@@ -1196,6 +1210,22 @@ function getCalibracionesFolder_() {
   return folder;
 }
 
+/** Carpeta a nivel de proyecto para adjuntos de Ofertas/Licitaciones que
+ *  todavía no tienen un Sitio vinculado (`cliente_nombre` es texto libre,
+ *  no requiere que el Sitio exista). Cuando la oferta se vincula a un Sitio
+ *  real, el archivo se MUEVE de aquí a `[Cliente]/Ofertas y Contratos/`
+ *  (ver moveOfertaAttachmentsToSite_) — nunca se duplica. */
+function getProspectosSinClienteFolder_() {
+  var props = PropertiesService.getScriptProperties();
+  var id = props.getProperty('DRIVE_PROSPECTOS_FOLDER_ID');
+  if (id) {
+    try { return DriveApp.getFolderById(id); } catch (e) { /* ID borrado/inválido: se recrea abajo */ }
+  }
+  var folder = getOrCreateFolderIn_(getRootFolder_(), DRIVE_PROSPECTOS_FOLDER_NAME);
+  props.setProperty('DRIVE_PROSPECTOS_FOLDER_ID', folder.getId());
+  return folder;
+}
+
 /** Devuelve los 4 IDs de carpeta de un Sitio (cliente + sus 3 subcarpetas),
  *  usando los que ya estén guardados en la fila. Si al Sitio le falta
  *  cualquiera de los 4 (nunca se necesitaron, o es un Sitio anterior a este
@@ -1335,6 +1365,251 @@ function ensureDriveStructure_(params, auth) {
 }
 
 // ---------------------------------------------------------------------------
+// Comercial — Ofertas y Licitaciones
+//
+// RBAC: "Sin acceso" para Técnico en TODAS las acciones de este módulo (no
+// solo lectura como Documentos) — cada handler rechaza con 403 de entrada,
+// antes de cualquier otra validación.
+// ---------------------------------------------------------------------------
+
+function checkComercialAccess_(auth) {
+  if (auth.role === 'Tecnico') {
+    return jsonResponse_({ status: 403, message: 'No tienes acceso al módulo Comercial' });
+  }
+  return null;
+}
+
+function findOfertaRow_(id) {
+  var sheet = getSheet_('OFERTAS');
+  var data = sheet.getDataRange().getValues();
+  var idCol = HEADERS.OFERTAS.indexOf('id');
+  for (var r = 1; r < data.length; r++) {
+    if (data[r][idCol] === id) return rowToObject_(data[r], 'OFERTAS', r + 1);
+  }
+  return null;
+}
+
+/** 'Cierre' nunca se guarda en la hoja — se deriva al leer: `fecha_cierre` ya
+ *  pasó y el estado guardado sigue siendo 'Pendiente'. Una oferta ya resuelta
+ *  (Aprobada/Rechazada) no cae en Cierre aunque la fecha haya pasado. */
+function computeOfertaEstado_(row) {
+  if (row.estado === 'Pendiente' && row.fecha_cierre) {
+    // Sheets autoconvierte una celda que "parece fecha" (p. ej. "2026-08-15"
+    // escrita por setValue/appendRow) a un objeto Date real al leerla — NO
+    // sigue siendo el string original. Concatenar texto sobre un Date llama
+    // a su toString() y produce basura que new Date() no puede parsear
+    // (Invalid Date, sin lanzar error) — por eso hay que distinguir los dos
+    // casos en vez de asumir que siempre es string.
+    var cierre = (row.fecha_cierre instanceof Date) ? row.fecha_cierre : new Date(row.fecha_cierre + 'T23:59:59');
+    if (!isNaN(cierre.getTime()) && cierre.getTime() < Date.now()) return 'Cierre';
+  }
+  return row.estado;
+}
+
+function ofertaRowToJson_(row) {
+  return {
+    id: row.id,
+    cliente_nombre: row.cliente_nombre,
+    site_id: row.site_id || null,
+    tipo: row.tipo,
+    descripcion: row.descripcion || '',
+    valor_cotizado: row.valor_cotizado,
+    fecha_envio: row.fecha_envio,
+    fecha_cierre: row.fecha_cierre,
+    estado: computeOfertaEstado_(row),
+    estado_real: row.estado,
+    responsable: row.responsable || '',
+    adjunto_propuesta_url: row.adjunto_propuesta_file_id ? driveFileUrl_(row.adjunto_propuesta_file_id) : null,
+    adjunto_contrato_url: row.adjunto_contrato_file_id ? driveFileUrl_(row.adjunto_contrato_file_id) : null,
+    bitacora: safeParseJson_(row.bitacora_json) || [],
+    estado_changed_at: row.estado_changed_at || null,
+    created_at: row.created_at,
+    updated_at: row.updated_at
+  };
+}
+
+/** Mueve (no copia) los adjuntos existentes de una oferta a la carpeta
+ *  "Ofertas y Contratos" del Sitio recién vinculado — el fileId no cambia,
+ *  solo su carpeta contenedora. Se llama SOLO cuando site_id pasa de vacío
+ *  a tener valor en updateOferta_. */
+function moveOfertaAttachmentsToSite_(row, ofertasFolderId) {
+  var targetFolder = DriveApp.getFolderById(ofertasFolderId);
+  [row.adjunto_propuesta_file_id, row.adjunto_contrato_file_id].forEach(function (fileId) {
+    if (!fileId) return;
+    try {
+      DriveApp.getFileById(fileId).moveTo(targetFolder);
+    } catch (e) {
+      // Archivo borrado/inaccesible: no se puede mover, pero no debe tumbar el resto de la actualización.
+    }
+  });
+}
+
+function createOferta_(params, auth) {
+  var denied = checkComercialAccess_(auth);
+  if (denied) return denied;
+
+  return withLock_(function () {
+    if (!params.cliente_nombre) return jsonResponse_({ status: 400, message: 'cliente_nombre es obligatorio' });
+    if (params.tipo !== 'OFERTA_DIRECTA' && params.tipo !== 'LICITACION_PUBLICA') {
+      return jsonResponse_({ status: 400, message: 'tipo debe ser OFERTA_DIRECTA o LICITACION_PUBLICA' });
+    }
+
+    var site = null;
+    if (params.site_id) {
+      site = findSiteRow_(params.site_id);
+      if (!site) return jsonResponse_({ status: 404, message: 'El Sitio indicado no existe' });
+    }
+
+    var propuestaFileId = '';
+    if (params.file_base64) {
+      var targetFolderId = site ? ensureSiteFolders_(site).ofertasFolderId : getProspectosSinClienteFolder_().getId();
+      var saved = saveFileToDriveIn_(targetFolderId, stripBase64Prefix_(params.file_base64), params.file_name || ('propuesta_' + Date.now()), params.file_mime_type || 'application/octet-stream');
+      propuestaFileId = saved.fileId;
+    }
+
+    var id = generateId_();
+    appendRow_('OFERTAS', {
+      id: id,
+      cliente_nombre: params.cliente_nombre,
+      site_id: params.site_id || '',
+      tipo: params.tipo,
+      descripcion: params.descripcion || '',
+      valor_cotizado: params.valor_cotizado || '',
+      fecha_envio: params.fecha_envio || '',
+      fecha_cierre: params.fecha_cierre || '',
+      estado: 'Pendiente',
+      responsable: params.responsable || '',
+      adjunto_propuesta_file_id: propuestaFileId,
+      adjunto_contrato_file_id: '',
+      bitacora_json: JSON.stringify([]),
+      estado_changed_at: '',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    });
+
+    return jsonResponse_({ status: 201, message: 'Oferta creada', data: { id: id } });
+  });
+}
+
+/**
+ * Actualiza campos + adjuntos + estado. Reglas:
+ * - `estado` en el payload solo puede ser 'Aprobada' o 'Rechazada' — 'Cierre'
+ *   nunca se escribe (es derivado) y 'Pendiente' es el default de creación,
+ *   no algo a lo que se pueda "volver" manualmente por esta vía.
+ * - Si `site_id` llega y la fila no tenía uno todavía, se vinculan las 4
+ *   carpetas del Sitio y se MUEVEN los adjuntos existentes hacia allá.
+ * - Un archivo nuevo en este mismo request va directo a la carpeta correcta
+ *   (la del Sitio si ya está vinculado — con el que acaba de llegar o el que
+ *   ya tenía —, o prospectos si sigue sin cliente).
+ */
+function updateOferta_(params, auth) {
+  var denied = checkComercialAccess_(auth);
+  if (denied) return denied;
+
+  return withLock_(function () {
+    if (!params.id) return jsonResponse_({ status: 400, message: 'id es obligatorio' });
+    var row = findOfertaRow_(params.id);
+    if (!row) return jsonResponse_({ status: 404, message: 'Oferta no encontrada' });
+
+    var updates = {};
+    ['cliente_nombre', 'tipo', 'descripcion', 'valor_cotizado', 'fecha_envio', 'fecha_cierre', 'responsable'].forEach(function (field) {
+      if (params[field] !== undefined) updates[field] = params[field];
+    });
+
+    if (params.estado !== undefined) {
+      if (params.estado !== 'Aprobada' && params.estado !== 'Rechazada') {
+        return jsonResponse_({ status: 400, message: 'estado solo se puede cambiar manualmente a Aprobada o Rechazada' });
+      }
+      updates.estado = params.estado;
+      updates.estado_changed_at = new Date().toISOString();
+    }
+
+    var linkingNewSite = params.site_id !== undefined && params.site_id && !row.site_id;
+    var effectiveSiteId = params.site_id !== undefined ? params.site_id : row.site_id;
+    var site = null;
+    if (linkingNewSite || (params.file_base64 && effectiveSiteId)) {
+      site = findSiteRow_(effectiveSiteId);
+      if (!site) return jsonResponse_({ status: 404, message: 'El Sitio indicado no existe' });
+    }
+    if (linkingNewSite) {
+      updates.site_id = params.site_id;
+      var folders = ensureSiteFolders_(site);
+      moveOfertaAttachmentsToSite_(row, folders.ofertasFolderId);
+    }
+
+    if (params.file_base64) {
+      var targetFolderId = site ? ensureSiteFolders_(site).ofertasFolderId : getProspectosSinClienteFolder_().getId();
+      var saved = saveFileToDriveIn_(targetFolderId, stripBase64Prefix_(params.file_base64), params.file_name || ('adjunto_' + Date.now()), params.file_mime_type || 'application/octet-stream');
+      var slot = params.file_slot === 'contrato' ? 'adjunto_contrato_file_id' : 'adjunto_propuesta_file_id';
+      updates[slot] = saved.fileId;
+    }
+
+    updates.updated_at = new Date().toISOString();
+
+    var sheet = getSheet_('OFERTAS');
+    Object.keys(updates).forEach(function (field) {
+      sheet.getRange(row._row, colIndex_('OFERTAS', field)).setValue(updates[field]);
+    });
+
+    return jsonResponse_({ status: 200, message: 'Oferta actualizada' });
+  });
+}
+
+/** Agrega una nota a la bitácora sin tener que reenviar el resto del formulario. */
+function addOfertaNota_(params, auth) {
+  var denied = checkComercialAccess_(auth);
+  if (denied) return denied;
+
+  return withLock_(function () {
+    if (!params.id) return jsonResponse_({ status: 400, message: 'id es obligatorio' });
+    if (!params.nota) return jsonResponse_({ status: 400, message: 'nota es obligatoria' });
+    var row = findOfertaRow_(params.id);
+    if (!row) return jsonResponse_({ status: 404, message: 'Oferta no encontrada' });
+
+    var bitacora = safeParseJson_(row.bitacora_json) || [];
+    bitacora.push({ fecha: new Date().toISOString(), autor: auth.username || 'desconocido', nota: params.nota });
+
+    var sheet = getSheet_('OFERTAS');
+    sheet.getRange(row._row, colIndex_('OFERTAS', 'bitacora_json')).setValue(JSON.stringify(bitacora));
+    sheet.getRange(row._row, colIndex_('OFERTAS', 'updated_at')).setValue(new Date().toISOString());
+
+    return jsonResponse_({ status: 200, message: 'Nota agregada' });
+  });
+}
+
+/** Solo Administrador (más estricto que el resto de Comercial, que ya es
+ *  Sin acceso para Técnico) — mismo criterio que deleteTransformer_/
+ *  deleteSite_: borrar es más sensible que crear/editar, se reserva al rol
+ *  más alto aunque Supervisor tenga Full en el resto del módulo. */
+function deleteOferta_(params, auth) {
+  if (auth.role !== 'Administrador') {
+    return jsonResponse_({ status: 403, message: 'Solo un Administrador puede eliminar ofertas' });
+  }
+  return withLock_(function () {
+    if (!params.id) return jsonResponse_({ status: 400, message: 'id es obligatorio' });
+    var row = findOfertaRow_(params.id);
+    if (!row) return jsonResponse_({ status: 404, message: 'Oferta no encontrada' });
+    getSheet_('OFERTAS').deleteRow(row._row);
+    return jsonResponse_({ status: 200, message: 'Oferta eliminada' });
+  });
+}
+
+function listOfertas_(params, auth) {
+  var denied = checkComercialAccess_(auth);
+  if (denied) return denied;
+
+  var sheet = getSheet_('OFERTAS');
+  var data = sheet.getDataRange().getValues();
+  var result = [];
+  for (var r = 1; r < data.length; r++) {
+    var row = rowToObject_(data[r], 'OFERTAS', r + 1);
+    if (params.site_id && row.site_id !== params.site_id) continue;
+    result.push(ofertaRowToJson_(row));
+  }
+  return jsonResponse_({ status: 200, data: result });
+}
+
+// ---------------------------------------------------------------------------
 // Router: tabla de acciones
 // ---------------------------------------------------------------------------
 
@@ -1350,7 +1625,11 @@ var POST_ACTIONS = {
   submitInsulationTest: submitInsulationTest_,
   submitOilAnalysisTest: submitOilAnalysisTest_,
   uploadDocument: uploadDocument_,
-  ensureDriveStructure: ensureDriveStructure_
+  ensureDriveStructure: ensureDriveStructure_,
+  createOferta: createOferta_,
+  updateOferta: updateOferta_,
+  addOfertaNota: addOfertaNota_,
+  deleteOferta: deleteOferta_
 };
 
 var GET_ACTIONS = {
@@ -1358,5 +1637,6 @@ var GET_ACTIONS = {
   listTransformers: listTransformers_,
   getTransformer: getTransformer_,
   listTests: listTests_,
-  listDocuments: listDocuments_
+  listDocuments: listDocuments_,
+  listOfertas: listOfertas_
 };
