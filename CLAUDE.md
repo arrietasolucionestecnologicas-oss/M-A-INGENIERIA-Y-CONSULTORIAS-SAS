@@ -330,6 +330,13 @@ recorrer carpetas en cada consulta, así que hay una hoja `DOCUMENTOS`
 **rechaza explícitamente** `category: 'CERTIFICADOS'`, los certificados los
 sube el sistema, nunca a mano).
 
+**`deleteSite_` borra en cascada las filas de `DOCUMENTOS` de ese
+`site_id`** (mismo criterio que `deleteTransformer_` con `PRUEBAS`) — borra
+el índice, no el archivo real en Drive. `deleteDocument_` (solo
+Administrador, mismo patrón que `deleteTransformer_`/`deleteSite_`) borra
+una fila suelta del índice sin necesidad de borrar el Sitio completo —
+tampoco borra el archivo real en Drive, solo la fila que apuntaba a él.
+
 ### RBAC — caso real, ya implementado
 
 Documentos e Informes **sí tiene la función real** (igual que Calibraciones,
@@ -780,7 +787,19 @@ roles), verificado con un token real (ver sección de Calibraciones arriba).
   inmediato si existen (sensación instantánea) y siempre refrescan contra el
   backend después. Si agregas una lista nueva, sigue el mismo patrón
   (`saveDraft_`/`loadDraft_`/`clearDraft_` son genéricas pese al nombre — se
-  reusan tanto para borradores de formulario como para este caché).
+  reusan tanto para borradores de formulario como para este caché). **Los 4
+  módulos construidos después (Comercial, Documentos, Calibraciones, Panel
+  General) no lo seguían** — se corrigió (2026-08-30): `loadOfertasAndRender_`
+  (`mya_cache_ofertas`), `loadDocumentsAndRender_` (`mya_cache_documents`),
+  `loadCalibracionesAndRender_` (`mya_cache_calibraciones`) y
+  `loadGeneralDashboardAndRender_` (`mya_cache_general_dashboard`, un solo
+  blob con las 6 listas del dashboard) ahora siguen el mismo patrón exacto:
+  pintan de `localStorage` de inmediato si hay algo, y si el refresco de red
+  falla **y no había caché**, muestran el error (si había caché, el error
+  queda silencioso — el usuario ya está viendo algo razonable). Verificado
+  en vivo en los 4: segunda visita a cada módulo pinta datos reales de
+  inmediato, de forma síncrona, antes de que la petición de red pudiera
+  haber resuelto.
 - **Resiliencia de red**: un fallo de `fetch()` nunca debe borrar lo que el
   técnico ya digitó. Los formularios de prueba guardan borrador en
   `localStorage` en cada cambio y solo lo limpian tras un envío exitoso.
@@ -864,6 +883,76 @@ roles), verificado con un token real (ver sección de Calibraciones arriba).
 - Botones/chips/inputs interactivos siguen el sistema de tokens (`--accent`,
   `--nav-bg`, etc. en `:root`) — no hardcodear colores nuevos.
 
+## Rendimiento del backend
+
+Diagnóstico hecho el 2026-08-30 (sin tocar código) encontró 4 causas
+concretas de latencia evitable en `Código.gs`; las 4 se corrigieron el mismo
+día, verificadas en vivo:
+
+- **`deleteDocument_`** (nuevo, solo Administrador, mismo patrón que
+  `deleteTransformer_`/`deleteSite_`) — borra una fila del índice
+  `DOCUMENTOS` sin borrar el archivo real en Drive (mismo criterio que
+  `deleteTransformer_` con `PRUEBAS`). No existía ninguna forma de borrar un
+  documento suelto antes de esto — se usó una vez para limpiar la fila
+  huérfana `aislamiento_MIGR-TEST-...` que quedaba documentada arriba como
+  pendiente (ya no existe, confirmado en vivo).
+- **`getSpreadsheet_()` cachea el handle en `_spreadsheetCache_`** (variable
+  de módulo) en vez de llamar `SpreadsheetApp.openById()` cada vez que
+  `getSheet_()` se invoca — una sola petición puede llamar `getSheet_()`
+  varias veces (`deleteSite_`, por ejemplo, lo hacía 4 veces: `SITIOS` dos
+  veces, `TRANSFORMADORES` y `DOCUMENTOS` una vez cada una), así que antes
+  de esto cada una de esas llamadas reabría el spreadsheet entero. Es solo
+  un handle cacheado, no una foto de los datos — las lecturas siguen yendo
+  contra Sheets en vivo cada vez (`getDataRange()`, etc.), así que no hay
+  riesgo de servir datos viejos.
+- **`routeRequest_` valida el token ANTES de `ensureAllSheets_()`** (antes
+  corría al revés) — una petición anónima, con token inválido/expirado, o
+  con una acción que ni existe, ya no paga el costo de `ensureAllSheets_`
+  recorriendo las 6 hojas (`getSheetByName`/`getLastColumn` por cada una).
+  Los chequeos 100% locales (falta `action`, acción no reconocida) siguen
+  yendo primero de todos porque son gratis y no tocan red ni Sheets.
+  `ensureAllSheets_()` solo corre para peticiones ya autenticadas, justo
+  antes de llegar al handler real. Verificado que no rompe nada: ningún
+  handler puede ejecutarse sin `auth` válido, así que ningún handler podía
+  depender antes de que `ensureAllSheets_` hubiera corrido sin que el token
+  también fuera válido — no había ninguna combinación legítima "sheets ya
+  garantizadas pero sin auth" que este reorden pudiera romper.
+- **`listTests` acepta `light=1`** (o cualquier valor truthy vía
+  `isTruthy_`) — omite `raw_readings`/`calculated_results` (ni siquiera se
+  hace el `JSON.parse()` de esas dos columnas) para consumidores que solo
+  necesitan contar/agrupar. `loadGeneralDashboardAndRender_` en `app.js` ya
+  lo usa (`listTests` con `light: 1`) para las tarjetas "Pruebas del mes" y
+  "Pruebas por mes" de Panel General. El historial de pruebas del detalle
+  de un transformador (`openTransformer`) sigue pidiendo la respuesta
+  completa (sin `light`) porque sí necesita el detalle. Verificado en vivo:
+  la respuesta `light` no trae esos dos campos, la completa sí, y los
+  conteos de Panel General con la respuesta liviana coinciden exactamente
+  con los reales.
+
+**Medición aproximada** (no hay un "antes" real comparable — habría
+implicado redesplegar la versión vieja a producción solo para medir, lo
+cual no se hizo a propósito por el riesgo/disrupción que implica sobre el
+despliegue en vivo). Con el código ya optimizado: 5 llamadas seguidas a
+`listSites` con token válido dieron 3.3–4.5 s cada una; 5 llamadas con
+token inválido dieron 1.6–1.9 s cada una (con una salida atípica de ~8.9 s,
+probablemente un cold start puntual) — la diferencia es consistente con que
+las peticiones con token inválido ahora se cortan antes de tocar
+`ensureAllSheets_` y antes del propio trabajo del handler contra Sheets,
+pero la mayor parte del tiempo absoluto en ambos casos sigue siendo la
+llamada de red a Control de Acceso (`UrlFetchApp.fetch` dentro de
+`validateAuth_`) más el overhead propio de Apps Script — el aporte real de
+estas 4 optimizaciones es más visible en peticiones con varios `getSheet_()`
+(como `deleteSite_`) y en peticiones rechazadas, no tanto en una lectura
+simple de una sola hoja con token válido.
+
+**Diferido a propósito, no por olvido**: paginación/filtrado por fecha en
+las acciones `list*` (hoy todas leen la hoja completa con
+`getDataRange().getValues()`, sin límite) y cualquier mitigación del cold
+start de Apps Script (p. ej. un ping de "keep-warm") — ninguna de las dos
+se justifica todavía con el volumen de datos actual (la base se limpia
+constantemente durante desarrollo), pero van a importar de verdad cuando
+`PRUEBAS`/`DOCUMENTOS`/`OFERTAS` acumulen meses de uso real en campo.
+
 ## Desplegar cambios de backend (Código.gs)
 
 Este repo tiene una **copia** de `Código.gs` (y de `appsscript.json`), pero
@@ -913,15 +1002,12 @@ Calibraciones (incluida la integración `instrument_used` con sus 3
 formularios de prueba, ver sección dedicada arriba) fue lo último, y con eso
 se cierra el alcance funcional completo de los 8 módulos de navegación.
 
-**Hallazgo fuera de alcance, sin corregir a propósito**: durante la
-verificación de Panel General (2026-08-30) apareció en "Documentos
-recientes" una fila huérfana de la hoja `DOCUMENTOS` (`aislamiento_MIGR-
-TEST-...`, cliente en blanco) — de una limpieza de datos de prueba anterior
-donde se borró el Sitio (`deleteSite_`) pero la fila en `DOCUMENTOS` que
-apuntaba a ese `site_id` no se borró en cascada (a diferencia de
-`deleteTransformer_`, que sí borra en cascada las filas de `PRUEBAS`). No es
-nada de hoy — se reporta aquí para no perderlo, pendiente de decidir si
-`deleteSite_` debería limpiar también `DOCUMENTOS` o si se deja así.
+**Resuelto (2026-08-30)**: `deleteSite_` ahora borra en cascada las filas de
+`DOCUMENTOS` de ese `site_id` (mismo criterio que `deleteTransformer_` con
+`PRUEBAS`, ver "Jerarquía obligatoria de datos" arriba) — la fila huérfana
+que había quedado de antes de este fix (`aislamiento_MIGR-TEST-...`) se
+limpió a mano con la nueva acción `deleteDocument_` (ver "Rendimiento del
+backend" arriba). Verificado en vivo que ya no queda ningún huérfano.
 
 Ver conversación con Gerson para el detalle completo de campos y KPIs
 propuestos — lo de arriba es solo el resumen de alcance, no el diseño final.

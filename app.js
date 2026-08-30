@@ -2597,14 +2597,19 @@ function handleUploadDocumentSubmit(e) {
 function loadDocumentsAndRender_() {
   var tbody = document.getElementById('documentsRows');
   if (!tbody) return;
+
+  var cached = loadDraft_('mya_cache_documents');
+  if (cached) { state.documents = cached; applyDocumentFilters_(); }
+
   callApi('listDocuments', 'GET', {})
     .then(function (docs) {
       state.documents = docs || [];
+      saveDraft_('mya_cache_documents', state.documents);
       applyDocumentFilters_();
     })
     .catch(function (err) {
       if (err.status === 402 || err.status === 403) return;
-      tbody.innerHTML = '<tr><td colspan="6" class="empty-note">' + escapeHtml_(formatNetworkAwareError_(err)) + '</td></tr>';
+      if (!cached) tbody.innerHTML = '<tr><td colspan="6" class="empty-note">' + escapeHtml_(formatNetworkAwareError_(err)) + '</td></tr>';
     });
 }
 
@@ -2703,14 +2708,19 @@ function renderCalibrationsView_() {
 
 function loadCalibracionesAndRender_() {
   var tbody = document.getElementById('calibracionesRows');
+
+  var cached = loadDraft_('mya_cache_calibraciones');
+  if (cached) { state.calibraciones = cached; renderCalibracionesTable_(); }
+
   callApi('listCalibraciones', 'GET', {})
     .then(function (calibraciones) {
       state.calibraciones = calibraciones || [];
+      saveDraft_('mya_cache_calibraciones', state.calibraciones);
       renderCalibracionesTable_();
     })
     .catch(function (err) {
       if (err.status === 402 || err.status === 403) return;
-      if (tbody) tbody.innerHTML = '<tr><td colspan="7" class="empty-note">' + escapeHtml_(formatNetworkAwareError_(err)) + '</td></tr>';
+      if (!cached && tbody) tbody.innerHTML = '<tr><td colspan="7" class="empty-note">' + escapeHtml_(formatNetworkAwareError_(err)) + '</td></tr>';
     });
 }
 
@@ -2993,16 +3003,26 @@ function renderCommercialView_() {
 }
 
 function loadOfertasAndRender_() {
+  var cached = loadDraft_('mya_cache_ofertas');
+  if (cached) {
+    state.ofertas = cached;
+    renderComercialDashboard_();
+    applyComercialFilters_();
+  }
+
   callApi('listOfertas', 'GET', {})
     .then(function (ofertas) {
       state.ofertas = ofertas || [];
+      saveDraft_('mya_cache_ofertas', state.ofertas);
       renderComercialDashboard_();
       applyComercialFilters_();
     })
     .catch(function (err) {
       if (err.status === 402 || err.status === 403) return;
-      var tbody = document.getElementById('ofertasRows');
-      if (tbody) tbody.innerHTML = '<tr><td colspan="7" class="empty-note">' + escapeHtml_(formatNetworkAwareError_(err)) + '</td></tr>';
+      if (!cached) {
+        var tbody = document.getElementById('ofertasRows');
+        if (tbody) tbody.innerHTML = '<tr><td colspan="7" class="empty-note">' + escapeHtml_(formatNetworkAwareError_(err)) + '</td></tr>';
+      }
     });
 }
 
@@ -3124,29 +3144,41 @@ function renderGeneralDashboardView_() {
   loadGeneralDashboardAndRender_();
 }
 
+function renderGeneralDashboardFromData_(data) {
+  renderGeneralKpis_(data.transformers, data.tests, data.calibraciones);
+  renderGeneralComercialStats_(data.ofertas);
+  renderGeneralTestsMonthlyTable_(data.tests);
+  renderGeneralRecentDocuments_(data.documents, data.sites);
+}
+
 function loadGeneralDashboardAndRender_() {
+  var cached = loadDraft_('mya_cache_general_dashboard');
+  if (cached) renderGeneralDashboardFromData_(cached);
+
   Promise.all([
     callApi('listSites', 'GET', {}),
     callApi('listTransformers', 'GET', {}),
-    callApi('listTests', 'GET', {}),
+    callApi('listTests', 'GET', { light: 1 }),
     callApi('listOfertas', 'GET', {}),
     callApi('listDocuments', 'GET', {}),
     callApi('listCalibraciones', 'GET', {})
   ]).then(function (results) {
-    var sites = results[0] || [];
-    var transformers = results[1] || [];
-    var tests = results[2] || [];
-    var ofertas = results[3] || [];
-    var documents = results[4] || [];
-    var calibraciones = results[5] || [];
-    renderGeneralKpis_(transformers, tests, calibraciones);
-    renderGeneralComercialStats_(ofertas);
-    renderGeneralTestsMonthlyTable_(tests);
-    renderGeneralRecentDocuments_(documents, sites);
+    var data = {
+      sites: results[0] || [],
+      transformers: results[1] || [],
+      tests: results[2] || [],
+      ofertas: results[3] || [],
+      documents: results[4] || [],
+      calibraciones: results[5] || []
+    };
+    saveDraft_('mya_cache_general_dashboard', data);
+    renderGeneralDashboardFromData_(data);
   }).catch(function (err) {
     if (err.status === 402 || err.status === 403) return;
-    var row = document.getElementById('generalKpiRow');
-    if (row) row.innerHTML = '<div class="stat-card"><div class="label">' + escapeHtml_(formatNetworkAwareError_(err)) + '</div></div>';
+    if (!cached) {
+      var row = document.getElementById('generalKpiRow');
+      if (row) row.innerHTML = '<div class="stat-card"><div class="label">' + escapeHtml_(formatNetworkAwareError_(err)) + '</div></div>';
+    }
   });
 }
 

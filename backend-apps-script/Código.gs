@@ -182,11 +182,17 @@ function doPost(e) {
  * antes de llegar a cualquier función de negocio: exige un token vigente,
  * emitido para MYA_PRUEBAS, con el servicio activo en Control de Acceso.
  * Las funciones de escritura (POST_ACTIONS) además aplican LockService.
+ *
+ * Orden a propósito: los chequeos locales (action presente, acción
+ * reconocida) van primero porque son gratis y no tocan red ni Sheets;
+ * validateAuth_ (llamada real a Control de Acceso) va después de esos pero
+ * ANTES de ensureAllSheets_ — así una petición anónima, con token inválido/
+ * expirado, o con una acción que ni existe, nunca paga el costo de
+ * recorrer las 6 hojas (ensureAllSheets_ solo corre para peticiones ya
+ * autenticadas, justo antes de llegar al handler real).
  */
 function routeRequest_(e, method) {
   try {
-    ensureAllSheets_();
-
     var params = parseParams_(e);
     var action = params.action;
     if (!action) {
@@ -204,6 +210,7 @@ function routeRequest_(e, method) {
       return jsonResponse_({ status: auth.errorStatus, message: auth.errorMessage });
     }
 
+    ensureAllSheets_();
     return handler(params, auth);
   } catch (err) {
     return jsonResponse_({ status: 500, message: 'Error interno: ' + (err && err.message ? err.message : err) });
@@ -305,14 +312,24 @@ function withLock_(fn) {
  * Web App (sin contexto de UI). Se abre por ID explícito, guardado en las
  * Propiedades del script; si es la primera ejecución, se crea automáticamente.
  */
+/** Cachea el handle en una variable de módulo — evita volver a llamar
+ *  SpreadsheetApp.openById() en cada getSheet_() dentro de la misma
+ *  ejecución (una petición puede llamar getSheet_() varias veces, p. ej.
+ *  deleteSite_ lo hace 3 veces). Es solo un handle, no una foto de los
+ *  datos — las lecturas posteriores (getDataRange(), etc.) siguen yendo
+ *  contra Sheets en vivo, así que reusarlo no puede devolver datos viejos. */
+var _spreadsheetCache_ = null;
 function getSpreadsheet_() {
+  if (_spreadsheetCache_) return _spreadsheetCache_;
   var props = PropertiesService.getScriptProperties();
   var id = props.getProperty('SPREADSHEET_ID');
   if (id) {
-    return SpreadsheetApp.openById(id);
+    _spreadsheetCache_ = SpreadsheetApp.openById(id);
+    return _spreadsheetCache_;
   }
   var ss = SpreadsheetApp.create('TMS - Base de Datos (M&A Gestión de Pruebas)');
   props.setProperty('SPREADSHEET_ID', ss.getId());
+  _spreadsheetCache_ = ss;
   return ss;
 }
 
@@ -677,6 +694,17 @@ function deleteSite_(params, auth) {
       return jsonResponse_({ status: 409, message: 'Este cliente/proyecto todavía tiene equipos registrados; elimínalos primero' });
     }
 
+    // Cascada sobre DOCUMENTOS — mismo criterio que deleteTransformer_ con
+    // PRUEBAS: borra el índice (filas de la hoja), no los archivos reales en
+    // Drive (igual que deleteTransformer_ tampoco borra los certificados en
+    // Drive, solo las filas que apuntaban a ellos).
+    var docsSheet = getSheet_('DOCUMENTOS');
+    var docsData = docsSheet.getDataRange().getValues();
+    var docsSiteCol = HEADERS.DOCUMENTOS.indexOf('site_id');
+    for (var d = docsData.length - 1; d >= 1; d--) {
+      if (docsData[d][docsSiteCol] === params.id) docsSheet.deleteRow(d + 1);
+    }
+
     getSheet_('SITIOS').deleteRow(row._row);
     return jsonResponse_({ status: 200, message: 'Cliente/Proyecto eliminado' });
   });
@@ -826,26 +854,37 @@ function submitInsulationTest_(params, auth) {
   });
 }
 
+/** `params.light` (opcional): si viene truthy, omite raw_readings/
+ *  calculated_results — ni siquiera se hace el JSON.parse de esas columnas.
+ *  Pensada para consumidores que solo necesitan contar/agrupar (Panel
+ *  General: "Pruebas del mes" y "Pruebas por mes"), no mostrar el detalle
+ *  de cada prueba. El historial de pruebas del detalle de un transformador
+ *  sigue pidiendo la respuesta completa (sin `light`), porque sí necesita
+ *  el veredicto detallado. */
 function listTests_(params) {
   var sheet = getSheet_('PRUEBAS');
   var data = sheet.getDataRange().getValues();
   var transformerCol = HEADERS.PRUEBAS.indexOf('transformer_id');
+  var light = isTruthy_(params.light);
   var result = [];
   for (var r = 1; r < data.length; r++) {
     if (params.transformer_id && data[r][transformerCol] !== params.transformer_id) continue;
     var obj = rowToObject_(data[r], 'PRUEBAS', r + 1);
-    result.push({
+    var item = {
       id: obj.id,
       transformer_id: obj.transformer_id,
       test_type: obj.test_type,
-      raw_readings: safeParseJson_(obj.raw_readings_json),
-      calculated_results: safeParseJson_(obj.calculated_results_json),
       verdict: obj.verdict,
       instrument_used: obj.instrument_used,
       tested_by: obj.tested_by,
       attachment_url: obj.attachment_file_id ? driveFileUrl_(obj.attachment_file_id) : null,
       created_at: obj.created_at
-    });
+    };
+    if (!light) {
+      item.raw_readings = safeParseJson_(obj.raw_readings_json);
+      item.calculated_results = safeParseJson_(obj.calculated_results_json);
+    }
+    result.push(item);
   }
   return jsonResponse_({ status: 200, data: result });
 }
@@ -1392,6 +1431,31 @@ function listDocuments_(params, auth) {
   return jsonResponse_({ status: 200, data: result });
 }
 
+/** Solo Administrador, mismo patrón que deleteTransformer_/deleteSite_.
+ *  Borra una fila del índice DOCUMENTOS — no borra el archivo real en Drive
+ *  (mismo criterio que deleteTransformer_ con PRUEBAS: borra el índice, no
+ *  los certificados ya subidos). Pensada para limpiar filas huérfanas (p.
+ *  ej. de un Sitio borrado antes de que deleteSite_ hiciera cascada sobre
+ *  DOCUMENTOS) o subidas manuales erróneas. */
+function deleteDocument_(params, auth) {
+  if (auth.role !== 'Administrador') {
+    return jsonResponse_({ status: 403, message: 'Solo un Administrador puede eliminar documentos' });
+  }
+  return withLock_(function () {
+    if (!params.id) return jsonResponse_({ status: 400, message: 'id es obligatorio' });
+    var sheet = getSheet_('DOCUMENTOS');
+    var data = sheet.getDataRange().getValues();
+    var idCol = HEADERS.DOCUMENTOS.indexOf('id');
+    for (var r = 1; r < data.length; r++) {
+      if (data[r][idCol] === params.id) {
+        sheet.deleteRow(r + 1);
+        return jsonResponse_({ status: 200, message: 'Documento eliminado' });
+      }
+    }
+    return jsonResponse_({ status: 404, message: 'Documento no encontrado' });
+  });
+}
+
 /** Solo Administrador. Crea (si hacen falta) la carpeta raíz del proyecto y
  *  Calibraciones/ a nivel de proyecto — nada en el flujo normal de la app
  *  las dispara todavía (Calibraciones no tiene módulo construido, y la
@@ -1813,6 +1877,7 @@ var POST_ACTIONS = {
   submitInsulationTest: submitInsulationTest_,
   submitOilAnalysisTest: submitOilAnalysisTest_,
   uploadDocument: uploadDocument_,
+  deleteDocument: deleteDocument_,
   ensureDriveStructure: ensureDriveStructure_,
   createOferta: createOferta_,
   updateOferta: updateOferta_,
