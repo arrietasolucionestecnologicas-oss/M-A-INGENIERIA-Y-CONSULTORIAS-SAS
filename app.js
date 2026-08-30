@@ -11,7 +11,7 @@
 // ---------------------------------------------------------------
 
 /** Backend propio de M&A (transformadores/pruebas). Termina en /exec. */
-const API_WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbz1frJeBe7KpN83DQaVjtPBfzWtdujl6mngBAmAe3XCLRBW6_5cEShkVPRwgk98UtbKAw/exec";
+const API_WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbwhVAjRgkfyxFjjLM2-6wlfDuurzhS2HLW2A3gS_NKziW6fyMlXuXrwcTrjmp7oZG1Ufg/exec";
 
 /** Servicio de autenticación: login, cambio de contraseña, creación de usuarios. */
 const CONTROL_ACCESO_URL = "https://script.google.com/macros/s/AKfycby4K-qxW87hfd9Fy1wKHeyF8bic_Qo8clKfJ-ZuPg9zElNuc7XOe8qTgW8sUmJ9mnKjDA/exec";
@@ -66,7 +66,8 @@ var state = {
   matrix: { taps: [] },
   wr: { currentTap: null, readings: {}, secondary: null },
   oil: { rigidez: null, humedad: null, acidez: null, tension: null },
-  insulation: { windingTemperatureC: 20, phases: {} }
+  insulation: { windingTemperatureC: 20, phases: {} },
+  documents: []
 };
 
 /** "12,5" -> 12.5. parseFloat NUNCA debe usarse directo sobre un input de usuario: se detiene en la coma y trunca el valor sin avisar. */
@@ -312,6 +313,7 @@ function showView(name) {
   if (name === 'winding-form') { renderWindingFormContext(); refreshWinding(); }
   if (name === 'oil-form') { renderOilFormContext(); refreshOil(); }
   if (name === 'insulation-form') { renderInsulationFormContext(); refreshInsulation(); }
+  if (name === 'documents') { renderDocumentsView_(); }
 }
 
 function viewNeedsSite_(name) {
@@ -1485,7 +1487,7 @@ function renderDetail() {
 
   var histBody = document.getElementById('testHistoryRows');
   if (state.currentTests.length === 0) {
-    histBody.innerHTML = '<tr><td colspan="5" class="empty-note">Aún no hay pruebas registradas para este transformador.</td></tr>';
+    histBody.innerHTML = '<tr><td colspan="6" class="empty-note">Aún no hay pruebas registradas para este transformador.</td></tr>';
   } else {
     histBody.innerHTML = state.currentTests.slice().reverse().map(function (test) {
       return '<tr>' +
@@ -1494,6 +1496,7 @@ function renderDetail() {
         '<td>' + escapeHtml_(test.instrument_used || '—') + '</td>' +
         '<td>' + escapeHtml_(test.tested_by || '—') + '</td>' +
         '<td><span class="pill ' + verdictPillClass_(test.verdict) + '">' + escapeHtml_(test.verdict) + '</span></td>' +
+        '<td>' + (test.attachment_url ? '<a href="' + test.attachment_url + '" target="_blank" rel="noopener">Ver / descargar</a>' : '') + '</td>' +
         '</tr>';
     }).join('');
   }
@@ -2454,6 +2457,166 @@ function submitInsulation() {
       if (!err || (err.status !== 402 && err.status !== 403)) setStatus_(status, formatNetworkAwareError_(err || {}), false, true);
     })
     .then(function () { btn.disabled = false; });
+}
+
+// ---------------------------------------------------------------
+// Documentos e Informes
+//
+// RBAC: Técnico puede subir (formulario siempre visible), pero NUNCA se le
+// arma la sección de lista/filtro/descarga — ni siquiera se agrega al DOM
+// (mismo criterio que "Sin acceso" en otros módulos). El backend además
+// rechaza listDocuments con 403 si auth.role === 'Tecnico', así que aunque
+// alguien fuerce la llamada desde la consola no obtiene nada.
+// ---------------------------------------------------------------
+
+var DOCUMENT_CATEGORY_LABELS = {
+  CERTIFICADOS: 'Certificados de Pruebas',
+  OFERTAS_CONTRATOS: 'Ofertas y Contratos',
+  GENERALES: 'Documentos Generales'
+};
+
+function renderDocumentsView_() {
+  var body = document.getElementById('documentsViewBody');
+  if (!body) return;
+  var canList = state.role !== 'Tecnico';
+
+  body.innerHTML =
+    '<div class="panel" style="max-width:560px;">' +
+    '<div class="panel-head"><h2>Subir documento</h2><span class="hint">Ofertas/Contratos o Documentos Generales</span></div>' +
+    '<form id="uploadDocumentForm" class="form-field-block" style="align-items:flex-end;">' +
+    '<div class="field" style="flex:1; min-width:200px;"><label>Cliente</label><select id="uploadDocSite" required><option value="">Cargando…</option></select></div>' +
+    '<div class="field" style="min-width:200px;"><label>Categoría</label>' +
+    '<select id="uploadDocCategory" required>' +
+    '<option value="OFERTAS_CONTRATOS">' + DOCUMENT_CATEGORY_LABELS.OFERTAS_CONTRATOS + '</option>' +
+    '<option value="GENERALES">' + DOCUMENT_CATEGORY_LABELS.GENERALES + '</option>' +
+    '</select></div>' +
+    '<div class="field" style="flex:1; min-width:200px;"><label>Archivo</label><input id="uploadDocFile" type="file" required></div>' +
+    '<button class="btn primary" type="submit" id="uploadDocBtn">Subir</button>' +
+    '</form>' +
+    '<div class="status-line" id="uploadDocStatus" hidden style="padding:0 18px 14px;"></div>' +
+    '</div>' +
+    (canList ?
+      '<div class="panel">' +
+      '<div class="panel-head"><h2>Documentos</h2></div>' +
+      '<div class="form-field-block">' +
+      '<div class="field" style="min-width:200px;"><label>Cliente</label><select id="filterDocSite" onchange="applyDocumentFilters_()"><option value="">Todos</option></select></div>' +
+      '<div class="field" style="min-width:200px;"><label>Tipo</label>' +
+      '<select id="filterDocCategory" onchange="applyDocumentFilters_()">' +
+      '<option value="">Todos</option>' +
+      '<option value="CERTIFICADOS">' + DOCUMENT_CATEGORY_LABELS.CERTIFICADOS + '</option>' +
+      '<option value="OFERTAS_CONTRATOS">' + DOCUMENT_CATEGORY_LABELS.OFERTAS_CONTRATOS + '</option>' +
+      '<option value="GENERALES">' + DOCUMENT_CATEGORY_LABELS.GENERALES + '</option>' +
+      '</select></div>' +
+      '<div class="field"><label>Desde</label><input type="date" id="filterDocDateFrom" onchange="applyDocumentFilters_()"></div>' +
+      '<div class="field"><label>Hasta</label><input type="date" id="filterDocDateTo" onchange="applyDocumentFilters_()"></div>' +
+      '</div>' +
+      '<div style="overflow-x:auto;"><table>' +
+      '<thead><tr><th>Nombre</th><th>Tipo</th><th>Cliente</th><th>Fecha</th><th>Subido por</th><th></th></tr></thead>' +
+      '<tbody id="documentsRows"><tr><td colspan="6" class="empty-note">Cargando…</td></tr></tbody>' +
+      '</table></div>' +
+      '</div>'
+      : '');
+
+  document.getElementById('uploadDocumentForm').addEventListener('submit', handleUploadDocumentSubmit);
+
+  callApi('listSites', 'GET', {}).then(function (sites) {
+    state.sites = sites || [];
+    var options = '<option value="">Selecciona…</option>' + state.sites.map(function (s) {
+      return '<option value="' + s.id + '">' + escapeHtml_(s.client_name + ' · ' + s.project_name) + '</option>';
+    }).join('');
+    document.getElementById('uploadDocSite').innerHTML = options;
+    var filterSite = document.getElementById('filterDocSite');
+    if (filterSite) filterSite.innerHTML = '<option value="">Todos</option>' + options.replace('<option value="">Selecciona…</option>', '');
+  });
+
+  if (canList) loadDocumentsAndRender_();
+}
+
+function handleUploadDocumentSubmit(e) {
+  e.preventDefault();
+  var siteId = document.getElementById('uploadDocSite').value;
+  var category = document.getElementById('uploadDocCategory').value;
+  var fileInput = document.getElementById('uploadDocFile');
+  var status = document.getElementById('uploadDocStatus');
+  var btn = document.getElementById('uploadDocBtn');
+  if (!siteId || !fileInput.files[0]) { setStatus_(status, 'Selecciona un cliente y un archivo', false, true); return; }
+
+  btn.disabled = true;
+  setStatus_(status, 'Subiendo…', false);
+
+  readFileAsBase64_(fileInput)
+    .then(function (file) {
+      return callApi('uploadDocument', 'POST', {
+        site_id: siteId,
+        category: category,
+        file_name: fileInput.files[0].name,
+        file_base64: file.base64,
+        file_mime_type: file.mimeType
+      });
+    })
+    .then(function () {
+      setStatus_(status, 'Documento subido correctamente', true);
+      document.getElementById('uploadDocumentForm').reset();
+      if (state.role !== 'Tecnico') loadDocumentsAndRender_();
+    })
+    .catch(function (err) {
+      if (err.status !== 402 && err.status !== 403) setStatus_(status, formatNetworkAwareError_(err), false, true);
+    })
+    .then(function () { btn.disabled = false; });
+}
+
+function loadDocumentsAndRender_() {
+  var tbody = document.getElementById('documentsRows');
+  if (!tbody) return;
+  callApi('listDocuments', 'GET', {})
+    .then(function (docs) {
+      state.documents = docs || [];
+      applyDocumentFilters_();
+    })
+    .catch(function (err) {
+      if (err.status === 402 || err.status === 403) return;
+      tbody.innerHTML = '<tr><td colspan="6" class="empty-note">' + escapeHtml_(formatNetworkAwareError_(err)) + '</td></tr>';
+    });
+}
+
+function applyDocumentFilters_() {
+  var tbody = document.getElementById('documentsRows');
+  if (!tbody) return;
+  var siteFilter = document.getElementById('filterDocSite');
+  var categoryFilter = document.getElementById('filterDocCategory');
+  var dateFromEl = document.getElementById('filterDocDateFrom');
+  var dateToEl = document.getElementById('filterDocDateTo');
+  var siteId = siteFilter ? siteFilter.value : '';
+  var category = categoryFilter ? categoryFilter.value : '';
+  var dateFrom = dateFromEl && dateFromEl.value ? new Date(dateFromEl.value) : null;
+  var dateTo = dateToEl && dateToEl.value ? new Date(dateToEl.value + 'T23:59:59') : null;
+
+  var rows = state.documents.filter(function (d) {
+    if (siteId && d.site_id !== siteId) return false;
+    if (category && d.category !== category) return false;
+    var created = new Date(d.created_at);
+    if (dateFrom && created < dateFrom) return false;
+    if (dateTo && created > dateTo) return false;
+    return true;
+  });
+
+  if (rows.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="6" class="empty-note">No hay documentos que coincidan con el filtro.</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = rows.slice().reverse().map(function (d) {
+    var site = state.sites.filter(function (s) { return s.id === d.site_id; })[0];
+    var siteLabel = site ? (site.client_name + ' · ' + site.project_name) : '—';
+    return '<tr>' +
+      '<td>' + escapeHtml_(d.file_name) + '</td>' +
+      '<td><span class="pill neutral">' + escapeHtml_(DOCUMENT_CATEGORY_LABELS[d.category] || d.category) + '</span></td>' +
+      '<td>' + escapeHtml_(siteLabel) + '</td>' +
+      '<td>' + fmtDate_(d.created_at) + '</td>' +
+      '<td>' + escapeHtml_(d.uploaded_by || '—') + '</td>' +
+      '<td><a href="' + d.url + '" target="_blank" rel="noopener">Ver / descargar</a></td>' +
+      '</tr>';
+  }).join('');
 }
 
 // ---------------------------------------------------------------

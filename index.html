@@ -436,9 +436,9 @@
           <div class="panel-head"><h2>Historial de pruebas</h2></div>
           <div style="overflow-x: auto;">
             <table>
-              <thead><tr><th>Fecha</th><th>Tipo</th><th>Instrumento</th><th>Registrado por</th><th>Veredicto</th></tr></thead>
+              <thead><tr><th>Fecha</th><th>Tipo</th><th>Instrumento</th><th>Registrado por</th><th>Veredicto</th><th>Adjunto</th></tr></thead>
               <tbody id="testHistoryRows">
-                <tr><td colspan="5" class="empty-note">Selecciona un transformador para ver su historial.</td></tr>
+                <tr><td colspan="6" class="empty-note">Selecciona un transformador para ver su historial.</td></tr>
               </tbody>
             </table>
           </div>
@@ -850,7 +850,7 @@
       </div>
     </section>
 
-    <!-- ============ DOCUMENTOS E INFORMES (placeholder de navegación) ============ -->
+    <!-- ============ DOCUMENTOS E INFORMES ============ -->
     <section id="view-documents" hidden>
       <div class="topbar">
         <div>
@@ -858,12 +858,7 @@
           <p>Carpeta de Drive por Sitio, certificados automáticos y subida manual</p>
         </div>
       </div>
-      <div class="view">
-        <div class="panel">
-          <div class="panel-head"><h2>Próximamente</h2></div>
-          <div class="empty-note">Este módulo está en diseño — se construirá cuando se valide el alcance completo con el cliente.</div>
-        </div>
-      </div>
+      <div class="view" id="documentsViewBody"></div>
     </section>
 
   </main>

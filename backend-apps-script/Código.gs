@@ -54,16 +54,19 @@ var APP_ID = 'MYA_PRUEBAS';
 var SHEET_NAMES = {
   SITIOS: 'Sitios',
   TRANSFORMADORES: 'Transformadores',
-  PRUEBAS: 'Pruebas'
+  PRUEBAS: 'Pruebas',
+  DOCUMENTOS: 'Documentos'
 };
 
 var HEADERS = {
   /** Cliente + Proyecto (Fase 1 de la jerarquía obligatoria). No confundir con "Clientes" de Control de Acceso (esos son usuarios de M&A, esto es la empresa/proyecto del equipo que se prueba). */
   /* nit/ciudad se agregaron después del lanzamiento inicial — van al FINAL del arreglo,
      nunca insertados entre columnas existentes, para no correr el índice de columna
-     de filas ya guardadas en Sheets (ver colIndex_/ensureAllSheets_). */
+     de filas ya guardadas en Sheets (ver colIndex_/ensureAllSheets_). Lo mismo aplica
+     a los 4 campos drive_*_folder_id, agregados para el módulo Documentos e Informes. */
   SITIOS: [
-    'id', 'client_name', 'project_name', 'address', 'created_at', 'nit', 'ciudad'
+    'id', 'client_name', 'project_name', 'address', 'created_at', 'nit', 'ciudad',
+    'drive_client_folder_id', 'drive_certificados_folder_id', 'drive_ofertas_folder_id', 'drive_documentos_folder_id'
   ],
   TRANSFORMADORES: [
     'id', 'site_id', 'serial_number', 'manufacturer', 'manufacture_year',
@@ -77,10 +80,22 @@ var HEADERS = {
     'id', 'transformer_id', 'test_type', 'raw_readings_json',
     'calculated_results_json', 'verdict', 'instrument_used', 'tested_by',
     'attachment_file_id', 'created_at'
+  ],
+  /** Índice de documentos subidos a Drive (certificados automáticos + subida manual) —
+   *  existe porque "Documentos e Informes" necesita listar/filtrar por cliente, tipo y
+   *  fecha sin tener que recorrer carpetas de Drive en cada consulta. */
+  DOCUMENTOS: [
+    'id', 'site_id', 'category', 'file_name', 'file_id', 'mime_type',
+    'uploaded_by', 'created_at'
   ]
 };
 
+/** category en DOCUMENTOS: 'CERTIFICADOS' (solo lo escribe persistTest_, nunca subida
+ *  manual), 'OFERTAS_CONTRATOS' y 'GENERALES' (solo subida manual, ver uploadDocument_). */
+
 var ATTACHMENTS_FOLDER_NAME = 'TMS_Adjuntos';
+var DRIVE_ROOT_FOLDER_NAME = 'M&A Ingeniería y Consultoría SAS';
+var DRIVE_CALIBRACIONES_FOLDER_NAME = 'Calibraciones';
 var TOLERANCE_PERCENT = 0.5;
 var UNBALANCE_THRESHOLD_PERCENT = 5.0;
 
@@ -635,15 +650,36 @@ function getTransformer_(params) {
 // Pruebas (TTR / Resistencia de devanados / Aislamiento)
 // ---------------------------------------------------------------------------
 
+/** El certificado de una prueba se guarda en [Cliente]/Certificados de Pruebas/
+ *  (carpeta persistida en el Sitio, ver ensureSiteFolders_) — no en la carpeta
+ *  plana TMS_Adjuntos. También se indexa en DOCUMENTOS (category CERTIFICADOS)
+ *  para que aparezca listado en el módulo Documentos e Informes junto con las
+ *  subidas manuales. */
 function persistTest_(transformer, testType, rawReadings, calculated, params, auth) {
   var attachmentId = '';
+  var fileName = '';
   if (params.file_base64) {
-    var saved = saveFileToDrive_(
+    var site = findSiteRow_(transformer.site_id);
+    var folders = ensureSiteFolders_(site);
+    fileName = testType.toLowerCase() + '_' + transformer.serial_number + '_' + Date.now();
+    var saved = saveFileToDriveIn_(
+      folders.certificadosFolderId,
       stripBase64Prefix_(params.file_base64),
-      testType.toLowerCase() + '_' + transformer.serial_number + '_' + Date.now(),
+      fileName,
       params.file_mime_type || 'application/octet-stream'
     );
     attachmentId = saved.fileId;
+
+    appendRow_('DOCUMENTOS', {
+      id: generateId_(),
+      site_id: transformer.site_id,
+      category: 'CERTIFICADOS',
+      file_name: fileName,
+      file_id: attachmentId,
+      mime_type: params.file_mime_type || '',
+      uploaded_by: auth.username || 'desconocido',
+      created_at: new Date().toISOString()
+    });
   }
 
   var id = generateId_();
@@ -1105,6 +1141,200 @@ function driveFileUrl_(fileId) {
 }
 
 // ---------------------------------------------------------------------------
+// Estructura de carpetas en Drive (módulo Documentos e Informes)
+//
+//   M&A Ingeniería y Consultoría SAS/     (raíz, ID persistido en Propiedades)
+//   ├── Calibraciones/                     (nivel proyecto, no por cliente)
+//   ├── [Cliente 1 · Proyecto 1]/          (ID persistido en el Sitio)
+//   │   ├── Certificados de Pruebas/       (solo persistTest_ escribe aquí)
+//   │   ├── Ofertas y Contratos/           (subida manual)
+//   │   └── Documentos Generales/          (subida manual)
+//   └── ...
+//
+// Los IDs se buscan por nombre SOLO la primera vez que hacen falta — después
+// quedan guardados (Propiedades del script para la raíz/Calibraciones, columnas
+// del Sitio para las 4 carpetas por cliente) y nunca se vuelve a buscar por
+// nombre. Migración perezosa: un Sitio creado antes de este cambio no tiene
+// esas columnas — se crean y persisten la primera vez que se necesitan, no con
+// un script de migración masiva.
+// ---------------------------------------------------------------------------
+
+/** Busca una subcarpeta por nombre DENTRO de un padre específico (no en todo
+ *  Drive) — más preciso que getOrCreateFolder_ y necesario para no confundir
+ *  carpetas con el mismo nombre en clientes distintos. */
+function getOrCreateFolderIn_(parentFolder, name) {
+  var folders = parentFolder.getFoldersByName(name);
+  if (folders.hasNext()) return folders.next();
+  return parentFolder.createFolder(name);
+}
+
+/** Carpeta raíz del proyecto — se crea una sola vez; el ID queda en las
+ *  Propiedades del script para no buscarla por nombre en cada operación. */
+function getRootFolder_() {
+  var props = PropertiesService.getScriptProperties();
+  var id = props.getProperty('DRIVE_ROOT_FOLDER_ID');
+  if (id) {
+    try { return DriveApp.getFolderById(id); } catch (e) { /* ID borrado/inválido: se recrea abajo */ }
+  }
+  var folder = getOrCreateFolder_(DRIVE_ROOT_FOLDER_NAME);
+  props.setProperty('DRIVE_ROOT_FOLDER_ID', folder.getId());
+  return folder;
+}
+
+/** Carpeta Calibraciones a nivel de proyecto (no por cliente — los
+ *  instrumentos son de M&A, se usan en varios clientes). El módulo
+ *  Calibraciones todavía no está construido (ver CLAUDE.md), así que hoy
+ *  nada escribe aquí, pero la carpeta ya queda lista para cuando se construya. */
+function getCalibracionesFolder_() {
+  var props = PropertiesService.getScriptProperties();
+  var id = props.getProperty('DRIVE_CALIBRACIONES_FOLDER_ID');
+  if (id) {
+    try { return DriveApp.getFolderById(id); } catch (e) { /* ID borrado/inválido: se recrea abajo */ }
+  }
+  var folder = getOrCreateFolderIn_(getRootFolder_(), DRIVE_CALIBRACIONES_FOLDER_NAME);
+  props.setProperty('DRIVE_CALIBRACIONES_FOLDER_ID', folder.getId());
+  return folder;
+}
+
+/** Devuelve los 4 IDs de carpeta de un Sitio (cliente + sus 3 subcarpetas),
+ *  usando los que ya estén guardados en la fila. Si al Sitio le falta
+ *  cualquiera de los 4 (nunca se necesitaron, o es un Sitio anterior a este
+ *  cambio), los crea ahora y los persiste en la misma fila — así la próxima
+ *  llamada ya no vuelve a tocar Drive para buscarlos. */
+function ensureSiteFolders_(site) {
+  if (site.drive_client_folder_id && site.drive_certificados_folder_id &&
+      site.drive_ofertas_folder_id && site.drive_documentos_folder_id) {
+    return {
+      clientFolderId: site.drive_client_folder_id,
+      certificadosFolderId: site.drive_certificados_folder_id,
+      ofertasFolderId: site.drive_ofertas_folder_id,
+      documentosFolderId: site.drive_documentos_folder_id
+    };
+  }
+
+  var root = getRootFolder_();
+  var clientFolderName = site.client_name + ' · ' + site.project_name;
+  var clientFolder = getOrCreateFolderIn_(root, clientFolderName);
+  var certificados = getOrCreateFolderIn_(clientFolder, 'Certificados de Pruebas');
+  var ofertas = getOrCreateFolderIn_(clientFolder, 'Ofertas y Contratos');
+  var documentos = getOrCreateFolderIn_(clientFolder, 'Documentos Generales');
+
+  var ids = {
+    clientFolderId: clientFolder.getId(),
+    certificadosFolderId: certificados.getId(),
+    ofertasFolderId: ofertas.getId(),
+    documentosFolderId: documentos.getId()
+  };
+
+  var sheet = getSheet_('SITIOS');
+  sheet.getRange(site._row, colIndex_('SITIOS', 'drive_client_folder_id')).setValue(ids.clientFolderId);
+  sheet.getRange(site._row, colIndex_('SITIOS', 'drive_certificados_folder_id')).setValue(ids.certificadosFolderId);
+  sheet.getRange(site._row, colIndex_('SITIOS', 'drive_ofertas_folder_id')).setValue(ids.ofertasFolderId);
+  sheet.getRange(site._row, colIndex_('SITIOS', 'drive_documentos_folder_id')).setValue(ids.documentosFolderId);
+
+  return ids;
+}
+
+/** Como saveFileToDrive_, pero guarda dentro de una carpeta específica por ID
+ *  en vez de siempre en la carpeta plana TMS_Adjuntos. */
+function saveFileToDriveIn_(folderId, base64Data, fileNameNoExt, mimeType) {
+  var folder = DriveApp.getFolderById(folderId);
+  var decoded = Utilities.base64Decode(base64Data);
+  var blob = Utilities.newBlob(decoded, mimeType || 'application/octet-stream', fileNameNoExt);
+  var file = folder.createFile(blob);
+  return { fileId: file.getId(), url: file.getUrl() };
+}
+
+// ---------------------------------------------------------------------------
+// Documentos e Informes
+// ---------------------------------------------------------------------------
+
+/** Subida manual — Técnico SÍ puede subir (Full en la matriz RBAC para esto),
+ *  por eso no hay chequeo de rol aquí. Lo que un Técnico no puede hacer es
+ *  LISTAR (ver listDocuments_). category nunca puede ser CERTIFICADOS por
+ *  esta vía — esa la llena solo persistTest_. */
+function uploadDocument_(params, auth) {
+  return withLock_(function () {
+    if (!params.site_id) return jsonResponse_({ status: 400, message: 'site_id es obligatorio' });
+    var site = findSiteRow_(params.site_id);
+    if (!site) return jsonResponse_({ status: 404, message: 'Cliente/Proyecto no encontrado' });
+    if (params.category !== 'OFERTAS_CONTRATOS' && params.category !== 'GENERALES') {
+      return jsonResponse_({ status: 400, message: 'category debe ser OFERTAS_CONTRATOS o GENERALES — los certificados de prueba los sube el sistema, no la subida manual' });
+    }
+    if (!params.file_base64) return jsonResponse_({ status: 400, message: 'file_base64 es obligatorio' });
+
+    var folders = ensureSiteFolders_(site);
+    var targetFolderId = params.category === 'OFERTAS_CONTRATOS' ? folders.ofertasFolderId : folders.documentosFolderId;
+    var fileName = params.file_name || ('documento_' + Date.now());
+    var saved = saveFileToDriveIn_(targetFolderId, stripBase64Prefix_(params.file_base64), fileName, params.file_mime_type || 'application/octet-stream');
+
+    var id = generateId_();
+    appendRow_('DOCUMENTOS', {
+      id: id,
+      site_id: params.site_id,
+      category: params.category,
+      file_name: fileName,
+      file_id: saved.fileId,
+      mime_type: params.file_mime_type || '',
+      uploaded_by: auth.username || 'desconocido',
+      created_at: new Date().toISOString()
+    });
+
+    return jsonResponse_({ status: 201, message: 'Documento subido', data: { id: id, url: saved.url } });
+  });
+}
+
+/** Listado + filtro (cliente/tipo — la fecha se filtra en el frontend sobre
+ *  este mismo listado). Rechazo explícito por rol, mismo patrón que
+ *  deleteTransformer_/deleteSite_: un Técnico solo puede subir, nunca listar
+ *  ni descargar documentos de otros — no basta con ocultar el botón en la UI. */
+function listDocuments_(params, auth) {
+  if (auth.role === 'Tecnico') {
+    return jsonResponse_({ status: 403, message: 'Los técnicos pueden subir documentos, pero no listarlos ni descargarlos' });
+  }
+  var sheet = getSheet_('DOCUMENTOS');
+  var data = sheet.getDataRange().getValues();
+  var result = [];
+  for (var r = 1; r < data.length; r++) {
+    var row = rowToObject_(data[r], 'DOCUMENTOS', r + 1);
+    if (params.site_id && row.site_id !== params.site_id) continue;
+    if (params.category && row.category !== params.category) continue;
+    result.push({
+      id: row.id,
+      site_id: row.site_id,
+      category: row.category,
+      file_name: row.file_name,
+      url: driveFileUrl_(row.file_id),
+      uploaded_by: row.uploaded_by,
+      created_at: row.created_at
+    });
+  }
+  return jsonResponse_({ status: 200, data: result });
+}
+
+/** Solo Administrador. Crea (si hacen falta) la carpeta raíz del proyecto y
+ *  Calibraciones/ a nivel de proyecto — nada en el flujo normal de la app
+ *  las dispara todavía (Calibraciones no tiene módulo construido, y la
+ *  carpeta raíz normalmente aparece sola la primera vez que se sube un
+ *  certificado o documento). Útil para dejar la estructura de Drive lista
+ *  de una vez al desplegar en una cuenta nueva, sin depender de que ocurra
+ *  la primera subida. Idempotente — reintentarla no crea duplicados. */
+function ensureDriveStructure_(params, auth) {
+  if (auth.role !== 'Administrador') {
+    return jsonResponse_({ status: 403, message: 'Solo un Administrador puede inicializar la estructura de Drive' });
+  }
+  return withLock_(function () {
+    var root = getRootFolder_();
+    var calibraciones = getCalibracionesFolder_();
+    return jsonResponse_({
+      status: 200,
+      message: 'Estructura de Drive lista',
+      data: { rootFolderId: root.getId(), calibracionesFolderId: calibraciones.getId() }
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Router: tabla de acciones
 // ---------------------------------------------------------------------------
 
@@ -1118,12 +1348,15 @@ var POST_ACTIONS = {
   submitTtrTest: submitTtrTest_,
   submitWindingResistanceTest: submitWindingResistanceTest_,
   submitInsulationTest: submitInsulationTest_,
-  submitOilAnalysisTest: submitOilAnalysisTest_
+  submitOilAnalysisTest: submitOilAnalysisTest_,
+  uploadDocument: uploadDocument_,
+  ensureDriveStructure: ensureDriveStructure_
 };
 
 var GET_ACTIONS = {
   listSites: listSites_,
   listTransformers: listTransformers_,
   getTransformer: getTransformer_,
-  listTests: listTests_
+  listTests: listTests_,
+  listDocuments: listDocuments_
 };

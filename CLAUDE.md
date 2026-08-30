@@ -9,22 +9,77 @@ Pensada para usarse en exteriores, con conectividad inestable, en celular.
 - **Frontend**: HTML/CSS/JS estático servido por **GitHub Pages** desde la raíz
   de este repo (`index.html`, `styles.css`, `app.js`). Sin build step, sin
   framework — todo vanilla JS en un solo `app.js`.
-- **Backend**: Google Apps Script Web App (`backend-apps-script/Código.gs`),
-  con Google Sheets como base de datos y Google Drive para archivos (fotos de
-  placa, certificados de laboratorio, evidencias de prueba en PDF).
+- **Backend**: Google Apps Script Web App (`backend-apps-script/Código.gs` +
+  `backend-apps-script/appsscript.json`), con Google Sheets como base de
+  datos y Google Drive para archivos (fotos de placa, certificados de
+  laboratorio, evidencias de prueba en PDF, documentos — ver "Documentos e
+  Informes" abajo).
 - **Autenticación**: NO tiene login propio. Valida cada request contra un IdP
   compartido ("Control de Acceso"), un proyecto de Apps Script **separado**
-  que no vive en este repo — M&A es una de varias apps que confían en él
-  (`APP_ID = "MYA_PRUEBAS"` en `app.js` / `Código.gs`). El token se valida en
-  cada llamada vía `validateAuth_()`; `402` = servicio suspendido (billing),
-  `403` = token inválido/expirado (fuerza logout, no muestra la pantalla de
-  suspendido — son cosas distintas, ver `callApi()` en `app.js`).
+  que no vive en este repo, **en una cuenta de Google distinta** de la del
+  backend de M&A (ver "Infraestructura / cuentas" abajo) — M&A es una de
+  varias apps que confían en él (`APP_ID = "MYA_PRUEBAS"` en `app.js` /
+  `Código.gs`). El token se valida en cada llamada vía `validateAuth_()`;
+  `402` = servicio suspendido (billing), `403` = token inválido/expirado
+  (fuerza logout, no muestra la pantalla de suspendido — son cosas
+  distintas, ver `callApi()` en `app.js`).
 
 Hay una **carpeta `src/` y archivos Gradle/Docker en la raíz** que son un
 diseño de backend Kotlin+Ktor **anterior y ya no activo** (se evaluó antes de
 decidirse por Apps Script). No los borres sin preguntar, pero no son la fuente
 de verdad — si algo no cuadra entre ese código y lo que describe este archivo,
 manda `Código.gs`.
+
+## Infraestructura / cuentas de Google
+
+El backend de M&A (Apps Script + Sheets + Drive) vive en una **cuenta de
+Gmail dedicada del cliente**, separada de la cuenta que aloja Control de
+Acceso — no se expone el correo exacto aquí a propósito, pedirlo al usuario
+si hace falta. **Control de Acceso NO vive en esta cuenta dedicada** y no se
+migra — sigue en la cuenta de Arrieta Soluciones, y `CONTROL_ACCESO_URL` en
+`app.js`/`Código.gs` no cambia por esto.
+
+- **Script ID activo**: `1eFExIWyw9Av_0GXUbyad9uPEtAc5hL0LMk6BPQ96gdTtnCzjirqsqEN5`
+  (cuenta dedicada). El script ID anterior,
+  `1Wbm_kEACu4Bjuc5tyH5xWMQaSgzorqbn7kiD2GoPX7dL1nbg8IzDoSeE` (cuenta Arrieta
+  Soluciones), **queda obsoleto** — no se borró (no había necesidad ni se
+  pidió), pero ya no es la fuente de verdad ni recibe despliegues nuevos.
+- **Deployment ID activo**: `AKfycbwhVAjRgkfyxFjjLM2-6wlfDuurzhS2HLW2A3gS_NKziW6fyMlXuXrwcTrjmp7oZG1Ufg`
+  (URL en `API_WEBHOOK_URL` de `app.js`). El deployment anterior,
+  `AKfycbz1frJeBe7KpN83DQaVjtPBfzWtdujl6mngBAmAe3XCLRBW6_5cEShkVPRwgk98UtbKAw`,
+  queda obsoleto por la misma razón.
+- **Reconstrucción desde cero, no transferencia**: no existe un mecanismo de
+  Google para "mover" un proyecto de Apps Script entre cuentas personales
+  manteniendo el mismo script ID — se creó un proyecto nuevo y se copió
+  `Código.gs` tal cual. No hubo pérdida de datos porque la base en la cuenta
+  vieja ya estaba vacía (última limpieza documentada abajo). La hoja de
+  Sheets y la carpeta raíz de Drive también son nuevas, creadas por el
+  propio código (`getSpreadsheet_()`/`getRootFolder_()`) la primera vez que
+  se usaron contra la cuenta nueva — no se migró ni copió nada de la hoja
+  vieja.
+- **GitHub Pages (frontend) NO se migró** — el repo se queda en la cuenta
+  personal del usuario por ahora; es una migración aparte, independiente,
+  que se hará al final del proyecto. Lo único que cambió aquí es a qué
+  backend apunta `API_WEBHOOK_URL`, no dónde vive el repo.
+- **Gotcha de despliegue al crear un proyecto nuevo en una cuenta nueva**:
+  `clasp deploy` (API) puede crear el deployment y dejarlo respondiendo
+  `403 Forbidden` a peticiones anónimas aunque el manifiesto ya tenga
+  `webapp: {access: "ANYONE_ANONYMOUS"}` correcto — ejecutar la función
+  directo en el editor (Sheets/Drive/UrlFetchApp) funciona bien en ese
+  estado, así que no es un problema de permisos OAuth generales, es
+  específico del acceso público del Web App. La solución que funcionó: abrir
+  el proyecto en el editor de Apps Script (con la cuenta ya logueada),
+  **Implementar → Administrar implementaciones**, editar la implementación
+  existente y volver a darle **Implementar** desde ahí (sin cambiar nada) —
+  ese paso por UI completa una autorización que el despliegue por API/clasp
+  no termina de dejar lista. Después de eso, el acceso anónimo funcionó de
+  inmediato.
+- El manifiesto (`appsscript.json`) necesita explícitamente
+  `webapp.executeAs: "USER_DEPLOYING"`, `webapp.access: "ANYONE_ANONYMOUS"`
+  y los `oauthScopes` (`spreadsheets`, `drive`, `script.external_request`) —
+  un proyecto nuevo creado por `clasp create-script` no trae estos campos
+  por defecto, hay que agregarlos a mano (ya están en el `appsscript.json`
+  de este repo, cópialo tal cual a cualquier clon nuevo).
 
 ## Jerarquía obligatoria de datos
 
@@ -186,6 +241,82 @@ para no dejar el vestigio de "fase" en un módulo que no trata de fases.
 Cada envío de prueba acepta un adjunto opcional (`file_base64`/`file_mime_type`)
 que sube a Drive vía `persistTest_()` — ya funciona para los tres módulos
 completos, no hace falta tocar el backend para agregar evidencia a uno nuevo.
+Desde que se construyó Documentos e Informes (ver abajo), ese certificado ya
+no cae en una carpeta plana: `persistTest_()` lo guarda en `[Cliente]/
+Certificados de Pruebas/` y lo indexa en la hoja `DOCUMENTOS` (categoría
+`CERTIFICADOS`) para que aparezca en el listado del módulo.
+
+## Documentos e Informes
+
+Módulo completo (dejó de ser placeholder). Reorganiza dónde vive todo en
+Drive — antes de este cambio **no existía ninguna estructura de carpetas**:
+una sola carpeta plana (`ATTACHMENTS_FOLDER_NAME = 'TMS_Adjuntos'`, ubicada
+por nombre en todo Drive con `getOrCreateFolder_()`, sin ID persistido) donde
+caían certificados de prueba y fotos de placa mezclados, distinguidos solo
+por el prefijo del nombre de archivo. Los archivos que ya estaban ahí antes
+de este cambio **no se migraron** — siguen accesibles por su `fileId`
+guardado en Sheets (Drive resuelve por ID, no importa la carpeta), pero no
+aparecen en el listado nuevo de Documentos (no se hizo backfill: la base
+estaba prácticamente vacía desde la limpieza del 26 de agosto, no había
+certificados reales que valiera la pena indexar retroactivamente). Las
+**fotos de placa** (`createTransformer_`/`updateTransformer_`) siguen
+guardándose en la carpeta plana vieja, a propósito — fuera de alcance de
+este cambio, que solo pedía reorganizar certificados de prueba y documentos
+del módulo Documentos.
+
+### Estructura de carpetas en Drive
+
+```
+M&A Ingeniería y Consultoría SAS/          ← raíz del proyecto, ID en Propiedades del script
+├── Calibraciones/                          ← nivel proyecto, no por cliente
+├── [Cliente · Proyecto 1]/                 ← un Sitio = una carpeta (ver abajo)
+│   ├── Certificados de Pruebas/            ← solo persistTest_() escribe aquí
+│   ├── Ofertas y Contratos/                ← subida manual
+│   └── Documentos Generales/               ← subida manual
+└── [Cliente · Proyecto 2]/
+    └── ...
+```
+
+**IDs persistidos, nunca se busca por nombre dos veces**: la carpeta raíz y
+`Calibraciones/` guardan su ID en `PropertiesService.getScriptProperties()`
+(`getRootFolder_()`/`getCalibracionesFolder_()`); las 4 carpetas de un Sitio
+(cliente + sus 3 subcarpetas) se guardan como columnas nuevas en
+`HEADERS.SITIOS` (`drive_client_folder_id`, `drive_certificados_folder_id`,
+`drive_ofertas_folder_id`, `drive_documentos_folder_id`, al final del
+arreglo). `ensureSiteFolders_(site)` es la única función que las crea — si
+ya están las 4 en la fila, las devuelve sin tocar Drive; si falta cualquiera
+(Sitio nuevo, o uno creado antes de este cambio), crea las que falten y las
+persiste en ese momento. **Migración perezosa a propósito**: no hay un
+script que recorra todos los Sitios existentes creándoles carpetas de una —
+se crean la primera vez que un Sitio realmente necesita subir algo.
+`Calibraciones/` es la excepción: como el módulo Calibraciones no está
+construido, nada la dispara sola — hay una acción dedicada,
+`ensureDriveStructure_` (solo Administrador), para crearla explícitamente
+sin depender de que exista esa primera subida.
+
+### Índice de documentos (hoja `DOCUMENTOS`)
+
+Drive no permite listar/filtrar por cliente+tipo+fecha de forma barata sin
+recorrer carpetas en cada consulta, así que hay una hoja `DOCUMENTOS`
+(`id`, `site_id`, `category`, `file_name`, `file_id`, `mime_type`,
+`uploaded_by`, `created_at`) que actúa de índice. `category` es
+`CERTIFICADOS` (solo la escribe `persistTest_()`), `OFERTAS_CONTRATOS` o
+`GENERALES` (solo subida manual vía `uploadDocument_` — ese endpoint
+**rechaza explícitamente** `category: 'CERTIFICADOS'`, los certificados los
+sube el sistema, nunca a mano).
+
+### RBAC — caso real, ya implementado
+
+A diferencia de Calibraciones/Comercial/Panel General (que siguen sin
+ninguna acción de backend), Documentos e Informes **sí tiene la función
+real**, así que el rechazo por rol documentado antes como "pendiente" ya
+está hecho: `listDocuments_(params, auth)` devuelve `403` de una si
+`auth.role === 'Tecnico'`, mismo patrón que `deleteTransformer_`/
+`deleteSite_`. `uploadDocument_` **no** rechaza por rol — Técnico tiene
+`Full` para subir, según la matriz. En el frontend, `renderDocumentsView_()`
+ni siquiera arma el HTML de la sección de listado/filtro cuando
+`state.role === 'Tecnico'` (no se agrega al DOM, mismo criterio que el resto
+de "RBAC" abajo) — un Técnico solo ve el formulario de subida.
 
 ### Aceite dieléctrico — estructura por secciones
 
@@ -286,16 +417,18 @@ La barra lateral (`#mainnav` en `index.html`) y la hoja "Más" móvil
 4. **Comercial** — placeholder de navegación (`view-commercial`); Ofertas y
    Licitaciones se construye después.
 5. **Calibraciones** — placeholder de navegación (`view-calibrations`).
-6. **Documentos e Informes** — placeholder de navegación (`view-documents`).
+6. **Documentos e Informes** — módulo completo (`view-documents`), ver
+   sección dedicada arriba. Ya no es placeholder.
 7. **Panel General** — placeholder de navegación (`view-general-dashboard`).
 8. **Administración** — Gestión de usuarios (`view-admin`, sin cambios en su
    lógica).
 
-Los 4 placeholders (puntos 4-7) ya están protegidos por rol (ver RBAC abajo)
-para que cuando se construya cada uno **no haga falta reabrir la
-navegación** — solo reemplazar el contenido `<div class="empty-note">
-Próximamente...</div>` de cada `view-*` por el formulario/panel real.
-Calibraciones y Documentos e Informes son estáticos en `index.html` (todos
+Comercial, Calibraciones y Panel General siguen como placeholder — ya están
+protegidos por rol (ver RBAC abajo) para que cuando se construyan **no haga
+falta reabrir la navegación** — solo reemplazar el contenido
+`<div class="empty-note">Próximamente...</div>` de cada `view-*` por el
+formulario/panel real. Calibraciones y Documentos e Informes son estáticos
+en `index.html` (todos
 los roles tienen algún acceso); Comercial y Panel General se insertan por
 JS (`renderRestrictedModuleNav_()`/`removeRestrictedModuleNav_()` en
 `app.js`, mismo patrón que `renderAdminNavAndPanel`/
@@ -329,18 +462,12 @@ los botones de eliminar (sitio/equipo) siguen esta regla igual que siempre.
 
 **Backend**: `deleteTransformer_`/`deleteSite_` ya rechazan explícitamente
 por rol (`auth.role !== 'Administrador'` → `403`), no confíes solo en el
-frontend. **Pendiente, a propósito**: Calibraciones, Comercial y Panel
-General todavía no tienen NINGUNA acción de backend (son puro placeholder de
-navegación hoy — no hay nada que rechazar todavía). El caso que sí importa
-es **Documentos e Informes**: cuando se construya la función real de
-listado/descarga (hoy no existe — no confundir con los adjuntos de prueba
-que ya sube `persistTest_()`, que no tienen esta restricción), **debe
-rechazar en el backend si `auth.role === 'Tecnico'`** salvo que el técnico
-esté pidiendo/subiendo su propio archivo, con el mismo patrón `if
-(auth.role === 'Tecnico') return jsonResponse_({status:403, ...})` que ya
-usan `deleteTransformer_`/`deleteSite_`. No se implementó todavía porque la
-función en sí no existe — quedó anotado aquí para que no se olvide cuando
-se construya.
+frontend. **Documentos e Informes también** — `listDocuments_` rechaza con
+`403` si `auth.role === 'Tecnico'`, mismo patrón (ver sección dedicada
+arriba; ya no está pendiente). **Sigue pendiente, a propósito**:
+Calibraciones, Comercial y Panel General todavía no tienen NINGUNA acción de
+backend (son puro placeholder de navegación hoy — no hay nada que rechazar
+todavía).
 
 ## Convenciones de frontend que hay que respetar
 
@@ -433,17 +560,20 @@ se construya.
 
 ## Desplegar cambios de backend (Código.gs)
 
-Este repo tiene una **copia** de `Código.gs`, pero Apps Script no se despliega
-por git push. El flujo real:
+Este repo tiene una **copia** de `Código.gs` (y de `appsscript.json`), pero
+Apps Script no se despliega por git push. El flujo real:
 
 1. Editar `backend-apps-script/Código.gs` en este repo (commit normal).
 2. Hace falta un **clon clasp** del proyecto de Apps Script (script ID
-   `1Wbm_kEACu4Bjuc5tyH5xWMQaSgzorqbn7kiD2GoPX7dL1nbg8IzDoSeE`) — no vive en
-   este repo. Si no existe uno local: `clasp clone 1Wbm_kEACu4Bjuc5tyH5xWMQaSgzorqbn7kiD2GoPX7dL1nbg8IzDoSeE`
-   (requiere `clasp login` ya autorizado en esta máquina).
-3. Copiar el `Código.gs` actualizado al `Código.js` del clon.
+   `1eFExIWyw9Av_0GXUbyad9uPEtAc5hL0LMk6BPQ96gdTtnCzjirqsqEN5`, cuenta
+   dedicada — ver "Infraestructura / cuentas" arriba) — no vive en este
+   repo. Si no existe uno local: `clasp clone 1eFExIWyw9Av_0GXUbyad9uPEtAc5hL0LMk6BPQ96gdTtnCzjirqsqEN5`
+   (requiere `clasp login` ya autorizado **contra la cuenta dedicada**, no
+   la de Arrieta Soluciones — son cuentas distintas, ver arriba).
+3. Copiar el `Código.gs` actualizado al `Código.js` del clon (y
+   `appsscript.json` si cambió).
 4. `npx clasp push --force`
-5. `npx clasp deploy --deploymentId AKfycbz1frJeBe7KpN83DQaVjtPBfzWtdujl6mngBAmAe3XCLRBW6_5cEShkVPRwgk98UtbKAw --description "..."`
+5. `npx clasp deploy --deploymentId AKfycbwhVAjRgkfyxFjjLM2-6wlfDuurzhS2HLW2A3gS_NKziW6fyMlXuXrwcTrjmp7oZG1Ufg --description "..."`
 
 Sin el paso 4-5, el cambio queda solo en el repo — el Web App en vivo sigue
 sirviendo la versión anterior.
@@ -480,16 +610,22 @@ tienen su entrada de navegación y protección por rol listas (ver
 - **Comercial → Ofertas y Licitaciones** — funnel pendiente/aprobada/
   rechazada/cierre; no depende de que exista un Sitio.
 - **Calibraciones** — catálogo de instrumentos propios de M&A con semáforo
-  de vigencia, se cruza con `instrument_used` en las pruebas.
-- **Documentos e Informes** — carpeta de Drive por Sitio, certificados
-  automáticos + subida manual. Backend RBAC pendiente hasta que exista la
-  función real (ver nota en "RBAC" arriba).
+  de vigencia, se cruza con `instrument_used` en las pruebas. La carpeta de
+  Drive (`Calibraciones/` a nivel de proyecto) ya existe — ver "Documentos e
+  Informes" arriba — pero nada la usa todavía.
 - **Panel General** — dashboard consolidado de todas las operaciones.
+
+(Documentos e Informes ya no está en esta lista — se construyó completo,
+ver la sección dedicada arriba.)
 
 Ver conversación con Gerson para el detalle completo de campos y KPIs
 propuestos — lo de arriba es solo el resumen de alcance, no el diseño final.
 
-Base de datos en vivo: limpia de datos de prueba (última verificación
-2026-08-29 tras habilitar NIT/ciudad, características de placa y el
-rediseño de Aceite — todo lo creado durante esas pruebas se borró al
-terminar).
+Base de datos en vivo: **desde 2026-08-30 vive en la cuenta dedicada nueva**
+(ver "Infraestructura / cuentas" arriba), creada desde cero — no es la misma
+hoja de antes de la migración. Limpia de datos de prueba (última
+verificación 2026-08-30 tras migrar y probar Sitio + Transformador + prueba
+de Aislamiento con certificado real en Drive — todo lo creado durante esa
+verificación se borró al terminar). La hoja/carpeta viejas (cuenta Arrieta
+Soluciones) ya estaban vacías desde la limpieza de 2026-08-29 y quedaron
+así, sin usarse desde la migración.
