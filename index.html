@@ -842,7 +842,7 @@
       </div>
     </section>
 
-    <!-- ============ CALIBRACIONES (placeholder de navegación) ============ -->
+    <!-- ============ CALIBRACIONES ============ -->
     <section id="view-calibrations" hidden>
       <div class="topbar">
         <div>
@@ -850,13 +850,28 @@
           <p>Catálogo de instrumentos propios de M&amp;A con semáforo de vigencia</p>
         </div>
       </div>
-      <div class="view">
-        <div class="panel">
-          <div class="panel-head"><h2>Próximamente</h2></div>
-          <div class="empty-note">Este módulo está en diseño — se construirá cuando se valide el alcance completo con el cliente.</div>
-        </div>
-      </div>
+      <div class="view" id="calibrationsViewBody"></div>
     </section>
+
+    <!-- ============ CALIBRACIONES — editar instrumento ============ -->
+    <div class="modal-backdrop" id="editCalibracionModalBackdrop"></div>
+    <div class="modal" id="editCalibracionModal" role="dialog" aria-modal="true" aria-labelledby="editCalibracionModalTitle">
+      <div class="modal-head">
+        <h3 id="editCalibracionModalTitle">Editar instrumento</h3>
+        <button type="button" class="modal-close" onclick="closeEditCalibracionModal_()" aria-label="Cerrar">&times;</button>
+      </div>
+      <form class="modal-body" id="editCalibracionForm">
+        <div class="field"><label>Modelo</label><input id="editCalModelo" required></div>
+        <div class="field"><label>N&uacute;mero de serie</label><input class="mono" id="editCalSerie" required></div>
+        <div class="field"><label>Fabricante</label><input id="editCalFabricante"></div>
+        <div class="field"><label>Ente acreditado</label><input id="editCalEnte"></div>
+        <div class="field"><label>Fecha &uacute;ltima calibraci&oacute;n</label><input type="date" id="editCalFechaUltima"></div>
+        <div class="field"><label>Fecha pr&oacute;xima calibraci&oacute;n</label><input type="date" id="editCalFechaProxima" required></div>
+        <div class="field"><label>Reemplazar certificado (opcional)</label><input id="editCalFile" type="file" accept="application/pdf,image/*"></div>
+        <button class="btn primary" type="submit" style="width:100%;">Guardar cambios</button>
+        <span class="status-line" id="editCalibracionStatus" hidden></span>
+      </form>
+    </div>
 
     <!-- ============ DOCUMENTOS E INFORMES ============ -->
     <section id="view-documents" hidden>

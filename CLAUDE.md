@@ -176,7 +176,9 @@ nunca al montar `view-ttr-form` la primera vez, así que `#tapChipRow` y
 `#ttrPhaseEntries` podían aparecer vacíos hasta que el técnico interactuara
 con algo que ya no estaba ahí para hacer clic. `showView()` ahora llama a
 ambas explícitamente al mostrar `ttr-form`, además de lo que ya hacía
-(`renderTtrFormContext`/`renderMatrixRows`/`refreshTtr`).
+(`renderTtrFormContext`/`renderMatrixRows`/`refreshTtr`). **Verificado en
+vivo (2026-08-30)**: los 5 chips TAP aparecen llenos de inmediato al abrir
+el formulario por primera vez, sin interactuar con nada antes.
 
 ### Resistencia de devanados — primario (multi-TAP) + secundario
 
@@ -310,10 +312,12 @@ ya están las 4 en la fila, las devuelve sin tocar Drive; si falta cualquiera
 persiste en ese momento. **Migración perezosa a propósito**: no hay un
 script que recorra todos los Sitios existentes creándoles carpetas de una —
 se crean la primera vez que un Sitio realmente necesita subir algo.
-`Calibraciones/` es la excepción: como el módulo Calibraciones no está
-construido, nada la dispara sola — hay una acción dedicada,
-`ensureDriveStructure_` (solo Administrador), para crearla explícitamente
-sin depender de que exista esa primera subida.
+`Calibraciones/` sigue el mismo criterio de creación perezosa —
+`getCalibracionesFolder_()` la crea la primera vez que
+`createCalibracion_`/`updateCalibracion_` suben un certificado. También
+existe `ensureDriveStructure_` (solo Administrador) para crearla a mano de
+una vez sin depender de esa primera subida, útil al desplegar en una cuenta
+nueva.
 
 ### Índice de documentos (hoja `DOCUMENTOS`)
 
@@ -328,15 +332,96 @@ sube el sistema, nunca a mano).
 
 ### RBAC — caso real, ya implementado
 
-A diferencia de Calibraciones (que sigue sin ninguna acción de backend),
-Documentos e Informes **sí tiene la función real**, así que el rechazo por
-rol documentado antes como "pendiente" ya está hecho: `listDocuments_(params, auth)` devuelve `403` de una si
+Documentos e Informes **sí tiene la función real** (igual que Calibraciones,
+ver su sección dedicada), así que el rechazo por rol documentado antes como
+"pendiente" ya está hecho: `listDocuments_(params, auth)` devuelve `403` de una si
 `auth.role === 'Tecnico'`, mismo patrón que `deleteTransformer_`/
 `deleteSite_`. `uploadDocument_` **no** rechaza por rol — Técnico tiene
 `Full` para subir, según la matriz. En el frontend, `renderDocumentsView_()`
 ni siquiera arma el HTML de la sección de listado/filtro cuando
 `state.role === 'Tecnico'` (no se agrega al DOM, mismo criterio que el resto
 de "RBAC" abajo) — un Técnico solo ve el formulario de subida.
+
+## Calibraciones
+
+Módulo completo (dejó de ser placeholder). Catálogo de instrumentos de
+**medición propios de M&A** (ej. Micro-ohmmeter DLRO-10) para control de
+vigencia ante ente acreditado — **no** es calibración de equipos del
+cliente, no confundir con Transformador. Hoja nueva `CALIBRACIONES`:
+
+```
+id, modelo, numero_serie, fabricante, fecha_ultima_calibracion,
+fecha_proxima_calibracion, ente_acreditado, certificado_adjunto_file_id,
+created_at, updated_at
+```
+
+- **`modelo`, `numero_serie`, `fecha_proxima_calibracion` son obligatorios**
+  al crear (`createCalibracion_` rechaza con 400 si falta cualquiera) —
+  `fabricante`, `ente_acreditado` y `fecha_ultima_calibracion` son opcionales.
+- **`estado` (semáforo) NUNCA se guarda** — se deriva de
+  `fecha_proxima_calibracion` al leer, vía `computeCalibracionEstado_`:
+  `Vigente` (más de 30 días para vencer), `Por vencer` (0-30 días),
+  `Vencido` (fecha ya pasada). Mismo cuidado con el gotcha de Sheets-Date
+  que `computeOfertaEstado_` en Comercial (`fechaProxima instanceof Date`
+  antes de decidir cómo construirlo) — verificado en vivo con los tres
+  estados a la vez (fechas -10, +15 y +90 días) y con una edición real que
+  movió un instrumento de `Vencido` a `Vigente`.
+- **Certificado** (opcional, `file_base64`/`file_mime_type`) sube a
+  `Calibraciones/` a nivel de proyecto — reutiliza `getCalibracionesFolder_()`
+  y `saveFileToDriveIn_()`, que ya existían sin usarse desde Documentos e
+  Informes. El `certificado_adjunto_file_id` se guarda directo en la fila de
+  `CALIBRACIONES` (no se indexa en la hoja `DOCUMENTOS` — mismo criterio que
+  la foto de placa de Transformador, que tampoco se indexa ahí).
+- **Corregido durante la verificación en vivo**: el modal de edición
+  (`openEditCalibracionModal_`) asignaba `fecha_proxima_calibracion` tal
+  cual a un `<input type="date">`, pero ese valor llega como datetime ISO
+  completo (`"2026-08-20T05:00:00.000Z"`) cuando Sheets ya autoconvirtió la
+  celda a `Date` — un `<input type="date">` ignora silenciosamente un valor
+  que no sea exactamente `YYYY-MM-DD`, así que el campo se veía vacío al
+  editar. Corregido con `String(fecha).slice(0, 10)`. La tabla del catálogo
+  tenía el mismo problema mostrando la fecha cruda en vez de formateada —
+  cambiado a `fmtDate_()`, la misma función que usa el resto de la app.
+
+### RBAC — Técnico solo lectura
+
+Único módulo con este nivel exacto: Técnico **ve** el catálogo completo y
+el semáforo (`listCalibraciones_` no rechaza ningún rol), pero no puede
+crear/editar/eliminar — `checkCalibracionesWriteAccess_(auth)` rechaza con
+403 al inicio de `createCalibracion_`/`updateCalibracion_`/
+`deleteCalibracion_`, mismo patrón que `checkComercialAccess_`. En
+frontend, `renderCalibrationsView_()` no arma el formulario de alta ni los
+enlaces "Editar"/"Eliminar" cuando `state.role === 'Tecnico'`. Verificado en
+vivo con un token real de Técnico: `listCalibraciones` devuelve el catálogo
+completo, `createCalibracion`/`updateCalibracion`/`deleteCalibracion`
+devuelven 403 real cada uno por separado, y la vista no muestra ni el
+formulario ni los enlaces de escritura.
+
+### `instrument_used` — decisión reportada, integración pendiente de confirmar
+
+El campo `instrument_used` (texto libre) existe en **TTR, Resistencia de
+devanados y Resistencia de aislamiento** — no en Aceite dieléctrico (ese
+módulo no tiene ningún campo equivalente; su "Certificado del ente
+acreditado" es del laboratorio que analiza la muestra, no de un instrumento
+de M&A). Decisión evaluada y reportada al usuario, **implementación
+pendiente de confirmación explícita antes de tocar los 3 formularios**:
+
+- **No convertir en selector obligatorio** — forzaría a que el catálogo
+  exista y esté completo antes de poder enviar cualquier prueba, lo que
+  bloquearía a un técnico en campo con un instrumento nuevo aún no
+  registrado. Choca directo con el principio ya establecido de esta app
+  (resiliencia de red, local-first): nunca bloquear al técnico por una
+  dependencia externa. También dejaría huérfano todo el `instrument_used`
+  de texto libre ya guardado en producción.
+- **Recomendado**: mantener `<input>` de texto libre, agregar un
+  `<datalist>` alimentado por el catálogo (autocompleta mientras se escribe,
+  el valor sigue siendo texto libre puro) + una validación difusa
+  client-side al enviar la prueba (normalizar y comparar contra
+  `modelo`/`numero_serie` del catálogo) que muestre una advertencia **no
+  bloqueante** si encuentra coincidencia con un instrumento `Vencido` o `Por
+  vencer`. Cero cambio de esquema, cero riesgo para datos ya guardados.
+- **No implementado todavía** — a la espera de que el usuario confirme el
+  enfoque antes de tocar TTR/Resistencia de devanados/Resistencia de
+  aislamiento, como pidió explícitamente.
 
 ## Comercial — Ofertas y Licitaciones
 
@@ -437,7 +522,8 @@ en una tabla, no un canvas.
 Módulo completo (dejó de ser placeholder). Dashboard de una sola pantalla,
 consolidado, **sin ninguna entidad ni acción de backend propia** (salvo
 `estado_equipo`, ver arriba) — solo consume lo que ya exponen
-`listTransformers`/`listTests`/`listOfertas`/`listDocuments` y **reutiliza
+`listTransformers`/`listTests`/`listOfertas`/`listDocuments`/
+`listCalibraciones` y **reutiliza
 directamente `computeComercialStats_()`** (la misma función del dashboard de
 Comercial) para no duplicar ningún cálculo. `renderGeneralDashboardView_()`/
 `loadGeneralDashboardAndRender_()` en `app.js`, contenedor
@@ -461,11 +547,13 @@ Comercial) para no duplicar ningún cálculo. `renderGeneralDashboardView_()`/
   `listOfertas({})` — literalmente la misma función, no una reimplementación.
   Verificado en vivo que los tres números coinciden exactamente con los que
   muestra el dashboard propio de Comercial para el mismo dato.
-- **Calibraciones**: muestra "Módulo pendiente" en vez de un número — no
-  existe ningún semáforo ni acción de backend para Calibraciones todavía
-  (sigue siendo placeholder puro, ver "Estado / pendientes conocidos"), así
-  que no hay nada que reutilizar. Cuando se construya Calibraciones, esta
-  tarjeta es lo único que hay que reemplazar en Panel General.
+- **Calibraciones** (instrumentos por vencer / vencidos): cuenta
+  `listCalibraciones({})` por `estado` — reutiliza el mismo campo `estado`
+  que ya calcula `calibracionRowToJson_` en el backend (el semáforo se
+  calcula una sola vez, server-side; Panel General y la vista propia de
+  Calibraciones consumen el mismo valor, no hay cálculo duplicado).
+  Verificado en vivo con un instrumento de prueba vencido: la tarjeta mostró
+  "0 por vencer · 1 vencidos".
 - **Documentos recientes**: últimos 8 de `listDocuments({})` (todos los
   clientes), ordenados por `created_at` descendente, con fecha + cliente
   (resuelto contra `listSites`) + tipo (`DOCUMENT_CATEGORY_LABELS`, la misma
@@ -479,16 +567,18 @@ A diferencia de Comercial/Documentos, Panel General no introduce ningún
 endpoint nuevo, así que no hay nada propio que rechazar por rol a nivel de
 backend. La protección real es la misma de siempre para módulos "Sin
 acceso": frontend 100% (nav-item y `#view-general-dashboard` no se agregan
-al DOM para Técnico, mismo patrón que Comercial). De los cuatro endpoints
+al DOM para Técnico, mismo patrón que Comercial). De los cinco endpoints
 que Panel General consume, `listOfertas_`/`listDocuments_` **ya** rechazan a
 Técnico con 403 por su cuenta (así que ni llamándolos directo un Técnico ve
-esos números); `listTransformers_`/`listTests_` se dejan **abiertos a
-propósito** — Técnico tiene `Full` en Equipos y Pruebas según la matriz de
-RBAC, y esos dos endpoints son compartidos con esos módulos, no exclusivos
-de Panel General. Verificado en vivo con el token real de
-`test.tecnico.verificacion`: sin nav-item ni sección en el DOM, `listOfertas`
-y `listDocuments` devuelven 403 real, `listTransformers` sigue funcionando
-(como debe ser, para su propio módulo Equipos).
+esos números); `listTransformers_`/`listTests_`/`listCalibraciones_` se
+dejan **abiertos a propósito** — `listTransformers_`/`listTests_` porque
+Técnico tiene `Full` en Equipos y Pruebas, `listCalibraciones_` porque
+Técnico tiene lectura completa del catálogo en su propio módulo (ver
+"Calibraciones" arriba) — los tres son compartidos con esos módulos, no
+exclusivos de Panel General. Verificado en vivo con un token real de
+Técnico: sin nav-item ni sección en el DOM, `listOfertas` y `listDocuments`
+devuelven 403 real, `listTransformers` sigue funcionando (como debe ser,
+para su propio módulo Equipos).
 
 ### Aceite dieléctrico — estructura por secciones
 
@@ -593,7 +683,9 @@ La barra lateral (`#mainnav` en `index.html`) y la hoja "Más" móvil
    por JS (es "Sin acceso" para Técnico), pero ya no le mete el HTML
    genérico de "Próximamente": ve `mod.view === 'commercial'` y le arma el
    contenedor real (`renderCommercialView_()` la llena al navegar ahí).
-5. **Calibraciones** — placeholder de navegación (`view-calibrations`).
+5. **Calibraciones** — módulo completo (`view-calibrations`, contenido en
+   `#calibrationsViewBody`), ver sección dedicada arriba. Ya no es
+   placeholder.
 6. **Documentos e Informes** — módulo completo (`view-documents`), ver
    sección dedicada arriba. Ya no es placeholder.
 7. **Panel General** — módulo completo (`view-general-dashboard`, contenido
@@ -602,11 +694,8 @@ La barra lateral (`#mainnav` en `index.html`) y la hoja "Más" móvil
 8. **Administración** — Gestión de usuarios (`view-admin`, sin cambios en su
    lógica).
 
-Solo Calibraciones sigue como placeholder — ya está protegido por rol (ver
-RBAC abajo) para que cuando se construya **no haga falta reabrir la
-navegación** — solo reemplazar el contenido
-`<div class="empty-note">Próximamente...</div>` de `view-calibrations` por
-el formulario/panel real. Calibraciones y Documentos e Informes son
+No queda ningún módulo como placeholder puro — los 8 están completos.
+Calibraciones y Documentos e Informes son
 estáticos en `index.html` (todos los roles tienen algún acceso); Comercial
 y Panel General se insertan por JS
 (`renderRestrictedModuleNav_()`/`removeRestrictedModuleNav_()` en `app.js`,
@@ -652,10 +741,12 @@ token real (ver sección de Comercial arriba). **Panel General no tiene
 ninguna acción de backend propia** (ver sección dedicada arriba) — su
 protección real es 100% frontend; de los endpoints que consume,
 `listOfertas_`/`listDocuments_` ya rechazan a Técnico por su cuenta, y
-`listTransformers_`/`listTests_` se dejan abiertos a propósito porque son
-compartidos con Equipos/Pruebas (Full para Técnico ahí). **Sigue pendiente,
-a propósito**: Calibraciones todavía no tiene NINGUNA acción de backend (es
-puro placeholder de navegación hoy — no hay nada que rechazar todavía).
+`listTransformers_`/`listTests_`/`listCalibraciones_` se dejan abiertos a
+propósito porque son compartidos con Equipos/Pruebas/Calibraciones (Full o
+solo-lectura para Técnico en esos módulos respectivamente). **Calibraciones
+también tiene rechazo real**: `checkCalibracionesWriteAccess_` rechaza a
+Técnico en crear/editar/eliminar (no en listar, que es Full para los 3
+roles), verificado con un token real (ver sección de Calibraciones arriba).
 
 ## Convenciones de frontend que hay que respetar
 
@@ -725,7 +816,14 @@ puro placeholder de navegación hoy — no hay nada que rechazar todavía).
     reenvía — lo marca `_error` con un mensaje explícito de conflicto y
     avisa por `showToast_`, igual que cualquier otro fallo de sincronización.
     Un reintento de **edición** que encuentra su propio id no cuenta como
-    conflicto (es el mismo equipo con su serie sin cambios).
+    conflicto (es el mismo equipo con su serie sin cambios). **Verificado en
+    vivo (2026-08-30)**: se dejó un equipo en estado pendiente/error, se creó
+    un segundo equipo real con la misma serie desde otro flujo mientras el
+    primero seguía pendiente, y al reintentar el primero se rechazó con el
+    mensaje de conflicto — el backend confirmó que solo existe un
+    transformador con esa serie, sin duplicado. `retryPendingSite_` (Sitio)
+    **no** hace este chequeo — no es un bug equivalente, Sitio no tiene un
+    campo tipo "número de serie" con regla de unicidad que revalidar.
 - **Sesión persistente en `sessionStorage`, nunca en memoria sola ni en
   `localStorage`**: al hacer login (o tras un cambio de contraseña forzado),
   `saveSession_()` guarda `{token, username, role, allowedApps}` en
@@ -790,20 +888,14 @@ No implementado todavía, evaluado pero no decidido con el usuario:
 - Migrar a offline real (service worker + IndexedDB) — hoy la resiliencia de
   red es "no perder lo digitado", no "funcionar sin señal".
 
-Módulos en diseño, pendientes de validar alcance con el cliente **antes de
-construir el contenido real** (no empezar sin luz verde explícita) — ya
-tienen su entrada de navegación y protección por rol listas (ver
-"Navegación" y "RBAC" arriba), solo falta reemplazar el placeholder
-"Próximamente" por el formulario/panel real cuando se defina el alcance:
-- **Calibraciones** — catálogo de instrumentos propios de M&A con semáforo
-  de vigencia, se cruza con `instrument_used` en las pruebas. La carpeta de
-  Drive (`Calibraciones/` a nivel de proyecto) ya existe — ver "Documentos e
-  Informes" arriba — pero nada la usa todavía. Es también la única pieza
-  pendiente de la tarjeta "Calibraciones" en Panel General (hoy muestra
-  "Módulo pendiente").
-
-(Documentos e Informes, Comercial y Panel General ya no están en esta
-lista — se construyeron completos, ver sus secciones dedicadas arriba.)
+No quedan módulos en diseño pendientes de construir — Calibraciones era el
+último (ver su sección dedicada arriba), y con eso se cierra el alcance
+funcional completo de los 8 módulos de navegación. La única pieza
+explícitamente diferida es la integración de `instrument_used` con el
+catálogo de Calibraciones en los 3 formularios de prueba que lo usan (TTR,
+Resistencia de devanados, Resistencia de aislamiento) — decisión evaluada y
+reportada, implementación pendiente de confirmación del usuario (ver
+"`instrument_used`" en la sección de Calibraciones).
 
 **Hallazgo fuera de alcance, sin corregir a propósito**: durante la
 verificación de Panel General (2026-08-30) apareció en "Documentos
@@ -821,19 +913,31 @@ propuestos — lo de arriba es solo el resumen de alcance, no el diseño final.
 Base de datos en vivo: **desde 2026-08-30 vive en la cuenta dedicada nueva**
 (ver "Infraestructura / cuentas" arriba), creada desde cero — no es la misma
 hoja de antes de la migración. Limpia de datos de prueba (última
-verificación 2026-08-30, migración + módulo Comercial + Panel General/
-estado_equipo: Sitio + Transformador + prueba de Aislamiento con
-certificado real en Drive, 3+1 Ofertas de prueba incluyendo el flujo de
-vincular-y-mover-adjunto, y un Sitio + Transformador + Oferta adicionales
-para verificar `estado_equipo` y los KPIs de Panel General en vivo — todo lo
-creado durante esas verificaciones se borró al terminar, usando
-`deleteOferta_`/`deleteTransformer_`/`deleteSite_`). La hoja/carpeta viejas
-(cuenta Arrieta Soluciones) ya estaban vacías desde la limpieza de
-2026-08-29 y quedaron así, sin usarse desde la migración.
+verificación 2026-08-30, migración + Comercial + Panel General/estado_equipo
++ Calibraciones: Sitio + Transformador + prueba de Aislamiento con
+certificado real en Drive, varias Ofertas de prueba incluyendo el flujo de
+vincular-y-mover-adjunto, transformadores de prueba para verificar
+`estado_equipo`/el fix de conflicto de serie/los KPIs de Panel General, e
+instrumentos de prueba en los tres estados del semáforo de Calibraciones —
+todo lo creado durante esas verificaciones se borró al terminar, usando
+`deleteOferta_`/`deleteTransformer_`/`deleteSite_`/`deleteCalibracion_`). La
+hoja/carpeta viejas (cuenta Arrieta Soluciones) ya estaban vacías desde la
+limpieza de 2026-08-29 y quedaron así, sin usarse desde la migración.
 
-**Cuenta de prueba activa**: `test.tecnico.verificacion` (rol Técnico) se
-creó para verificar en vivo el rechazo 403 de Comercial con un token real —
-no hay acción `deleteUser` en Control de Acceso para borrarla, así que
-sigue existiendo. Es una cuenta de solo pruebas (contraseña temporal, forzó
-`debeCambiar`), reusable para verificar cualquier restricción de rol futura
-sin tener que crear una nueva cada vez.
+**Cuentas de prueba (rol Técnico)** — no hay acción `deleteUser` en Control
+de Acceso, así que ninguna de estas se puede borrar:
+- `test.tecnico.verificacion` — la original, creada para verificar Comercial.
+  **Contraseña ya no es la documentada originalmente** (dejó de funcionar el
+  2026-08-30, causa desconocida — probablemente rotó en algún punto) — no
+  usar más, queda como cuenta huérfana.
+- `test.tecnico.verificacion2` — creada por error el 2026-08-30 sin el
+  parámetro `appsPermitidas: 'MYA_PRUEBAS'` en `createUser` — existe pero
+  **no tiene acceso a esta app** (`403: "Tu usuario no tiene permiso para
+  Gestión de Pruebas"` en cualquier llamada). Cuenta muerta, no usar.
+- `test.tecnico.verificacion3` — **la activa hoy**, contraseña
+  `QaTemp2026!` (temporal, forzó `debeCambiar`), creada correctamente con
+  `appsPermitidas: 'MYA_PRUEBAS'`. Úsala para cualquier verificación futura
+  de rol Técnico. Si vuelve a fallar el login, no asumas que el problema es
+  RBAC del módulo que estés probando — confirma primero con una llamada
+  simple (`listSites`) que la cuenta en sí sigue viva antes de diagnosticar
+  nada más.

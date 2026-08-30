@@ -56,7 +56,8 @@ var SHEET_NAMES = {
   TRANSFORMADORES: 'Transformadores',
   PRUEBAS: 'Pruebas',
   DOCUMENTOS: 'Documentos',
-  OFERTAS: 'Ofertas'
+  OFERTAS: 'Ofertas',
+  CALIBRACIONES: 'Calibraciones'
 };
 
 var HEADERS = {
@@ -108,6 +109,17 @@ var HEADERS = {
     'fecha_envio', 'fecha_cierre', 'estado', 'responsable',
     'adjunto_propuesta_file_id', 'adjunto_contrato_file_id', 'bitacora_json',
     'estado_changed_at', 'created_at', 'updated_at'
+  ],
+  /** Calibraciones — catálogo de instrumentos de medición PROPIOS de M&A
+   *  (control de vigencia ante ente acreditado), no calibración de equipos
+   *  del cliente. `estado` (Vigente/Por vencer/Vencido) NUNCA se guarda —
+   *  es derivado de `fecha_proxima_calibracion` al leer, ver
+   *  computeCalibracionEstado_ (mismo cuidado con Sheets Date que
+   *  computeOfertaEstado_ en Comercial). */
+  CALIBRACIONES: [
+    'id', 'modelo', 'numero_serie', 'fabricante', 'fecha_ultima_calibracion',
+    'fecha_proxima_calibracion', 'ente_acreditado', 'certificado_adjunto_file_id',
+    'created_at', 'updated_at'
   ]
 };
 
@@ -127,6 +139,22 @@ var UNBALANCE_THRESHOLD_PERCENT = 5.0;
 var ESTADO_EQUIPO_VALUES = ['Activo', 'Fuera de servicio', 'Dado de baja'];
 function normalizeEstadoEquipo_(value) {
   return ESTADO_EQUIPO_VALUES.indexOf(value) !== -1 ? value : 'Activo';
+}
+
+/** Semáforo de vigencia de Calibraciones — Vigente (>30 días), Por vencer
+ *  (0-30 días), Vencido (fecha ya pasada). Nunca se guarda, se calcula al
+ *  leer. `fechaProxima` puede llegar como string ("YYYY-MM-DD", tal como la
+ *  manda un <input type="date">) o como objeto Date real si Sheets ya
+ *  autoconvirtió la celda al guardarla — mismo cuidado que
+ *  computeOfertaEstado_ en Comercial: concatenar texto sobre un Date
+ *  produce Invalid Date sin avisar. */
+function computeCalibracionEstado_(fechaProxima) {
+  if (!fechaProxima) return 'Vigente';
+  var fecha = fechaProxima instanceof Date ? fechaProxima : new Date(fechaProxima + 'T23:59:59');
+  var diffDays = (fecha - new Date()) / 86400000;
+  if (diffDays < 0) return 'Vencido';
+  if (diffDays <= 30) return 'Por vencer';
+  return 'Vigente';
 }
 
 /** Factor de relación línea-línea por grupo de conexión (ver TtrCalculator.kt en el backend Ktor). */
@@ -1632,6 +1660,144 @@ function listOfertas_(params, auth) {
 }
 
 // ---------------------------------------------------------------------------
+// Calibraciones — catálogo de instrumentos propios de M&A
+//
+// RBAC: Técnico tiene SOLO LECTURA (ve catálogo y semáforo) — listCalibraciones_
+// no rechaza a ningún rol. Crear/editar/borrar rechaza a Técnico con 403 vía
+// checkCalibracionesWriteAccess_, mismo patrón que checkComercialAccess_.
+// ---------------------------------------------------------------------------
+
+function checkCalibracionesWriteAccess_(auth) {
+  if (auth.role === 'Tecnico') {
+    return jsonResponse_({ status: 403, message: 'Los técnicos pueden ver el catálogo de Calibraciones, pero no crear, editar ni eliminar instrumentos' });
+  }
+  return null;
+}
+
+function findCalibracionRow_(id) {
+  var sheet = getSheet_('CALIBRACIONES');
+  var data = sheet.getDataRange().getValues();
+  var idCol = HEADERS.CALIBRACIONES.indexOf('id');
+  for (var r = 1; r < data.length; r++) {
+    if (data[r][idCol] === id) return rowToObject_(data[r], 'CALIBRACIONES', r + 1);
+  }
+  return null;
+}
+
+function calibracionRowToJson_(row) {
+  return {
+    id: row.id,
+    modelo: row.modelo,
+    numero_serie: row.numero_serie,
+    fabricante: row.fabricante || '',
+    fecha_ultima_calibracion: row.fecha_ultima_calibracion || null,
+    fecha_proxima_calibracion: row.fecha_proxima_calibracion || null,
+    ente_acreditado: row.ente_acreditado || '',
+    certificado_url: row.certificado_adjunto_file_id ? driveFileUrl_(row.certificado_adjunto_file_id) : null,
+    estado: computeCalibracionEstado_(row.fecha_proxima_calibracion),
+    created_at: row.created_at,
+    updated_at: row.updated_at
+  };
+}
+
+function createCalibracion_(params, auth) {
+  var denied = checkCalibracionesWriteAccess_(auth);
+  if (denied) return denied;
+
+  return withLock_(function () {
+    if (!params.modelo || !params.numero_serie || !params.fecha_proxima_calibracion) {
+      return jsonResponse_({ status: 400, message: 'modelo, numero_serie y fecha_proxima_calibracion son obligatorios' });
+    }
+
+    var id = generateId_();
+    var attachmentId = '';
+    if (params.file_base64) {
+      var saved = saveFileToDriveIn_(
+        getCalibracionesFolder_().getId(),
+        stripBase64Prefix_(params.file_base64),
+        'calibracion_' + params.numero_serie + '_' + Date.now(),
+        params.file_mime_type || 'application/octet-stream'
+      );
+      attachmentId = saved.fileId;
+    }
+
+    appendRow_('CALIBRACIONES', {
+      id: id,
+      modelo: params.modelo,
+      numero_serie: params.numero_serie,
+      fabricante: params.fabricante || '',
+      fecha_ultima_calibracion: params.fecha_ultima_calibracion || '',
+      fecha_proxima_calibracion: params.fecha_proxima_calibracion,
+      ente_acreditado: params.ente_acreditado || '',
+      certificado_adjunto_file_id: attachmentId,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    });
+
+    return jsonResponse_({ status: 201, message: 'Instrumento registrado', data: { id: id } });
+  });
+}
+
+function updateCalibracion_(params, auth) {
+  var denied = checkCalibracionesWriteAccess_(auth);
+  if (denied) return denied;
+
+  return withLock_(function () {
+    if (!params.id) return jsonResponse_({ status: 400, message: 'id es obligatorio' });
+    var row = findCalibracionRow_(params.id);
+    if (!row) return jsonResponse_({ status: 404, message: 'Instrumento no encontrado' });
+
+    var updates = {};
+    ['modelo', 'numero_serie', 'fabricante', 'fecha_ultima_calibracion',
+      'fecha_proxima_calibracion', 'ente_acreditado'].forEach(function (field) {
+      if (params[field] !== undefined) updates[field] = params[field];
+    });
+
+    if (params.file_base64) {
+      var saved = saveFileToDriveIn_(
+        getCalibracionesFolder_().getId(),
+        stripBase64Prefix_(params.file_base64),
+        'calibracion_' + (params.numero_serie || row.numero_serie) + '_' + Date.now(),
+        params.file_mime_type || 'application/octet-stream'
+      );
+      updates.certificado_adjunto_file_id = saved.fileId;
+    }
+
+    updates.updated_at = new Date().toISOString();
+
+    var sheet = getSheet_('CALIBRACIONES');
+    Object.keys(updates).forEach(function (field) {
+      sheet.getRange(row._row, colIndex_('CALIBRACIONES', field)).setValue(updates[field]);
+    });
+
+    return jsonResponse_({ status: 200, message: 'Instrumento actualizado' });
+  });
+}
+
+function deleteCalibracion_(params, auth) {
+  var denied = checkCalibracionesWriteAccess_(auth);
+  if (denied) return denied;
+
+  return withLock_(function () {
+    if (!params.id) return jsonResponse_({ status: 400, message: 'id es obligatorio' });
+    var row = findCalibracionRow_(params.id);
+    if (!row) return jsonResponse_({ status: 404, message: 'Instrumento no encontrado' });
+    getSheet_('CALIBRACIONES').deleteRow(row._row);
+    return jsonResponse_({ status: 200, message: 'Instrumento eliminado' });
+  });
+}
+
+function listCalibraciones_(params) {
+  var sheet = getSheet_('CALIBRACIONES');
+  var data = sheet.getDataRange().getValues();
+  var result = [];
+  for (var r = 1; r < data.length; r++) {
+    result.push(calibracionRowToJson_(rowToObject_(data[r], 'CALIBRACIONES', r + 1)));
+  }
+  return jsonResponse_({ status: 200, data: result });
+}
+
+// ---------------------------------------------------------------------------
 // Router: tabla de acciones
 // ---------------------------------------------------------------------------
 
@@ -1651,7 +1817,10 @@ var POST_ACTIONS = {
   createOferta: createOferta_,
   updateOferta: updateOferta_,
   addOfertaNota: addOfertaNota_,
-  deleteOferta: deleteOferta_
+  deleteOferta: deleteOferta_,
+  createCalibracion: createCalibracion_,
+  updateCalibracion: updateCalibracion_,
+  deleteCalibracion: deleteCalibracion_
 };
 
 var GET_ACTIONS = {
@@ -1660,5 +1829,6 @@ var GET_ACTIONS = {
   getTransformer: getTransformer_,
   listTests: listTests_,
   listDocuments: listDocuments_,
-  listOfertas: listOfertas_
+  listOfertas: listOfertas_,
+  listCalibraciones: listCalibraciones_
 };

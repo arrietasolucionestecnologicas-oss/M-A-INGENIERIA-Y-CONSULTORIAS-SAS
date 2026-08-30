@@ -69,7 +69,9 @@ var state = {
   insulation: { windingTemperatureC: 20, phases: {} },
   documents: [],
   ofertas: [],
-  currentOfertaId: null
+  currentOfertaId: null,
+  calibraciones: [],
+  currentCalibracionId: null
 };
 
 /** "12,5" -> 12.5. parseFloat NUNCA debe usarse directo sobre un input de usuario: se detiene en la coma y trunca el valor sin avisar. */
@@ -318,6 +320,7 @@ function showView(name) {
   if (name === 'documents') { renderDocumentsView_(); }
   if (name === 'commercial') { renderCommercialView_(); }
   if (name === 'general-dashboard') { renderGeneralDashboardView_(); }
+  if (name === 'calibrations') { renderCalibrationsView_(); }
 }
 
 function viewNeedsSite_(name) {
@@ -2643,6 +2646,204 @@ function applyDocumentFilters_() {
 }
 
 // ---------------------------------------------------------------
+// Calibraciones — catálogo de instrumentos propios de M&A
+//
+// RBAC: Técnico tiene SOLO LECTURA — ve el catálogo y el semáforo, pero
+// renderCalibrationsView_() no arma el formulario de alta/edición ni los
+// botones de eliminar cuando state.role === 'Tecnico' (mismo criterio de
+// "no agregar al DOM" que el resto de "RBAC" en CLAUDE.md). El backend
+// además rechaza con 403 cualquier create/update/delete para Técnico
+// (checkCalibracionesWriteAccess_), así que forzar la llamada desde la
+// consola tampoco funciona. listCalibraciones sí es Full para los 3 roles.
+// ---------------------------------------------------------------
+
+function calibracionEstadoPillClass_(estado) {
+  if (estado === 'Vencido') return 'danger';
+  if (estado === 'Por vencer') return 'warning';
+  return 'success'; // Vigente
+}
+
+function renderCalibrationsView_() {
+  var body = document.getElementById('calibrationsViewBody');
+  if (!body) return;
+  var canWrite = state.role !== 'Tecnico';
+
+  body.innerHTML =
+    (canWrite ?
+      '<div class="panel" style="max-width:720px;">' +
+      '<div class="panel-head"><h2>Nuevo instrumento</h2></div>' +
+      '<form id="createCalibracionForm" class="form-field-block" style="align-items:flex-end;">' +
+      '<div class="field" style="flex:1; min-width:180px;"><label>Modelo</label><input id="newCalModelo" placeholder="Micro-ohmmeter DLRO-10" required></div>' +
+      '<div class="field" style="min-width:160px;"><label>N&uacute;mero de serie</label><input class="mono" id="newCalSerie" required></div>' +
+      '<div class="field" style="min-width:160px;"><label>Fabricante</label><input id="newCalFabricante"></div>' +
+      '<div class="field" style="min-width:180px;"><label>Ente acreditado</label><input id="newCalEnte"></div>' +
+      '<div class="field" style="min-width:160px;"><label>Fecha &uacute;ltima calibraci&oacute;n</label><input type="date" id="newCalFechaUltima"></div>' +
+      '<div class="field" style="min-width:160px;"><label>Fecha pr&oacute;xima calibraci&oacute;n</label><input type="date" id="newCalFechaProxima" required></div>' +
+      '<div class="field" style="min-width:200px;"><label>Certificado (opcional)</label><input id="newCalFile" type="file" accept="application/pdf,image/*"></div>' +
+      '<button class="btn primary" type="submit" id="createCalibracionBtn">Registrar</button>' +
+      '</form>' +
+      '<div class="status-line" id="createCalibracionStatus" hidden style="padding:0 18px 14px;"></div>' +
+      '</div>'
+      : '') +
+    '<div class="panel">' +
+    '<div class="panel-head"><h2>Cat&aacute;logo</h2></div>' +
+    '<div style="overflow-x:auto;"><table>' +
+    '<thead><tr><th>Modelo</th><th>Serie</th><th>Fabricante</th><th>Ente acreditado</th><th>Pr&oacute;xima calibraci&oacute;n</th><th>Estado</th><th></th></tr></thead>' +
+    '<tbody id="calibracionesRows"><tr><td colspan="7" class="empty-note">Cargando&hellip;</td></tr></tbody>' +
+    '</table></div>' +
+    '</div>';
+
+  if (canWrite) document.getElementById('createCalibracionForm').addEventListener('submit', handleCreateCalibracionSubmit);
+  ensureEditCalibracionModalWired_();
+  loadCalibracionesAndRender_();
+}
+
+function loadCalibracionesAndRender_() {
+  var tbody = document.getElementById('calibracionesRows');
+  callApi('listCalibraciones', 'GET', {})
+    .then(function (calibraciones) {
+      state.calibraciones = calibraciones || [];
+      renderCalibracionesTable_();
+    })
+    .catch(function (err) {
+      if (err.status === 402 || err.status === 403) return;
+      if (tbody) tbody.innerHTML = '<tr><td colspan="7" class="empty-note">' + escapeHtml_(formatNetworkAwareError_(err)) + '</td></tr>';
+    });
+}
+
+function renderCalibracionesTable_() {
+  var tbody = document.getElementById('calibracionesRows');
+  if (!tbody) return;
+  var canWrite = state.role !== 'Tecnico';
+
+  if (state.calibraciones.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="7" class="empty-note">No hay instrumentos registrados todav&iacute;a.</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = state.calibraciones.slice().sort(function (a, b) {
+    return String(a.fecha_proxima_calibracion).localeCompare(String(b.fecha_proxima_calibracion));
+  }).map(function (c) {
+    var actions = '<a href="#" onclick="event.preventDefault(); openEditCalibracionModal_(\'' + c.id + '\')">Editar</a>';
+    if (c.certificado_url) actions += ' &middot; <a href="' + c.certificado_url + '" target="_blank" rel="noopener">Certificado</a>';
+    if (canWrite) actions += ' &middot; <a href="#" onclick="event.preventDefault(); handleDeleteCalibracion_(\'' + c.id + '\')">Eliminar</a>';
+    return '<tr>' +
+      '<td>' + escapeHtml_(c.modelo) + '</td>' +
+      '<td class="mono">' + escapeHtml_(c.numero_serie) + '</td>' +
+      '<td>' + escapeHtml_(c.fabricante || '—') + '</td>' +
+      '<td>' + escapeHtml_(c.ente_acreditado || '—') + '</td>' +
+      '<td class="mono">' + fmtDate_(c.fecha_proxima_calibracion) + '</td>' +
+      '<td><span class="pill ' + calibracionEstadoPillClass_(c.estado) + '">' + escapeHtml_(c.estado) + '</span></td>' +
+      '<td>' + (canWrite || c.certificado_url ? actions : '') + '</td>' +
+      '</tr>';
+  }).join('');
+}
+
+function handleCreateCalibracionSubmit(e) {
+  e.preventDefault();
+  var status = document.getElementById('createCalibracionStatus');
+  var btn = document.getElementById('createCalibracionBtn');
+  var payload = {
+    modelo: document.getElementById('newCalModelo').value.trim(),
+    numero_serie: document.getElementById('newCalSerie').value.trim(),
+    fabricante: document.getElementById('newCalFabricante').value.trim(),
+    ente_acreditado: document.getElementById('newCalEnte').value.trim(),
+    fecha_ultima_calibracion: document.getElementById('newCalFechaUltima').value || null,
+    fecha_proxima_calibracion: document.getElementById('newCalFechaProxima').value
+  };
+
+  btn.disabled = true;
+  setStatus_(status, 'Guardando…', false);
+
+  var fileInput = document.getElementById('newCalFile');
+  (fileInput.files[0] ? readFileAsBase64_(fileInput) : Promise.resolve(null))
+    .then(function (file) {
+      if (file) { payload.file_base64 = file.base64; payload.file_mime_type = file.mimeType; }
+      return callApi('createCalibracion', 'POST', payload);
+    })
+    .then(function () {
+      setStatus_(status, 'Instrumento registrado', true);
+      document.getElementById('createCalibracionForm').reset();
+      loadCalibracionesAndRender_();
+    })
+    .catch(function (err) {
+      if (err.status !== 402 && err.status !== 403) setStatus_(status, formatNetworkAwareError_(err), false, true);
+    })
+    .then(function () { btn.disabled = false; });
+}
+
+function openEditCalibracionModal_(id) {
+  var c = state.calibraciones.filter(function (x) { return x.id === id; })[0];
+  if (!c) return;
+  state.currentCalibracionId = id;
+  document.getElementById('editCalModelo').value = c.modelo || '';
+  document.getElementById('editCalSerie').value = c.numero_serie || '';
+  document.getElementById('editCalFabricante').value = c.fabricante || '';
+  document.getElementById('editCalEnte').value = c.ente_acreditado || '';
+  document.getElementById('editCalFechaUltima').value = c.fecha_ultima_calibracion ? String(c.fecha_ultima_calibracion).slice(0, 10) : '';
+  document.getElementById('editCalFechaProxima').value = c.fecha_proxima_calibracion ? String(c.fecha_proxima_calibracion).slice(0, 10) : '';
+  setStatus_(document.getElementById('editCalibracionStatus'), '', false);
+  document.getElementById('editCalibracionModal').classList.add('open');
+  document.getElementById('editCalibracionModalBackdrop').classList.add('open');
+}
+
+function closeEditCalibracionModal_() {
+  document.getElementById('editCalibracionModal').classList.remove('open');
+  document.getElementById('editCalibracionModalBackdrop').classList.remove('open');
+}
+
+function ensureEditCalibracionModalWired_() {
+  var form = document.getElementById('editCalibracionForm');
+  if (form && !form.dataset.wired) {
+    form.dataset.wired = '1';
+    form.addEventListener('submit', handleEditCalibracionSubmit);
+  }
+}
+
+function handleEditCalibracionSubmit(e) {
+  e.preventDefault();
+  var id = state.currentCalibracionId;
+  var status = document.getElementById('editCalibracionStatus');
+  var payload = {
+    id: id,
+    modelo: document.getElementById('editCalModelo').value.trim(),
+    numero_serie: document.getElementById('editCalSerie').value.trim(),
+    fabricante: document.getElementById('editCalFabricante').value.trim(),
+    ente_acreditado: document.getElementById('editCalEnte').value.trim(),
+    fecha_ultima_calibracion: document.getElementById('editCalFechaUltima').value || null,
+    fecha_proxima_calibracion: document.getElementById('editCalFechaProxima').value
+  };
+
+  setStatus_(status, 'Guardando…', false);
+  var fileInput = document.getElementById('editCalFile');
+  (fileInput.files[0] ? readFileAsBase64_(fileInput) : Promise.resolve(null))
+    .then(function (file) {
+      if (file) { payload.file_base64 = file.base64; payload.file_mime_type = file.mimeType; }
+      return callApi('updateCalibracion', 'POST', payload);
+    })
+    .then(function () {
+      closeEditCalibracionModal_();
+      showToast_('Instrumento actualizado', 'success');
+      loadCalibracionesAndRender_();
+    })
+    .catch(function (err) {
+      if (err.status !== 402 && err.status !== 403) setStatus_(status, formatNetworkAwareError_(err), false, true);
+    });
+}
+
+function handleDeleteCalibracion_(id) {
+  var c = state.calibraciones.filter(function (x) { return x.id === id; })[0];
+  if (!c) return;
+  if (!confirm('¿Eliminar el instrumento "' + c.modelo + ' · ' + c.numero_serie + '"? Esta acción no se puede deshacer.')) return;
+  callApi('deleteCalibracion', 'POST', { id: id })
+    .then(function () { loadCalibracionesAndRender_(); showToast_('Instrumento eliminado', 'success'); })
+    .catch(function (err) {
+      if (err.status === 402 || err.status === 403) return;
+      alert('No se pudo eliminar: ' + err.message);
+    });
+}
+
+// ---------------------------------------------------------------
 // Comercial — Ofertas y Licitaciones
 //
 // RBAC: "Sin acceso" para Técnico — igual que Administración, ni el nav ni
@@ -2856,14 +3057,16 @@ function loadGeneralDashboardAndRender_() {
     callApi('listTransformers', 'GET', {}),
     callApi('listTests', 'GET', {}),
     callApi('listOfertas', 'GET', {}),
-    callApi('listDocuments', 'GET', {})
+    callApi('listDocuments', 'GET', {}),
+    callApi('listCalibraciones', 'GET', {})
   ]).then(function (results) {
     var sites = results[0] || [];
     var transformers = results[1] || [];
     var tests = results[2] || [];
     var ofertas = results[3] || [];
     var documents = results[4] || [];
-    renderGeneralKpis_(transformers, tests);
+    var calibraciones = results[5] || [];
+    renderGeneralKpis_(transformers, tests, calibraciones);
     renderGeneralComercialStats_(ofertas);
     renderGeneralTestsMonthlyTable_(tests);
     renderGeneralRecentDocuments_(documents, sites);
@@ -2874,17 +3077,19 @@ function loadGeneralDashboardAndRender_() {
   });
 }
 
-function renderGeneralKpis_(transformers, tests) {
+function renderGeneralKpis_(transformers, tests, calibraciones) {
   var row = document.getElementById('generalKpiRow');
   if (!row) return;
   var activeCount = transformers.filter(function (t) { return (t.estado_equipo || 'Activo') === 'Activo'; }).length;
   var monthPrefix = new Date().toISOString().slice(0, 7);
   var testsThisMonth = tests.filter(function (t) { return String(t.created_at || '').slice(0, 7) === monthPrefix; }).length;
+  var porVencer = calibraciones.filter(function (c) { return c.estado === 'Por vencer'; }).length;
+  var vencidos = calibraciones.filter(function (c) { return c.estado === 'Vencido'; }).length;
 
   row.innerHTML =
     '<div class="stat-card"><div class="label">Transformadores activos</div><div class="value num">' + activeCount + '</div><div class="delta">De ' + transformers.length + ' registrados en total</div></div>' +
     '<div class="stat-card"><div class="label">Pruebas del mes</div><div class="value num">' + testsThisMonth + '</div><div class="delta">TTR + Devanados + Aceite + Aislamiento, mes en curso</div></div>' +
-    '<div class="stat-card"><div class="label">Calibraciones</div><div class="value" style="font-size:15px;">Módulo pendiente</div><div class="delta">Sin catálogo de instrumentos construido todavía</div></div>';
+    '<div class="stat-card"><div class="label">Calibraciones</div><div class="value" style="font-size:15px;">' + porVencer + ' por vencer &middot; ' + vencidos + ' vencidos</div><div class="delta">De ' + calibraciones.length + ' instrumentos en el catálogo</div></div>';
 }
 
 function renderGeneralComercialStats_(ofertas) {
