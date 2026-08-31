@@ -1461,19 +1461,31 @@ propuestos — lo de arriba es solo el resumen de alcance, no el diseño final.
 
 Base de datos en vivo: **desde 2026-08-30 vive en la cuenta dedicada nueva**
 (ver "Infraestructura / cuentas" arriba), creada desde cero — no es la misma
-hoja de antes de la migración. Limpia de datos de prueba (última
-verificación 2026-08-30, migración + Comercial + Panel General/estado_equipo
-+ Calibraciones: Sitio + Transformador + prueba de Aislamiento con
-certificado real en Drive, varias Ofertas de prueba incluyendo el flujo de
-vincular-y-mover-adjunto, transformadores de prueba para verificar
-`estado_equipo`/el fix de conflicto de serie/los KPIs de Panel General, e
-instrumentos de prueba en los tres estados del semáforo de Calibraciones, y
-un Sitio + Transformador + instrumento vencido adicionales para verificar el
-cruce no bloqueante de `instrument_used` en los 3 formularios — todo lo
-creado durante esas verificaciones se borró al terminar, usando
+hoja de antes de la migración. Se mantuvo limpia de datos de prueba hasta
+2026-08-30 (verificaciones de migración + Comercial + Panel General/
+estado_equipo + Calibraciones + cruce no bloqueante de `instrument_used` —
+todo lo creado durante esas verificaciones se borró al terminar, usando
 `deleteOferta_`/`deleteTransformer_`/`deleteSite_`/`deleteCalibracion_`). La
 hoja/carpeta viejas (cuenta Arrieta Soluciones) ya estaban vacías desde la
 limpieza de 2026-08-29 y quedaron así, sin usarse desde la migración.
+
+**Contiene datos DEMO desde 2026-08-30 — no se limpian, quedan a propósito.**
+A diferencia de todo lo anterior en este archivo, este lote NO se borró al
+terminar: 4 Sitios, 6 Transformadores, 8 Pruebas (los 4 tipos, con veredictos
+mixtos a propósito), 3 Calibraciones (una en cada estado del semáforo), 4
+Ofertas (Pendiente, Aprobada, Rechazada, y una con `fecha_cierre` ya vencida
+para mostrar la transición derivada a Cierre) y 2 documentos subidos a mano.
+**Todo nombre de Cliente/Sitio lleva el prefijo `"DEMO - "`** (ej. "DEMO -
+Textiles del Norte SAS") y los NIT son de rango de prueba (900000001-4, DV
+calculado real por `normalizeNit_`) — para que nadie los confunda con un
+cliente real. Cubre a propósito: `estado_equipo` en los 3 valores, un
+`vector_group` Dyn (factor √3 correcto en TTR) y otro vacío (advertencia "no
+confiable" activa), `numero_posiciones_tap` diligenciado en unos equipos y
+vacío en otros (default 5), e instrumentos de Calibraciones usados como
+`instrument_used` real en las pruebas (incluido el vencido, para la
+advertencia no bloqueante). Antes de agregar o quitar cualquier registro con
+prefijo `DEMO -`, ten esto en cuenta — no es basura de verificación, es el
+contenido que puebla el Panel General.
 
 **Cuentas de prueba (rol Técnico)** — no hay acción `deleteUser` en Control
 de Acceso, así que ninguna de estas se puede borrar:
