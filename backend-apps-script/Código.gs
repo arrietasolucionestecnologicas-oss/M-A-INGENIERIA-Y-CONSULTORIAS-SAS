@@ -99,7 +99,7 @@ var HEADERS = {
     'tap_config_json', 'is_special_design', 'custom_tap_ratio_matrix_json',
     'estado_equipo', 'plate_photo_file_id', 'created_at', 'updated_at',
     'cooling_type', 'impedance_percent', 'insulation_type',
-    'numero_posiciones_tap', 'electrical_report_file_id'
+    'numero_posiciones_tap', 'electrical_report_file_id', 'posicion_tap_nominal'
   ],
   PRUEBAS: [
     'id', 'transformer_id', 'test_type', 'raw_readings_json',
@@ -567,6 +567,7 @@ function transformerRowToJson_(row) {
     impedance_percent: row.impedance_percent,
     insulation_type: row.insulation_type || '',
     numero_posiciones_tap: row.numero_posiciones_tap || null,
+    posicion_tap_nominal: row.posicion_tap_nominal || null,
     electrical_report_url: row.electrical_report_file_id ? driveFileUrl_(row.electrical_report_file_id) : null,
     created_at: row.created_at,
     updated_at: row.updated_at
@@ -617,7 +618,8 @@ function createTransformer_(params) {
       cooling_type: params.cooling_type || '',
       impedance_percent: params.impedance_percent || '',
       insulation_type: params.insulation_type || '',
-      numero_posiciones_tap: params.numero_posiciones_tap || ''
+      numero_posiciones_tap: params.numero_posiciones_tap || '',
+      posicion_tap_nominal: params.posicion_tap_nominal || ''
     });
 
     return jsonResponse_({ status: 201, message: 'Transformador creado', data: { id: id } });
@@ -635,7 +637,7 @@ function updateTransformer_(params) {
     var updates = {};
     ['serial_number', 'manufacturer', 'manufacture_year', 'phase_type', 'vector_group', 'rated_power_kva',
       'hv_nominal_voltage', 'lv_nominal_voltage', 'site_id',
-      'cooling_type', 'impedance_percent', 'insulation_type', 'numero_posiciones_tap'].forEach(function (field) {
+      'cooling_type', 'impedance_percent', 'insulation_type', 'numero_posiciones_tap', 'posicion_tap_nominal'].forEach(function (field) {
       if (params[field] !== undefined) updates[field] = params[field];
     });
     if (params.estado_equipo !== undefined) {

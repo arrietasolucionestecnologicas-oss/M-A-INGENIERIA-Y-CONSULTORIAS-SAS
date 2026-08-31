@@ -517,6 +517,8 @@ table.matrix-table input:disabled { background: var(--surface-alt); color: var(-
   transition: transform 0.15s ease-out, opacity 0.15s ease-out;
 }
 .modal.open { display: block; transform: translate(-50%, -50%) scale(1); opacity: 1; }
+.modal.modal-wide { max-width: 640px; }
+.modal-body table th, .modal-body table td { font-size: 12.5px; }
 .modal-head {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
   padding: 16px 18px; border-bottom: 1px solid var(--border);

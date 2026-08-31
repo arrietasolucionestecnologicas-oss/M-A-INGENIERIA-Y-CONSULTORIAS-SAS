@@ -272,6 +272,11 @@
           <input class="mono" id="editTrfTapPositions" type="text" inputmode="numeric" pattern="[0-9]*" placeholder="5 (por defecto)">
           <div class="field-note">Vacío = se mantiene el valor actual del equipo (5 por defecto). Cambiarlo aquí regenera las posiciones de TAP; si el equipo tiene una matriz personalizada, revísala después.</div>
         </div>
+        <div class="field">
+          <label>Posici&oacute;n del TAP nominal</label>
+          <input class="mono" id="editTrfPosTapNominal" type="text" inputmode="numeric" pattern="[0-9]*" placeholder="posición central (por defecto)">
+          <div class="field-note">Vacío = se asume la posición central (comportamiento de siempre). Diligéncialo solo si el fabricante marca el nominal en otra posición — cambiarlo aquí también regenera las posiciones de TAP.</div>
+        </div>
         <button class="btn primary" type="submit" style="width:100%;">Guardar cambios</button>
         <span class="status-line" id="editTransformerStatus" hidden></span>
       </form>
@@ -373,6 +378,10 @@
                 <input class="mono" id="newTrfTapPositions" type="text" inputmode="numeric" pattern="[0-9]*" placeholder="5 (por defecto)">
               </div>
               <div class="field" style="min-width:170px;">
+                <label>Posici&oacute;n del TAP nominal</label>
+                <input class="mono" id="newTrfPosTapNominal" type="text" inputmode="numeric" pattern="[0-9]*" placeholder="posición central (por defecto)">
+              </div>
+              <div class="field" style="min-width:170px;">
                 <label>Foto de la placa</label>
                 <input id="newTrfPlatePhoto" type="file" accept="image/*" capture="environment">
               </div>
@@ -453,6 +462,16 @@
         </div>
       </div>
     </section>
+
+    <!-- ============ DETALLE DE PRUEBA (modal de solo lectura) ============ -->
+    <div class="modal-backdrop" id="testDetailModalBackdrop" onclick="closeTestDetailModal_()"></div>
+    <div class="modal modal-wide" id="testDetailModal" role="dialog" aria-modal="true" aria-labelledby="testDetailModalTitle">
+      <div class="modal-head">
+        <h3 id="testDetailModalTitle">Detalle de la prueba</h3>
+        <button type="button" class="modal-close" onclick="closeTestDetailModal_()" aria-label="Cerrar">&times;</button>
+      </div>
+      <div class="modal-body" id="testDetailModalBody"></div>
+    </div>
 
     <!-- ============ TTR FORM (editable) ============ -->
     <section id="view-ttr-form" hidden>

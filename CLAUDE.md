@@ -318,6 +318,125 @@ confirmado antes de tocar nada que ninguno de los dos depende de
 puro; Aislamiento es DAR/IP por cociente de tiempos), así que este bug no
 les aplica.
 
+### TTR — posición del TAP nominal, ya no asumida siempre central
+
+**Corregido (2026-08-31).** `buildDefaultTapPositions_()` (única función que
+calcula el voltaje por posición de TAP — ver más abajo por qué
+`calculateTtr_` y `computeStandardTtrTheoretical_` **no** necesitaron
+cambios) siempre asumía que el TAP nominal está en la posición central
+(`neutral = Math.ceil(n/2)`). Eso está mal en general: el fabricante puede
+marcar el nominal en cualquier posición, no necesariamente la central.
+
+Campo nuevo de placa, **`posicion_tap_nominal`** (entero, 1 a
+`numero_posiciones_tap`, opcional, mismo criterio que el resto de
+características de placa) — columna nueva al final de
+`HEADERS.TRANSFORMADORES`, formularios de creación/edición de equipo
+(`newTrfPosTapNominal`/`editTrfPosTapNominal` en `index.html`), passthrough
+simple en `createTransformer_`/`updateTransformer_`/`transformerRowToJson_`
+en `Código.gs` (sin lógica nueva ahí — ver por qué abajo).
+
+`buildDefaultTapPositions_(nominalVoltage, numPositions, nominalPosition)`
+ahora acepta un tercer parámetro opcional: `neutral = nominalPosition` si
+viene un valor válido (1..n), si no cae al comportamiento histórico
+(`Math.ceil(n/2)`) — **equipos ya creados, incluida la base DEMO, no
+cambian de comportamiento** porque nunca tienen este campo diligenciado.
+Fórmula (reescrita, algebraicamente idéntica a la vieja cuando
+`nominalPosition` es la central):
+
+```js
+voltage(p) = Math.round(nominalVoltage * (1 + (neutral - p) * step / 100))
+```
+
+**Por qué `calculateTtr_` (backend) y `computeStandardTtrTheoretical_`
+(vista previa del frontend) no necesitaron ningún cambio**: ninguno de los
+dos recalcula el voltaje por TAP — los dos solo **leen**
+`tap_config.positions[].voltage`, un valor ya calculado y persistido en el
+momento de crear/editar el equipo. La fórmula de posición-a-voltaje vive
+**únicamente** en `buildDefaultTapPositions_`, en los 3 call sites que la
+invocan (`handleCreateTransformerSubmit`, y dos veces en
+`handleEditTransformerSubmit` — al regenerar por cambio de
+`numero_posiciones_tap` y/o de `posicion_tap_nominal`). Esto es distinto
+del caso anterior (factor √3 de `vector_group`), que sí estaba duplicado a
+propósito en backend y frontend porque ambos lo recalculan de forma
+independiente — aquí no hay duplicación que sincronizar porque solo hay un
+lugar que calcula.
+
+Editar `posicion_tap_nominal` en un equipo existente **regenera**
+`tap_config.positions` igual que editar `numero_posiciones_tap` (mismo
+criterio: vacío en el formulario = se mantiene el valor actual del equipo,
+tocar cualquiera de los dos dispara la regeneración, tomando el valor
+actual del otro si no se diligenció). El detalle del equipo
+(`renderDetail()`) muestra la celda "Posición TAP nominal" con el valor
+diligenciado o `"Central (N)"` si no hay ninguno.
+
+Verificado en vivo (caso del propio pedido): equipo con 13200V, 5
+posiciones, `posicion_tap_nominal=2` → `tap_config.positions` guardado
+resultó exactamente `[13530, 13200, 12870, 12540, 12210]` para las
+posiciones 1-5. TTR enviado en TAP 2 → `appliedTheoreticalRatio` calculado
+por el backend usó `tapVoltage: 13200` (no 13530, que habría sido el
+resultado con el bug viejo interpretando la posición 2 como no-central).
+TAP 1 en el mismo equipo → `tapVoltage: 13530`, confirma que no es
+simplemente "siempre lee la posición central" sino que cada posición
+calcula su propio voltaje correctamente. Confirmado también desde la vista
+previa del frontend (modal de detalle de prueba, ver abajo): TAP 1 muestra
+teórico 30.7500, TAP 2 muestra 30.0000 — coincide exactamente con lo que
+guardó el backend.
+
+### Detalle de prueba — vista de solo lectura de los datos crudos registrados
+
+**Investigado antes de construir, como pidió el usuario.** Antes de este
+cambio, `renderDetail()` no tenía ningún manejador de clic en las filas del
+historial de pruebas (`<tr>` planas, sin `onclick`) — la única forma de ver
+las mediciones de una prueba pasada era descargando el PDF (o, para
+TTR/Devanados/Aislamiento, ni siquiera eso: el PDF combinado solo muestra
+el resultado **más reciente** de cada tipo, así que una prueba vieja
+reemplazada no tenía ninguna forma de consultarse desde la UI). Los datos
+crudos (`raw_readings`/`calculated_results`) **ya estaban cargados en el
+cliente** — `openTransformer()` llama `listTests` sin `light`, así que
+`state.currentTests[].raw_readings`/`.calculated_results` siempre tuvieron
+todo el detalle, solo nunca se renderizaba en ningún lado.
+
+Construido: modal de solo lectura (`#testDetailModal`, clase nueva
+`.modal-wide` — 640px en vez de los 420px del resto de modales, para que
+quepan las tablas de resultados sin apretarse) que se abre al hacer clic en
+cualquier fila del historial (`class="rowlink" onclick="openTestDetail_(...)"`,
+mismo patrón que ya usaba la lista de Equipos — los links de
+"Informe"/"Evidencia" dentro de la fila llevan
+`onclick="event.stopPropagation()"` para no disparar el modal al hacer clic
+en ellos). **No hace falta ninguna llamada nueva al backend** — el modal
+lee directo de `state.currentTests`, ya en memoria.
+
+Cuatro renderers (`renderTtrTestDetail_`/`renderWindingTestDetail_`/
+`renderInsulationTestDetail_`/`renderOilTestDetail_`), uno por tipo de
+prueba, cada uno mostrando exactamente los mismos datos que su tabla
+correspondiente en el PDF (mismas columnas, mismo criterio de veredicto vía
+`verdictPillClass_`/`verdictBannerClass_` nueva — mismo mapeo de severidad
+que ya usaban los pills, ahora reusado también para el modificador de
+`.verdict-banner`). TTR también muestra la misma advertencia de
+teórico-no-disponible/no-confiable que ya tiene la vista previa de envío
+(mismo texto, mismo criterio de flags).
+
+**Bug real encontrado construyendo esto**: `fmtDate_()` en `app.js` hacía
+`new Date(iso)` sin distinguir fecha pura de timestamp completo — el mismo
+gotcha de timezone ya documentado y corregido en el backend
+(`fmtDatePdf_`), pero nunca aplicado en el frontend porque hasta ahora
+`fmtDate_` solo recibía `created_at` (timestamp ISO completo, no afectado).
+El modal de Aceite es el primer lugar que le pasa `sample_date` (fecha pura
+`YYYY-MM-DD` de un `<input type="date">`) — "2026-08-20" se mostraba como
+"20 de ago" en la vista previa que hice pero **"19 de ago" en el modal
+real**, confirmando el bug en vivo antes de corregirlo. Corregido con el
+mismo criterio que `fmtDatePdf_`: fecha pura se construye con
+`new Date(año, mes-1, día)` (timezone local del navegador) en vez de
+`new Date(iso)` (UTC). Verificado en vivo tras el fix: el mismo dato ahora
+muestra "20 de ago de 2026", correcto.
+
+Verificado en vivo los 4 tipos con datos reales de la base DEMO: TTR (con
+la advertencia de grupo de conexión visible), Resistencia de Devanados
+(primario + secundario), Resistencia de Aislamiento (3 combinaciones,
+DAR/IP), Aceite Dieléctrico (Fisicoquímico con los 7 valores + veredicto) —
+los 4 renderizaron los datos correctos, coincidiendo con lo que se guardó
+al enviar cada prueba.
+
 ### Resistencia de devanados — primario (multi-TAP) + secundario
 
 **Corregido — auditoría IEEE C57.12.90.** El formulario ya soportaba varios

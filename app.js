@@ -195,10 +195,41 @@ function escapeHtml_(s) {
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+/** Mismo cuidado que fmtDatePdf_ en Código.gs: una fecha pura "YYYY-MM-DD"
+ *  (ej. sample_date de un <input type="date">, sin componente de hora) se
+ *  construye con new Date(año, mes-1, día) — en el timezone local del
+ *  navegador, no UTC — porque new Date("2026-08-20") interpreta esa cadena
+ *  como medianoche UTC y se corre un día atrás al mostrarla en un huso
+ *  detrás de UTC (Bogotá, UTC-5). Un ISO completo con hora (created_at) o
+ *  un Date real siguen su camino normal, sin este caso especial. Bug real
+ *  encontrado al construir el modal de detalle de prueba — hasta ahora
+ *  fmtDate_ nunca había recibido una fecha pura, solo timestamps
+ *  completos, así que nadie lo había notado. */
 function fmtDate_(iso) {
   if (!iso) return '—';
-  var d = new Date(iso);
+  var d;
+  if (typeof iso === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(iso)) {
+    var parts = iso.split('-');
+    d = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+  } else {
+    d = new Date(iso);
+  }
   return isNaN(d.getTime()) ? iso : d.toLocaleDateString('es-CO', { year: 'numeric', month: 'short', day: 'numeric' });
+}
+
+/** Réplica de numOrDash_ en Código.gs — mismo criterio para mostrar datos
+ *  crudos de una prueba en el modal de detalle que en el PDF: un número
+ *  real se muestra tal cual, cualquier otra cosa (null/undefined/NaN) es "—". */
+function numOrDash_(v) {
+  return (typeof v === 'number' && !isNaN(v)) ? v : '—';
+}
+
+/** Mismo mapeo de severidad que verdictPillClass_, pero como modificador de
+ *  `.verdict-banner` en vez de `.pill` — reusado por el modal de detalle de
+ *  prueba para los 4 tipos. */
+function verdictBannerClass_(verdict) {
+  var cls = verdictPillClass_(verdict);
+  return 'verdict-banner' + (cls !== 'neutral' ? ' ' + cls : '');
 }
 
 function verdictPillClass_(verdict) {
@@ -899,6 +930,9 @@ function handleCreateTransformerSubmit(e) {
 
   var nominalForTaps = isNaN(hv) ? 0 : hv;
   var effectiveTapCount = tapPositionsCount || 5;
+  var posTapNominalRaw = document.getElementById('newTrfPosTapNominal').value.trim();
+  var posTapNominal = posTapNominalRaw ? parseInt(posTapNominalRaw, 10) : null;
+  if (posTapNominal !== null && (isNaN(posTapNominal) || posTapNominal < 1 || posTapNominal > effectiveTapCount)) posTapNominal = null;
 
   // La deduplicación por serial se queda síncrona/bloqueante (lectura rápida y
   // crítica para la integridad de datos); solo el POST de creación pasa a
@@ -935,13 +969,14 @@ function handleCreateTransformerSubmit(e) {
         impedance_percent: isNaN(impedance) ? null : impedance,
         insulation_type: insulation,
         numero_posiciones_tap: tapPositionsCount,
+        posicion_tap_nominal: posTapNominal,
         is_special_design: false,
         tap_config: {
           nominalVoltage: nominalForTaps,
           stepPercentage: 2.5,
           numPositions: effectiveTapCount,
-          neutralPosition: Math.ceil(effectiveTapCount / 2),
-          positions: buildDefaultTapPositions_(nominalForTaps, effectiveTapCount)
+          neutralPosition: posTapNominal || Math.ceil(effectiveTapCount / 2),
+          positions: buildDefaultTapPositions_(nominalForTaps, effectiveTapCount, posTapNominal)
         },
         file_base64: photo ? photo.base64 : null,
         file_mime_type: photo ? photo.mimeType : null
@@ -1048,6 +1083,7 @@ function openEditTransformerModal_() {
   document.getElementById('editTrfInsulation').value = t.insulation_type || '';
   document.getElementById('editTrfYear').value = t.manufacture_year || '';
   document.getElementById('editTrfTapPositions').value = t.numero_posiciones_tap || '';
+  document.getElementById('editTrfPosTapNominal').value = t.posicion_tap_nominal || '';
   setStatus_(document.getElementById('editTransformerStatus'), '', false);
   document.getElementById('editTransformerModal').classList.add('open');
   document.getElementById('editTransformerModalBackdrop').classList.add('open');
@@ -1085,23 +1121,32 @@ function handleEditTransformerSubmit(e) {
     manufacture_year: year || null
   };
 
-  // El número de posiciones de TAP solo se toca si el técnico lo diligenció;
-  // vacío = se mantiene el tap_config actual del equipo tal cual (no rompe
-  // equipos ya creados ni sus TAPs ya registrados en pruebas anteriores).
+  // El número de posiciones de TAP y la posición del TAP nominal solo se
+  // tocan si el técnico diligenció al menos uno de los dos; vacíos = se
+  // mantiene el tap_config actual del equipo tal cual (no rompe equipos ya
+  // creados ni sus TAPs ya registrados en pruebas anteriores). Si solo se
+  // diligencia uno de los dos, el otro se toma del equipo actual.
   var tapPositionsRaw = document.getElementById('editTrfTapPositions').value.trim();
-  if (tapPositionsRaw) {
-    var tapPositionsCount = parseInt(tapPositionsRaw, 10);
-    if (!isNaN(tapPositionsCount) && tapPositionsCount > 0) {
-      var currentCfg = (state.currentTransformer && state.currentTransformer.tap_config) || {};
-      payload.numero_posiciones_tap = tapPositionsCount;
-      payload.tap_config = {
-        nominalVoltage: currentCfg.nominalVoltage || 0,
-        stepPercentage: currentCfg.stepPercentage || 2.5,
-        numPositions: tapPositionsCount,
-        neutralPosition: Math.ceil(tapPositionsCount / 2),
-        positions: buildDefaultTapPositions_(currentCfg.nominalVoltage || 0, tapPositionsCount)
-      };
-    }
+  var tapPositionsCount = tapPositionsRaw ? parseInt(tapPositionsRaw, 10) : null;
+  if (tapPositionsCount !== null && (isNaN(tapPositionsCount) || tapPositionsCount < 1)) tapPositionsCount = null;
+  var posTapNominalRaw = document.getElementById('editTrfPosTapNominal').value.trim();
+  var posTapNominalInput = posTapNominalRaw ? parseInt(posTapNominalRaw, 10) : null;
+  if (posTapNominalInput !== null && (isNaN(posTapNominalInput) || posTapNominalInput < 1)) posTapNominalInput = null;
+
+  if (tapPositionsCount || posTapNominalInput) {
+    var currentCfg = (state.currentTransformer && state.currentTransformer.tap_config) || {};
+    var effectiveCount = tapPositionsCount || currentCfg.numPositions || 5;
+    var effectiveNominal = posTapNominalInput || (state.currentTransformer && state.currentTransformer.posicion_tap_nominal) || null;
+    if (effectiveNominal && effectiveNominal > effectiveCount) effectiveNominal = null;
+    if (tapPositionsCount) payload.numero_posiciones_tap = tapPositionsCount;
+    if (posTapNominalInput) payload.posicion_tap_nominal = posTapNominalInput;
+    payload.tap_config = {
+      nominalVoltage: currentCfg.nominalVoltage || 0,
+      stepPercentage: currentCfg.stepPercentage || 2.5,
+      numPositions: effectiveCount,
+      neutralPosition: effectiveNominal || Math.ceil(effectiveCount / 2),
+      positions: buildDefaultTapPositions_(currentCfg.nominalVoltage || 0, effectiveCount, effectiveNominal)
+    };
   }
 
   // Local-first: se refleja el cambio de inmediato tanto en el detalle como en la
@@ -1140,12 +1185,20 @@ function handleEditTransformerSubmit(e) {
 
 /** Genera las posiciones del cambiador de tomas. `numPositions` viene del
  *  campo de placa `numero_posiciones_tap` cuando el técnico lo diligencia —
- *  si no, se mantiene el default histórico de 5. La posición neutra se
- *  calcula como la del medio (no asume que siempre son 5). */
-function buildDefaultTapPositions_(nominalVoltage, numPositions) {
-  var step = 2.5, n = numPositions > 0 ? numPositions : 5, neutral = Math.ceil(n / 2), positions = [];
+ *  si no, se mantiene el default histórico de 5. `nominalPosition` viene de
+ *  `posicion_tap_nominal` (placa) — el fabricante puede marcar el TAP
+ *  nominal en cualquier posición, no necesariamente la central; si no se
+ *  diligencia, se asume la posición central (comportamiento histórico, no
+ *  rompe equipos ya creados). Fórmula: voltaje(p) = nominal × (1 + (posición
+ *  nominal − p) × 0.025) — equivalente algebraicamente a la fórmula vieja
+ *  cuando `nominalPosition` es la central, solo reescrita para permitir que
+ *  el nominal esté en cualquier posición. */
+function buildDefaultTapPositions_(nominalVoltage, numPositions, nominalPosition) {
+  var step = 2.5, n = numPositions > 0 ? numPositions : 5;
+  var neutral = (nominalPosition >= 1 && nominalPosition <= n) ? nominalPosition : Math.ceil(n / 2);
+  var positions = [];
   for (var p = 1; p <= n; p++) {
-    positions.push({ position: p, voltage: Math.round(nominalVoltage * (1 - (p - neutral) * step / 100)) });
+    positions.push({ position: p, voltage: Math.round(nominalVoltage * (1 + (neutral - p) * step / 100)) });
   }
   return positions;
 }
@@ -1516,6 +1569,7 @@ function renderDetail() {
     ['Impedancia', t.impedance_percent ? (t.impedance_percent + ' %') : '—'],
     ['Tipo de aislamiento', escapeHtml_(t.insulation_type || '—')],
     ['TAPs configurados', (cfg.positions || []).length],
+    ['Posición TAP nominal', t.posicion_tap_nominal || ('Central (' + (cfg.neutralPosition || '—') + ')')],
     ['Paso por TAP', cfg.stepPercentage != null ? (cfg.stepPercentage + ' %') : '—'],
     ['Foto de placa', t.plate_photo_url ? ('<a href="' + t.plate_photo_url + '" target="_blank" rel="noopener">Ver foto</a>') : '—']
   ].map(function (pair) {
@@ -1530,9 +1584,9 @@ function renderDetail() {
   } else {
     histBody.innerHTML = state.currentTests.slice().reverse().map(function (test) {
       var links = [];
-      if (test.report_url) links.push('<a href="' + test.report_url + '" target="_blank" rel="noopener">Informe</a>');
-      if (test.attachment_url) links.push('<a href="' + test.attachment_url + '" target="_blank" rel="noopener">Evidencia</a>');
-      return '<tr>' +
+      if (test.report_url) links.push('<a href="' + test.report_url + '" target="_blank" rel="noopener" onclick="event.stopPropagation()">Informe</a>');
+      if (test.attachment_url) links.push('<a href="' + test.attachment_url + '" target="_blank" rel="noopener" onclick="event.stopPropagation()">Evidencia</a>');
+      return '<tr class="rowlink" onclick="openTestDetail_(\'' + test.id + '\')">' +
         '<td>' + fmtDate_(test.created_at) + '</td>' +
         '<td>' + escapeHtml_(test.test_type) + '</td>' +
         '<td>' + escapeHtml_(test.instrument_used || '—') + '</td>' +
@@ -1542,6 +1596,152 @@ function renderDetail() {
         '</tr>';
     }).join('');
   }
+}
+
+// ---------------------------------------------------------------
+// Detalle de prueba (modal de solo lectura) — mismos datos crudos que
+// van al PDF (raw_readings/calculated_results), ya cargados en
+// state.currentTests desde openTransformer (listTests sin `light`) —
+// no hace falta ninguna llamada nueva al backend para esto.
+// ---------------------------------------------------------------
+
+var TEST_TYPE_LABELS_FRONT_ = {
+  TTR: 'TTR', RESISTENCIA_DEVANADOS: 'Resistencia de Devanados',
+  AISLAMIENTO: 'Resistencia de Aislamiento', ACEITE_DIELECTRICO: 'Aceite Dieléctrico'
+};
+
+function openTestDetail_(testId) {
+  var test = state.currentTests.filter(function (t) { return t.id === testId; })[0];
+  if (!test) return;
+  document.getElementById('testDetailModalTitle').textContent =
+    (TEST_TYPE_LABELS_FRONT_[test.test_type] || test.test_type) + ' · ' + fmtDate_(test.created_at);
+  document.getElementById('testDetailModalBody').innerHTML = renderTestDetailBody_(test);
+  document.getElementById('testDetailModal').classList.add('open');
+  document.getElementById('testDetailModalBackdrop').classList.add('open');
+}
+
+function closeTestDetailModal_() {
+  document.getElementById('testDetailModal').classList.remove('open');
+  document.getElementById('testDetailModalBackdrop').classList.remove('open');
+}
+
+function renderTestDetailBody_(test) {
+  var meta = '<div class="field-note">Técnico: ' + escapeHtml_(test.tested_by || '—') +
+    ' &middot; Instrumento: ' + escapeHtml_(test.instrument_used || '—') + '</div>';
+  var body;
+  if (test.test_type === 'TTR') body = renderTtrTestDetail_(test);
+  else if (test.test_type === 'RESISTENCIA_DEVANADOS') body = renderWindingTestDetail_(test);
+  else if (test.test_type === 'AISLAMIENTO') body = renderInsulationTestDetail_(test);
+  else if (test.test_type === 'ACEITE_DIELECTRICO') body = renderOilTestDetail_(test);
+  else body = '<pre style="white-space:pre-wrap; font-size:11px;">' + escapeHtml_(JSON.stringify({ raw_readings: test.raw_readings, calculated_results: test.calculated_results }, null, 2)) + '</pre>';
+  return meta + body;
+}
+
+function renderTtrTestDetail_(test) {
+  var raw = test.raw_readings || {};
+  var calc = test.calculated_results || {};
+  var rows = [];
+  Object.keys(calc.taps || {}).map(Number).sort(function (a, b) { return a - b; }).forEach(function (tapNum) {
+    var tap = calc.taps[String(tapNum)];
+    Object.keys(tap.phases).forEach(function (phaseKey) {
+      var p = tap.phases[phaseKey];
+      rows.push('<tr><td>' + tapNum + '</td><td class="mono">' + escapeHtml_(phaseKey) + '</td>' +
+        '<td class="mono">' + (p.measuredRatio != null ? p.measuredRatio.toFixed(4) : '—') + '</td>' +
+        '<td class="mono">' + (p.appliedTheoreticalRatio != null ? p.appliedTheoreticalRatio.toFixed(4) : '—') + '</td>' +
+        '<td class="mono">' + (p.errorPercent != null ? p.errorPercent.toFixed(2) + ' %' : '—') + '</td>' +
+        '<td><span class="pill ' + verdictPillClass_(p.status) + '">' + escapeHtml_(p.status) + '</span></td></tr>');
+    });
+  });
+  var warn = '';
+  if (calc.theoreticalAvailable === false) {
+    warn = '<div class="field-note" style="color:var(--warning-text);">Teórico no disponible — falta voltaje nominal de placa.</div>';
+  } else if (calc.theoreticalReliable === false) {
+    warn = '<div class="field-note" style="color:var(--warning-text);">&#9888; Grupo de conexión no registrado en placa — teórico sin factor de relación trifásica, puede ser impreciso.</div>';
+  }
+  return '<div class="field-note">Tensión de prueba: ' + (raw.testVoltageV != null ? raw.testVoltageV + ' V' : '—') + '</div>' +
+    warn +
+    '<div style="overflow-x:auto;"><table><thead><tr><th>TAP</th><th>Fase</th><th>Medida</th><th>Teórica</th><th>Error %</th><th>Estado</th></tr></thead><tbody>' + rows.join('') + '</tbody></table></div>' +
+    '<div class="' + verdictBannerClass_(calc.overallVerdict) + '">Veredicto: ' + escapeHtml_(calc.overallVerdict) + '</div>';
+}
+
+function renderWindingTestDetail_(test) {
+  var calc = test.calculated_results || {};
+  function phaseRows(phases) {
+    return Object.keys(phases).map(function (k) {
+      var p = phases[k];
+      return '<tr><td class="mono">' + escapeHtml_(k) + '</td><td class="mono">' + p.resistanceOhm.toFixed(4) + '</td>' +
+        '<td class="mono">' + (p.deviationFromAvgPercent != null ? (p.deviationFromAvgPercent >= 0 ? '+' : '') + p.deviationFromAvgPercent.toFixed(2) + ' %' : '—') + '</td>' +
+        '<td><span class="pill ' + verdictPillClass_(p.status) + '">' + escapeHtml_(p.status) + '</span></td></tr>';
+    }).join('');
+  }
+  var html = '';
+  (calc.taps || []).forEach(function (tap) {
+    html += '<div class="field-note" style="font-weight:600;">Primario — TAP ' + tap.tapPosition + ' &middot; ' + tap.windingTemperatureC + '°C &middot; promedio ' + tap.averageResistanceOhm.toFixed(4) + ' &Omega;</div>' +
+      '<div style="overflow-x:auto;"><table><thead><tr><th>Fase</th><th>Resistencia (&Omega;)</th><th>Desviación</th><th>Estado</th></tr></thead><tbody>' + phaseRows(tap.phases) + '</tbody></table></div>';
+  });
+  if (calc.secondary) {
+    html += '<div class="field-note" style="font-weight:600;">Secundario &middot; ' + calc.secondary.windingTemperatureC + '°C &middot; promedio ' + calc.secondary.averageResistanceOhm.toFixed(4) + ' &Omega;</div>' +
+      '<div style="overflow-x:auto;"><table><thead><tr><th>Fase</th><th>Resistencia (&Omega;)</th><th>Desviación</th><th>Estado</th></tr></thead><tbody>' + phaseRows(calc.secondary.phases) + '</tbody></table></div>';
+  }
+  html += '<div class="' + verdictBannerClass_(calc.overallVerdict) + '">Veredicto: ' + escapeHtml_(calc.overallVerdict) + '</div>';
+  return html;
+}
+
+function renderInsulationTestDetail_(test) {
+  var raw = test.raw_readings || {};
+  var calc = test.calculated_results || {};
+  var rows = Object.keys(calc.measurements || {}).map(function (key) {
+    var m = calc.measurements[key];
+    var r = (raw.measurements && raw.measurements[key]) || {};
+    return '<tr><td>' + escapeHtml_(key) + '</td>' +
+      '<td class="mono">' + numOrDash_(r.r30sMegaohm) + '</td>' +
+      '<td class="mono">' + numOrDash_(r.r60sMegaohm) + '</td>' +
+      '<td class="mono">' + numOrDash_(r.r10minMegaohm) + '</td>' +
+      '<td class="mono">' + m.dar.toFixed(2) + ' (' + m.darRating + ')</td>' +
+      '<td class="mono">' + m.ip.toFixed(2) + ' (' + m.ipRating + ')</td></tr>';
+  }).join('');
+  return '<div class="field-note">Temperatura de devanado: ' + (raw.windingTemperatureC != null ? raw.windingTemperatureC + '°C' : '—') + '</div>' +
+    '<div style="overflow-x:auto;"><table><thead><tr><th>Combinación</th><th>R30s (M&Omega;)</th><th>R60s (M&Omega;)</th><th>R10min (M&Omega;)</th><th>DAR</th><th>IP</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+    '<div class="' + verdictBannerClass_(calc.overallVerdict) + '">Veredicto: ' + escapeHtml_(calc.overallVerdict) + '</div>';
+}
+
+function renderOilTestDetail_(test) {
+  var raw = test.raw_readings || {};
+  var calc = test.calculated_results || {};
+  var html = '<div class="field-note">Muestra tomada por: ' + escapeHtml_(raw.sample_taken_by || '—') +
+    ' &middot; Fecha de muestreo: ' + (raw.sample_date ? fmtDate_(raw.sample_date) : '—') + '</div>';
+  var sections = calc.sections || {};
+  if (sections.fisicoquimico) {
+    html += '<div class="field-note" style="font-weight:600;">Fisicoquímico</div>' +
+      '<div style="overflow-x:auto;"><table><tbody>' +
+      '<tr><td>Agua (ppm)</td><td class="mono">' + numOrDash_(raw.agua_ppm) + '</td></tr>' +
+      '<tr><td>Rigidez dieléctrica (kV)</td><td class="mono">' + numOrDash_(raw.rigidez_dielectrica_kv) + '</td></tr>' +
+      '<tr><td>Tensión interfacial (dinas/cm)</td><td class="mono">' + numOrDash_(raw.tension_interfacial_dinas_cm) + '</td></tr>' +
+      '<tr><td>Número ácido (mg KOH/g)</td><td class="mono">' + numOrDash_(raw.numero_acido_mg_koh_g) + '</td></tr>' +
+      '<tr><td>Densidad relativa</td><td class="mono">' + numOrDash_(raw.densidad_relativa) + '</td></tr>' +
+      '<tr><td>Color ASTM</td><td>' + escapeHtml_(raw.color_astm || '—') + '</td></tr>' +
+      '<tr><td>Examen visual</td><td>' + escapeHtml_(raw.examen_visual || '—') + '</td></tr>' +
+      '</tbody></table></div>' +
+      '<div class="' + verdictBannerClass_(sections.fisicoquimico.verdict) + '">Fisicoquímico: ' + escapeHtml_(sections.fisicoquimico.verdict) + '</div>';
+  }
+  if (sections.dga) {
+    html += '<div class="field-note" style="font-weight:600;">Cromatografía de Gases Disueltos (DGA)</div>' +
+      '<div style="overflow-x:auto;"><table><tbody>' +
+      OIL_DGA_GASES.map(function (g) { return '<tr><td>' + escapeHtml_(g.label) + '</td><td class="mono">' + numOrDash_(raw[g.key]) + ' ppm</td></tr>'; }).join('') +
+      '</tbody></table></div>';
+  }
+  if (sections.pcb) {
+    html += '<div class="field-note" style="font-weight:600;">Cromatografía de PCB</div>' +
+      '<div style="overflow-x:auto;"><table><tbody>' +
+      OIL_PCB_AROCLORES.map(function (k) { return '<tr><td>' + k.replace('aroclor_', 'Aroclor ') + '</td><td class="mono">' + numOrDash_(raw[k]) + ' ppm</td></tr>'; }).join('') +
+      '<tr><td>Total PCB</td><td class="mono">' + sections.pcb.totalPcbPpm.toFixed(2) + ' ppm</td></tr>' +
+      '</tbody></table></div>' +
+      '<div class="' + verdictBannerClass_(sections.pcb.verdict) + '">PCB: ' + escapeHtml_(sections.pcb.verdict) + '</div>';
+  }
+  if (!sections.fisicoquimico && !sections.dga && !sections.pcb) {
+    html += '<div class="empty-note">Sin secciones activas registradas.</div>';
+  }
+  return html;
 }
 
 function fmtVoltage_(v) {
