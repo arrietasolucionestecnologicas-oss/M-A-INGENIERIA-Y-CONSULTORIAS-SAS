@@ -585,6 +585,12 @@ function createTransformer_(params) {
     if (!params.serial_number || !params.phase_type) {
       return jsonResponse_({ status: 400, message: 'serial_number y phase_type son obligatorios' });
     }
+    if (params.posicion_tap_nominal) {
+      var createTapCount = params.numero_posiciones_tap || 5;
+      if (params.posicion_tap_nominal < 1 || params.posicion_tap_nominal > createTapCount) {
+        return jsonResponse_({ status: 400, message: 'posicion_tap_nominal debe estar entre 1 y ' + createTapCount });
+      }
+    }
 
     var id = generateId_();
     var attachmentId = '';
@@ -633,6 +639,13 @@ function updateTransformer_(params) {
 
     var row = findTransformerRow_(params.id);
     if (!row) return jsonResponse_({ status: 404, message: 'Transformador no encontrado' });
+
+    if (params.posicion_tap_nominal) {
+      var updateTapCount = params.numero_posiciones_tap || row.numero_posiciones_tap || 5;
+      if (params.posicion_tap_nominal < 1 || params.posicion_tap_nominal > updateTapCount) {
+        return jsonResponse_({ status: 400, message: 'posicion_tap_nominal debe estar entre 1 y ' + updateTapCount });
+      }
+    }
 
     var updates = {};
     ['serial_number', 'manufacturer', 'manufacture_year', 'phase_type', 'vector_group', 'rated_power_kva',

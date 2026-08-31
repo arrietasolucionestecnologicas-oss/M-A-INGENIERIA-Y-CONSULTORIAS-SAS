@@ -332,8 +332,24 @@ Campo nuevo de placa, **`posicion_tap_nominal`** (entero, 1 a
 características de placa) — columna nueva al final de
 `HEADERS.TRANSFORMADORES`, formularios de creación/edición de equipo
 (`newTrfPosTapNominal`/`editTrfPosTapNominal` en `index.html`), passthrough
-simple en `createTransformer_`/`updateTransformer_`/`transformerRowToJson_`
-en `Código.gs` (sin lógica nueva ahí — ver por qué abajo).
+en `transformerRowToJson_` sin lógica adicional. `createTransformer_` y
+`updateTransformer_` sí tienen una validación (agregada después de la
+primera versión, que no la tenía — ver "Rechaza fuera de rango" abajo):
+rechazan con 400 si `posicion_tap_nominal` no está entre 1 y el
+`numero_posiciones_tap` efectivo (el nuevo si viene en el payload, si no el
+que ya tenía la fila).
+
+**Rechaza fuera de rango, no lo ignora en silencio** — ni el backend ni el
+frontend tenían ninguna validación de esto en la primera versión (backend:
+cero chequeo, guardaba cualquier valor tal cual; frontend: lo descartaba
+silenciosamente y caía al comportamiento por defecto sin avisar al
+técnico). Corregido en los dos lados con el mismo criterio — un valor
+fuera de rango bloquea el envío del formulario (`setStatus_` con mensaje
+explícito, antes de tocar la red) y el backend lo rechaza igual por su
+cuenta si algo lo esquiva (400, `'posicion_tap_nominal debe estar entre 1 y
+' + N`). Verificado en vivo: `posicion_tap_nominal=8` en un equipo de 5
+posiciones → rechazado por API directa (400) y por el formulario real de
+creación (mensaje en pantalla, cero llamada a red, equipo no creado).
 
 `buildDefaultTapPositions_(nominalVoltage, numPositions, nominalPosition)`
 ahora acepta un tercer parámetro opcional: `neutral = nominalPosition` si
@@ -381,6 +397,20 @@ calcula su propio voltaje correctamente. Confirmado también desde la vista
 previa del frontend (modal de detalle de prueba, ver abajo): TAP 1 muestra
 teórico 30.7500, TAP 2 muestra 30.0000 — coincide exactamente con lo que
 guardó el backend.
+
+**Caso N par, sin `posicion_tap_nominal` diligenciado** (comportamiento por
+defecto — reportado tal cual, sin interpretar, a pedido explícito):
+`buildDefaultTapPositions_(13200, 6, undefined)` con
+`neutral = Math.ceil(6/2) = 3`. Para 6 posiciones no existe un centro
+geométrico real — la fórmula cae en la posición 3 (no la 3.5, que no
+existe), dejando 2 posiciones por encima del voltaje nominal (1, 2) y 3 por
+debajo (4, 5, 6): `[13860, 13530, 13200, 12870, 12540, 12210]`, nominal
+(13200) en la posición 3 de 6. Mismo resultado confirmado con la función
+real de `app.js` (no una reimplementación) y con lo que quedó persistido en
+el backend tras crear el equipo — sin discrepancia entre los tres. Este
+comportamiento no cambió — es el mismo criterio que ya existía antes de
+este cambio (`Math.ceil(n/2)`), ahora solo documentado explícitamente para
+N par.
 
 ### Detalle de prueba — vista de solo lectura de los datos crudos registrados
 
@@ -436,6 +466,99 @@ la advertencia de grupo de conexión visible), Resistencia de Devanados
 DAR/IP), Aceite Dieléctrico (Fisicoquímico con los 7 valores + veredicto) —
 los 4 renderizaron los datos correctos, coincidiendo con lo que se guardó
 al enviar cada prueba.
+
+**Tres confirmaciones puntuales sobre el modal, pedidas explícitamente antes
+de tocar nada más:**
+- **No es un volcado de objeto** — `renderTestDetailBody_` despacha a 4
+  funciones dedicadas (`renderTtrTestDetail_`/`renderWindingTestDetail_`/
+  `renderInsulationTestDetail_`/`renderOilTestDetail_`) que arman HTML
+  campo por campo leyendo `raw`/`calc` ya parseados. El único
+  `JSON.stringify` que existe en esa función es un `<pre>` de respaldo para
+  un `test_type` no reconocido — una rama defensiva que nunca se alcanza en
+  producción (los 4 tipos reales están cubiertos arriba de ella), no el
+  camino normal.
+- **Mapeo nuevo en el frontend, no reusado del backend** — los 4 renderers
+  son código nuevo en `app.js`, distinto de `appendTtrResultsTable_`/
+  `appendWindingResultsTable_`/etc. en `Código.gs` (Apps Script y el
+  navegador no comparten código, mismo límite ya documentado para
+  `VECTOR_GROUP_MULTIPLIERS`). Sí apuntan a los mismos nombres de campo
+  (`p.measuredRatio`, `p.appliedTheoreticalRatio`, `calculated.taps`,
+  etc. — confirmado comparando `renderTtrTestDetail_` contra
+  `appendTtrResultsTable_` línea por línea) porque ambos leen el mismo
+  contrato JSON que produce `calculateTtr_`, pero es una segunda
+  implementación, no una función compartida.
+- **Técnico y Administrador ven exactamente lo mismo hoy** — no fue una
+  decisión explícita, es la consecuencia de que el modal lee de
+  `state.currentTests` (ya en memoria) sin ningún chequeo de `state.role`,
+  y `listTests_` en el backend tampoco restringe por rol (Pruebas ya es
+  "Full" para los 3 roles en la matriz de RBAC). Si en algún momento se
+  decide que Técnico no debería ver algo del detalle, hoy no hay ninguna
+  barrera que lo impida.
+
+### Formularios de prueba en móvil — desbordamiento horizontal real, corregido
+
+**Diagnosticado (2026-08-31), luego corregido el mismo día tras
+aprobación explícita.** El usuario reportó "difícil de manejar en
+celular" sin más detalle — antes de tocar nada se midió con
+`document.documentElement.scrollWidth` contra un viewport emulado de
+375px (Android Chrome) en vez de solo mirar capturas, para separar la
+causa real de los síntomas.
+
+**Causa raíz real, no lo que parecía a simple vista**: no era que
+`.test-grid`/`.phase-entry-grid` no tuvieran un breakpoint para celular
+(sí les faltaba uno, pero agregarlo solo **no alcanzó** — verificado en
+vivo: tras agregar `@media (max-width: 600px) { grid-template-columns:
+1fr; }`, el desborde seguía ahí, `window.innerWidth` reportaba 590px en
+vez de 375px). La causa real es el comportamiento por defecto de CSS Grid:
+un item de grid nunca se encoge por debajo del ancho de su contenido
+(`min-width: auto` implícito) — así que aunque la grilla ya dijera "1
+columna", la tarjeta de fase (con sus inputs) seguía forzando el ancho de
+toda la fila, y esa fila forzaba el de toda la página. Confirmado en vivo
+antes de corregir: fijar `min-width: 0` a mano por consola en los items de
+`.test-grid`/`.phase-entry-grid` devolvía `window.innerWidth` a 375
+exacto — recién ahí se aplicó como regla real.
+
+**Corregido, alcance cerrado a lo aprobado, nada más:**
+- `@media (max-width: 600px) { .test-grid, .phase-entry-grid,
+  .phase-entry-grid-2col, .phase-entry-grid-3col { grid-template-columns:
+  1fr; } }` — nuevo, más angosto que el breakpoint de tablet que ya
+  existía (900px).
+- `.test-grid > *`/`.phase-entry-grid(-2col|-3col) > * { min-width: 0; }`
+  — la corrección real (ver arriba). Sin esto, el breakpoint de arriba no
+  hacía nada por sí solo.
+- Los `grid-template-columns` de Aceite (Fisicoquímico/DGA/PCB) estaban
+  fijos por **estilo inline** en `index.html` (`repeat(2, 1fr)`/
+  `repeat(3, 1fr)`), así que ningún breakpoint —ni el de 900px que ya
+  existía, ni el nuevo de 600px— podía tocarlos (la especificidad de un
+  estilo inline gana siempre sobre una regla de clase). Movidos a clases
+  nuevas `.phase-entry-grid-2col`/`.phase-entry-grid-3col` en
+  `styles.css` (mismas columnas que antes por defecto, ahora sí
+  responden a los breakpoints). Los dos `id` (`oilDgaGrid`/`oilPcbGrid`)
+  que la sección de Aceite popula por JS se conservaron intactos —
+  confirmado que solo se referencian por `getElementById`, nunca por la
+  clase, antes de renombrarla.
+- **Selector de TAP — no se agregó nada, y se reporta por qué**: la tarea
+  aprobada incluía "señal visual de scroll horizontal disponible cuando
+  sobran posiciones", pero medido en vivo con un equipo real de 7
+  posiciones, `.tap-chip-row` (que ya tenía `flex-wrap: wrap` desde
+  antes) da `scrollWidth === clientWidth` — cero desborde horizontal, los
+  chips que no caben simplemente pasan a una fila nueva. El corte que se
+  veía en el diagnóstico original era el mismo bug de arriba
+  (`.test-grid` sin poder encogerse) empujando todo el panel, no un
+  problema propio del selector de TAP. Agregar una señal de "hay más
+  scroll" ahí habría sido para un scroll que no existe — se reporta en
+  vez de construirse.
+
+**Verificado en vivo, mismo método en los 4 formularios** (viewport
+375px, `document.documentElement.scrollWidth - clientWidth`): TTR = 0,
+Resistencia de Devanados = 0, Resistencia de Aislamiento = 0, Aceite
+Dieléctrico = 0 (con Fisicoquímico + DGA + PCB expandidos a la vez, no
+solo cerrado). Confirmado visualmente además del número: en Resistencia
+de Devanados, el panel de "Lecturas por TAP" pasó de estar casi
+completamente tapado por "Vista previa" a ocupar el ancho completo,
+apilado arriba de la vista previa. Confirmado que el layout de
+escritorio/tablet (900px+) no cambió — los mismos formularios en ancho
+de escritorio siguen mostrando las 2 columnas lado a lado como antes.
 
 ### Resistencia de devanados — primario (multi-TAP) + secundario
 

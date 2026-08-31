@@ -394,6 +394,17 @@ tr.rowlink:hover td { background: var(--surface-alt); }
 .tap-chip.filled:not(.current) { border-color: var(--success-border); color: var(--success-text); background: var(--success-bg); }
 
 .phase-entry-grid { padding: 14px 18px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+.phase-entry-grid-2col { padding: 14px 18px; display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+.phase-entry-grid-3col { padding: 14px 18px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+/* Un item de grid no se encoge por debajo del ancho de su contenido
+   (min-width:auto por defecto) — sin esto, .phase-entry-grid en 1 columna
+   (breakpoint de abajo) no alcanza a angostarse: la tarjeta de fase entera
+   sigue forzando el ancho de toda la fila/página al de su contenido más
+   ancho (un input), aunque la grilla ya diga 1fr. Mismo problema un nivel
+   arriba en .test-grid — sus dos columnas (paneles) tampoco se encogen sin
+   esto. Encontrado midiendo scrollWidth en vivo, no a simple vista. */
+.test-grid > * { min-width: 0; }
+.phase-entry-grid > *, .phase-entry-grid-2col > *, .phase-entry-grid-3col > * { min-width: 0; }
 .phase-entry { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
 .phase-entry .ph-name { font-family: "IBM Plex Mono", monospace; font-size: 12px; font-weight: 600; color: var(--text-muted); margin-bottom: 8px; }
 .phase-entry .field + .field { margin-top: 8px; }
@@ -583,6 +594,17 @@ table.matrix-table input:disabled { background: var(--surface-alt); color: var(-
   main { padding-bottom: calc(64px + env(safe-area-inset-bottom)); }
   .stat-row, .test-grid, .spec-grid, .phase-entry-grid { grid-template-columns: 1fr 1fr; }
   .toast-stack { bottom: calc(64px + env(safe-area-inset-bottom) + 10px); }
+}
+
+/* Celular real (no solo tablet) — .test-grid en 2 columnas (regla de arriba)
+   deja "Lecturas de campo" y "Vista previa" apretados uno junto al otro, y
+   .phase-entry-grid en 2 columnas deja cada tarjeta de fase sin espacio para
+   sus 3 inputs. A este ancho los dos colapsan a 1 sola columna, apilados.
+   .phase-entry-grid-2col/-3col son las mismas grillas de Aceite
+   (Fisicoquímico/DGA/PCB) — antes fijas por estilo inline, sin responder a
+   ningún breakpoint; ver index.html. */
+@media (max-width: 600px) {
+  .test-grid, .phase-entry-grid, .phase-entry-grid-2col, .phase-entry-grid-3col { grid-template-columns: 1fr; }
 }
 
 @media (prefers-reduced-motion: reduce) {

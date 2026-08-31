@@ -922,17 +922,20 @@ function handleCreateTransformerSubmit(e) {
   var tapPositionsRaw = document.getElementById('newTrfTapPositions').value.trim();
   var tapPositionsCount = tapPositionsRaw ? parseInt(tapPositionsRaw, 10) : null;
   if (tapPositionsCount !== null && (isNaN(tapPositionsCount) || tapPositionsCount < 1)) tapPositionsCount = null;
-  var btn = document.getElementById('createTransformerBtn');
+  var effectiveTapCount = tapPositionsCount || 5;
+  var posTapNominalRaw = document.getElementById('newTrfPosTapNominal').value.trim();
+  var posTapNominal = posTapNominalRaw ? parseInt(posTapNominalRaw, 10) : null;
   var status = document.getElementById('createTransformerStatus');
+  if (posTapNominalRaw && (isNaN(posTapNominal) || posTapNominal < 1 || posTapNominal > effectiveTapCount)) {
+    setStatus_(status, 'Posición del TAP nominal debe ser un número entre 1 y ' + effectiveTapCount, false, true);
+    return;
+  }
+  var btn = document.getElementById('createTransformerBtn');
   var siteId = state.currentSiteId;
   btn.disabled = true;
   setStatus_(status, 'Verificando número de serie…', false);
 
   var nominalForTaps = isNaN(hv) ? 0 : hv;
-  var effectiveTapCount = tapPositionsCount || 5;
-  var posTapNominalRaw = document.getElementById('newTrfPosTapNominal').value.trim();
-  var posTapNominal = posTapNominalRaw ? parseInt(posTapNominalRaw, 10) : null;
-  if (posTapNominal !== null && (isNaN(posTapNominal) || posTapNominal < 1 || posTapNominal > effectiveTapCount)) posTapNominal = null;
 
   // La deduplicación por serial se queda síncrona/bloqueante (lectura rápida y
   // crítica para la integridad de datos); solo el POST de creación pasa a
@@ -1137,7 +1140,10 @@ function handleEditTransformerSubmit(e) {
     var currentCfg = (state.currentTransformer && state.currentTransformer.tap_config) || {};
     var effectiveCount = tapPositionsCount || currentCfg.numPositions || 5;
     var effectiveNominal = posTapNominalInput || (state.currentTransformer && state.currentTransformer.posicion_tap_nominal) || null;
-    if (effectiveNominal && effectiveNominal > effectiveCount) effectiveNominal = null;
+    if (effectiveNominal && effectiveNominal > effectiveCount) {
+      setStatus_(statusEl, 'Posición del TAP nominal debe ser un número entre 1 y ' + effectiveCount, false, true);
+      return;
+    }
     if (tapPositionsCount) payload.numero_posiciones_tap = tapPositionsCount;
     if (posTapNominalInput) payload.posicion_tap_nominal = posTapNominalInput;
     payload.tap_config = {
