@@ -180,6 +180,144 @@ ambas explícitamente al mostrar `ttr-form`, además de lo que ya hacía
 vivo (2026-08-30)**: los 5 chips TAP aparecen llenos de inmediato al abrir
 el formulario por primera vez, sin interactuar con nada antes.
 
+### TTR — la vista previa nunca calculaba el teórico para un equipo estándar
+
+**Corregido (2026-08-30), bug distinto al de arriba (ese era de renderizado;
+este es de cálculo).** El backend (`calculateTtr_` en `Código.gs`) siempre
+calculó bien el valor teórico — voltaje del TAP (`tap_config.positions[].voltage`)
+÷ `lv_nominal_voltage`, ajustado por el multiplicador de `vector_group`
+(`VECTOR_GROUP_MULTIPLIERS`, factor √3 para grupos Dyn). El problema estaba
+solo en el frontend: `computeTtrPreview()` — la función que alimenta el
+panel "Vista previa del cálculo" que ve el técnico mientras mide — **nunca
+implementó esa fórmula**. Solo leía `state.matrix.taps` (el editor de
+`custom_tap_ratio_matrix`, pensado únicamente para equipos de diseño
+especial), que para cualquier transformador estándar arranca en
+`theoreticalRatio: 0` (`resetMatrixStateFromTransformer()`) y nunca se
+llena con nada más. Resultado: la vista previa mostraba "teórico 0.000" /
+estado "pendiente" siempre, para el 100% de los equipos estándar,
+sin importar qué tan bien midiera el técnico — el cálculo real SÍ se
+guardaba correctamente al enviar (el bug era solo de lo que se mostraba
+antes de enviar), pero eso no era evidente para quien miraba la pantalla.
+
+**`computeStandardTtrTheoretical_(tapVoltage, lvNominalVoltage, vectorGroup)`**
+(nueva, en `app.js`) es la réplica de la fórmula estándar de `calculateTtr_`
+— mismo criterio de duplicación intencional que el resto de la app (NIT,
+umbrales de Aceite, DAR/IP), documentado con un caso conocido en el propio
+comentario de la función para poder verificar alineación manualmente si
+alguno de los dos lados cambia. No hay build step que comparta código entre
+`app.js` (navegador) y `Código.gs` (Apps Script), así que no es viable una
+función realmente compartida — la mitigación es la réplica cuidadosa +
+comentario cruzado + verificación en vivo comparando número contra número
+(hecha para este cambio, ver abajo), no un test automatizado (este proyecto
+no tiene suite de pruebas en ningún módulo).
+
+`computeTtrPreview()` ahora rama igual que el backend: si el equipo usa
+matriz personalizada (`usesCustomMatrix()`), sigue leyendo de
+`state.matrix.taps` sin cambios; si no, llama a
+`computeStandardTtrTheoretical_` y refleja su resultado en 3 estados
+posibles por fase, en vez de solo "número o pendiente":
+
+- **`unavailable`** — falta `tap_config.positions[].voltage` (típicamente
+  porque `hv_nominal_voltage` estaba vacío al crear el equipo — ver
+  `buildDefaultTapPositions_`, `nominalForTaps = 0` si `hv` no vino) o falta
+  `lv_nominal_voltage`. En cualquiera de los dos casos no hay ningún
+  teórico que calcular, ni siquiera uno impreciso — se muestra
+  explícitamente **"Teórico no disponible — falta voltaje nominal de
+  placa"** en el lugar del valor (texto atenuado, no color de alerta: es
+  un dato ausente, no un cálculo dudoso).
+- **`unreliable`** — sí hay tensiones, pero `vector_group` está vacío (o
+  trae un valor que no está en `VECTOR_GROUP_MULTIPLIERS`, ej. un typo). Se
+  calcula igual con `multiplier = 1` (mismo comportamiento silencioso que
+  ya tenía el backend, que nunca cambió) pero ahora se marca visiblemente:
+  **"⚠️ &lt;valor&gt; — grupo de conexión no registrado en placa: teórico
+  sin factor de relación trifásica, puede ser impreciso"**, en color de
+  advertencia (`.theo-unreliable`, mismo token `--warning-text` que el
+  resto de la app), y el badge de error % también pasa a ese color
+  (`errCls = 'warn'`) en vez de verde/rojo.
+- **`ok`** — grupo de conexión reconocido, cálculo normal, sin marca.
+
+**Ninguno de los dos casos bloquea el envío** — el técnico puede seguir
+midiendo y guardando la prueba igual, exactamente como ya pasaba antes de
+este cambio; lo único que cambió es qué tan honesta es la vista previa
+sobre qué tan confiable es el número que está mostrando.
+
+Verificado en vivo con 3 transformadores de prueba:
+- **Dyn5, 13200 V / 440 V**: TAP 1 → teórico `54.560` en la vista previa
+  (13860/440×√3). Se envió la prueba real y se comparó contra
+  `calculated_results.taps['1'].phases[...].appliedTheoreticalRatio` que
+  guardó el backend: `54.55960043841963` — coincide exactamente (mismo
+  redondeo a 3 decimales). Confirma que frontend y backend no divergieron.
+- **`vector_group` vacío** (tensiones completas): la fila muestra
+  `⚠️ 31.500 — grupo de conexión no registrado en placa...` en color de
+  advertencia, badge de error también en advertencia — no un número
+  silenciosamente incorrecto sin marca.
+- **`hv_nominal_voltage` vacío**: la fila muestra "Teórico no disponible —
+  falta voltaje nominal de placa" en vez de "0.000" o "—" sin contexto.
+- **Los 3 casos** enviaron su prueba real sin bloquearse (`"Prueba
+  registrada · veredicto: ..."` en los 3), confirmando que la corrección es
+  puramente de presentación de la vista previa, no de validación de envío.
+
+**Extendido al backend y al PDF (2026-08-30, mismo día).** La corrección de
+arriba solo cubría la vista previa — `calculateTtr_` seguía calculando con
+`multiplier=1` sin marcar nada cuando `vector_group` estaba vacío, así que
+el informe PDF (documento que sale al cliente) podía mostrar el mismo
+número dudoso sin ninguna advertencia. `calculateTtr_` ahora devuelve dos
+flags nuevos en su objeto de resultado, calculados **solo en la ruta
+estándar** (con matriz personalizada ambos son siempre `true`, los valores
+ya son explícitos):
+
+- **`theoreticalReliable`** — `false` si `!transformer.vector_group`.
+- **`theoreticalAvailable`** — `false` si falta `lv_nominal_voltage`, o si
+  algún TAP medido no tiene `tap_config.positions[].voltage` (0, típico de
+  `hv_nominal_voltage` vacío al crear el equipo).
+
+**No se tocó ningún cálculo existente** — ni el valor numérico de
+`appliedTheoreticalRatio`/`errorPercent`/`status` por fase, ni
+`overallVerdict` — solo se agregaron los dos flags nuevos al objeto que ya
+se devolvía. `undefined` en cualquiera de los dos (informes generados antes
+de este cambio, sin estos campos en `calculated_results_json`) nunca
+dispara advertencia — el chequeo es `=== false` explícito, no `!value`.
+
+**PDF** (`appendTtrTheoreticalWarning_`, llamada desde
+`appendTtrResultsTable_` justo antes de la tabla de resultados) — mismo
+lenguaje que la vista previa del frontend: si `theoreticalAvailable ===
+false`, "Teórico no disponible — falta voltaje nominal de placa." (fondo
+`WARNING_BG`, texto `WARNING`, mismo tratamiento visual que
+`appendVerdictBanner_`); si no pero `theoreticalReliable === false`, "⚠
+Grupo de conexión no registrado en placa — teórico sin factor de relación
+trifásica, puede ser impreciso." Cuando el teórico no está disponible, las
+columnas "RELACIÓN TEÓRICA"/"ERROR %"/"ESTADO" de la tabla también se
+fuerzan a "—"/"—"/"PENDIENTE" en vez de mostrar el `0.0000`/`RECHAZADO`
+fabricado que salía del cálculo real (`0/lv` da `0`, no `NaN` — un número
+real, aunque sin sentido; `errorPercent` sí llegaba a `Infinity`/`NaN`,
+que se vuelve `null` en el JSON guardado, pero `appliedTheoreticalRatio`
+en 0 sobrevivía el viaje). Cuando es solo no confiable (`vector_group`
+vacío pero con tensiones), la tabla sí muestra el número real calculado
+(igual que antes) — la advertencia lo acompaña, no lo reemplaza, mismo
+criterio que la vista previa.
+
+**Nunca bloquea nada** — ni el guardado de la prueba ni la generación del
+PDF cambian de comportamiento en caso de error; los flags son puramente
+informativos, calculados dentro del mismo `try/catch` que ya envolvía toda
+la generación de informes.
+
+Verificado: caso "Dyn5, tensiones completas" (ya probado en la corrección
+anterior) revisado por código, no en vivo de nuevo — `theoreticalReliable`
+exige `!!transformer.vector_group` (true con Dyn5) y `theoreticalAvailable`
+exige tensiones + voltaje de TAP presentes (ambos ciertos ahí), así que
+ningún flag se activa falsamente en ese camino. Caso nuevo probado en vivo:
+transformador con `vector_group` vacío (tensiones completas) → TTR enviado
+por API → `calculated_results` devuelto por `submitTtrTest` confirmó
+`theoreticalReliable: false, theoreticalAvailable: true` exactamente como
+se esperaba, con el PDF combinado regenerado en el mismo flujo de siempre
+(`regenerateElectricalCombinedReport_`, sin cambios en su propio código).
+
+**No se tocaron Resistencia de devanados ni Resistencia de aislamiento** —
+confirmado antes de tocar nada que ninguno de los dos depende de
+`vector_group`/`phase_type`/factor √3 (Devanados es desbalance óhmico
+puro; Aislamiento es DAR/IP por cociente de tiempos), así que este bug no
+les aplica.
+
 ### Resistencia de devanados — primario (multi-TAP) + secundario
 
 **Corregido — auditoría IEEE C57.12.90.** El formulario ya soportaba varios
@@ -267,7 +405,11 @@ completos, no hace falta tocar el backend para agregar evidencia a uno nuevo.
 Desde que se construyó Documentos e Informes (ver abajo), ese certificado ya
 no cae en una carpeta plana: `persistTest_()` lo guarda en `[Cliente]/
 Certificados de Pruebas/` y lo indexa en la hoja `DOCUMENTOS` (categoría
-`CERTIFICADOS`) para que aparezca en el listado del módulo.
+`CERTIFICADOS`) para que aparezca en el listado del módulo. Además,
+`persistTest_()` genera automáticamente un **informe PDF profesional**
+para las 4 pruebas (logo, datos de cliente/equipo, resultados, veredicto,
+firmas) y lo guarda en la misma carpeta — ver "Informes PDF de pruebas"
+más abajo para el mecanismo completo.
 
 ## Documentos e Informes
 
@@ -689,6 +831,311 @@ pantalla mientras la corrección solo existía sin desplegar en este repo —
 si vuelves a ver este panel en el sitio en vivo después de este commit,
 lo primero que hay que revisar es si el deploy a Pages realmente se hizo
 (push a `main`), no el código en sí.
+
+## Informes PDF de pruebas
+
+Generación automática, **dentro de `persistTest_()`**, justo después de
+guardar la prueba — no es una acción separada que el técnico deba disparar.
+Dos formatos, dos mecanismos de disparo distintos (ver
+"Arquitectura del informe eléctrico" más abajo): Aceite genera un PDF por
+cada envío (`generateOilTestReportPdf_`); TTR/Devanados/Aislamiento
+**regeneran un único PDF combinado por transformador**
+(`regenerateElectricalCombinedReport_`). Mismo mecanismo de construcción de
+PDF debajo de los dos.
+
+### Mecanismo — `DocumentApp` programático, no plantilla de Google Docs
+
+Se evaluaron las dos opciones y se descartó la plantilla con reemplazo de
+texto **por los dos requisitos que más importan**: TTR necesita cualquier
+número de TAPs (tabla de tamaño variable) y Aceite necesita 1-3 secciones
+que pueden estar activas o no (secciones enteras condicionales). Una
+plantilla tiene una tabla de filas fijas — soportar "cualquier cantidad de
+TAPs" ahí igual requeriría manipular filas ya copiadas en código, tan
+frágil como construir desde cero pero con una capa extra de fragilidad para
+encontrar/borrar secciones por texto. Construir el documento completo por
+código evita eso: los bucles arman las tablas con cualquier cantidad de
+filas (`appendTtrResultsTable_`/`appendWindingResultsTable_` iteran
+`Object.keys(...)`/arrays sin límite), y las secciones de Aceite
+simplemente no se agregan si `calculated.sections.<nombre>` no existe
+(`generateOilTestReportPdf_`, tres `if` independientes).
+
+Flujo: `DocumentApp.create(...)` (Doc temporal) → se arma el contenido →
+`doc.saveAndClose()` → `docFile.getAs('application/pdf')` → el PDF se
+guarda en `[Cliente]/Certificados de Pruebas/` (mismo `certificadosFolderId`
+que ya usa el adjunto crudo) → el Doc intermedio se manda a la papelera
+(`setTrashed(true)`) — solo el PDF queda como archivo real. Todo en
+`finalizeReportPdf_`.
+
+**Nunca bloquea el guardado de la prueba**: la generación va envuelta en
+`try/catch` dentro de `persistTest_` — si algo falla, la prueba se guarda
+igual, solo con `report_file_id` vacío.
+
+### Logo — subido a Drive, no embebido en el código
+
+El logo (`assets/logo-ma.png` en este repo, PNG 512×512 con transparencia,
+ya usado en el login de la app) **no es accesible desde el backend en
+tiempo de ejecución** — Apps Script no tiene acceso al repo de GitHub. Se
+subió una sola vez vía una acción nueva, `uploadLogoAsset_` (solo
+Administrador, mismo patrón que `getRootFolder_`/`getCalibracionesFolder_`):
+sube el PNG tal cual (cero conversión, DocumentApp lo acepta directo con
+`appendImage`) a la carpeta raíz del proyecto y persiste su `fileId` en
+Propiedades del script (`LOGO_FILE_ID`). `getLogoBlob_()` lo lee en cada
+informe; si el ID no existe o el archivo se borró, el informe se genera
+igual, solo sin logo — nunca bloquea.
+
+### Diseño visual — formato de "protocolo de pruebas" industrial
+
+Rediseñado (2026-08-30) a partir de una referencia visual real que dio el
+usuario (un protocolo de otra empresa de pruebas eléctricas) — se adoptó la
+**estructura y densidad**, no la marca ni los colores de esa referencia
+(esos siguen siendo los de M&A, ver `PDF_COLORS_`). Cambios concretos sobre
+la primera versión (que usaba tablas simples de 2 columnas y encabezados de
+texto plano):
+
+- **`appendSectionTitle_`** ya no es un párrafo con texto coloreado — es una
+  barra de ancho completo, fondo `--accent` sólido, texto blanco en
+  mayúsculas (tabla de 1x1 sin bordes), mismo tratamiento que las barras de
+  sección del protocolo de referencia.
+- **`appendProtocolTitle_`** (nuevo) — caja con borde y fondo
+  `--accent-soft`, texto `--accent` en negrita centrado — "PROTOCOLO DE
+  PRUEBA DE [TIPO]" (`TEST_TYPE_PROTOCOL_TITLE_`, un texto por tipo de
+  prueba), justo debajo del encabezado con logo. Reemplaza el título
+  genérico "M&A Ingeniería y Consultoría SAS" en tamaño `TITLE` que tenía
+  la primera versión.
+- **`appendDenseInfoGrid_`** (nuevo, reemplazó `appendInfoTable_`, que se
+  borró por quedar sin uso) — grilla de 4 columnas (etiqueta/valor × 2 por
+  fila, etiquetas en mayúsculas con fondo gris) en vez de una etiqueta por
+  fila — mismo criterio de densidad que el protocolo de referencia
+  (`MARCA | valor | POTENCIA | valor`, no una fila por campo). Se usa en
+  "Datos del cliente y del equipo" (fusionadas en una sola sección, antes
+  eran dos separadas), "Datos de la prueba" y "Datos de la muestra" (Aceite).
+- **Encabezado logo + nombre lado a lado**: tabla de 1x2 sin bordes (el
+  logo va en `logoCell.appendImage(blob)` — un `TableCell` sí soporta
+  `.appendImage()` igual que `Body`, confirmado en vivo) en vez de logo y
+  nombre apilados verticalmente.
+- **"Firmas" → "Área de control de calidad"**: mismo nombre y ubicación
+  (al final, junto a las firmas) que la sección equivalente del protocolo
+  de referencia — la columna "Técnico responsable" pasó a llamarse
+  "PROBADO POR".
+- Encabezados de las tablas de resultados (TTR/Devanados/Aislamiento/
+  Fisicoquímico/DGA/PCB) pasaron a mayúsculas.
+
+### Colores y cruce con Calibraciones — duplicados a propósito
+
+- **Colores del veredicto** (`PDF_COLORS_`/`verdictColor_`): un PDF no
+  puede leer variables CSS, así que los hex exactos de `styles.css`
+  (`--accent`/`--success`/`--warning`/`--danger` y sus `-bg`) están
+  duplicados en `Código.gs`. Si cambian los colores de la app, cambiar
+  aquí también. `verdictColor_` replica el mismo criterio de severidad que
+  ya usan los pills en pantalla — `REGISTRADO` (Aceite con solo DGA) y
+  cualquier veredicto no reconocido caen en neutro.
+- **Vigente/vencido según Calibraciones**: `findMatchingCalibracionServer_`/
+  `normalizeInstrumentTextServer_` son la réplica server-side EXACTA de
+  `findMatchingCalibracion_`/`normalizeInstrumentText_` en `app.js` (mismo
+  algoritmo — contención de substring, mínimo 3 caracteres) — hace falta
+  duplicarlo porque el informe se genera en el backend, sin acceso al JS
+  del frontend. Si no encuentra coincidencia, el informe simplemente no
+  muestra estado de vigencia (no bloquea).
+
+### Dos discrepancias con el pedido original, resueltas por el modelo de datos real (no inventadas)
+
+- **No existe "modelo" en Transformador** — el informe usa `manufacturer`
+  (Fabricante) + `serial_number` (Serie) + las características de placa
+  que sí existen, en vez de un campo que no está en el esquema.
+- **`ente_acreditado` no existe en la prueba de Aceite** (solo existe en
+  Calibraciones, que es para instrumentos de M&A, no para el laboratorio
+  externo) — el informe de Aceite omite esa referencia en vez de
+  inventarla; si se necesita, es un campo nuevo al formulario de Aceite,
+  pendiente de decidir.
+- **No existe "bitácora"/observaciones libres en Prueba** (solo existe en
+  Ofertas) — el pedido decía "si existe"; como no existe, la sección
+  Observaciones simplemente no se generó, en vez de agregar un campo nuevo
+  sin que se pidiera explícitamente.
+
+### Informe de Prueba Eléctrica (TTR / Devanados / Aislamiento) — un PDF combinado por envío, histórico completo conservado
+
+**Dos correcciones de arquitectura (2026-08-30), en secuencia.** La primera
+versión generaba un PDF por cada envío individual de prueba (un
+`generateElectricalTestReportPdf_` por TTR, otro por Devanados, otro por
+Aislamiento — igual que Aceite). El usuario señaló, comparando contra la
+imagen de referencia y el resultado real en Drive, que eso no coincide con
+cómo se maneja un protocolo de pruebas eléctricas en la práctica: **las
+pruebas eléctricas de un transformador van en un solo documento**, no una
+por prueba. Causa raíz: el modelo de datos no tiene un concepto de "visita
+de pruebas" que agrupe TTR+Devanados+Aislamiento hechos el mismo día —
+cada envío es una fila independiente en `PRUEBAS`. Se le preguntó
+explícitamente al usuario el criterio de consolidación (`AskUserQuestion`)
+— eligió "un solo PDF, siempre el más reciente, reemplazando el anterior".
+
+**Segunda corrección, el mismo día**: esa primera implementación borraba
+el PDF viejo de Drive y su fila en `DOCUMENTOS` en cada envío. El usuario
+pidió explícitamente **no perder histórico** — cada envío que dispara una
+regeneración debe quedar como su propio PDF con timestamp, sin borrar ni
+sobrescribir los anteriores. Se mantiene la idea de agrupar los 3 tipos en
+un solo documento (eso sí seguía siendo correcto), pero cada generación es
+ahora un archivo nuevo, no un reemplazo. Aceite dieléctrico se deja fuera
+de este mecanismo a propósito — el pedido original ya lo trataba como
+conceptualmente distinto ("un formato para pruebas eléctricas y otro para
+aceite"): es el análisis de una muestra puntual con su propio laboratorio
+acreditado, no una medición repetible del mismo equipo.
+
+**Fuente de verdad del histórico vs. caché del más reciente** — dos campos
+con roles distintos, a propósito:
+- **`DOCUMENTOS`** (una fila por generación, categoría `CERTIFICADOS`,
+  `file_name` con timestamp: `Informe_Electrico_<serie>_<yyyy-MM-ddTHH-mm-ss>`)
+  es la fuente de verdad del histórico completo. Nunca se borra ni se
+  deduplica — el módulo "Documentos e Informes" (`applyDocumentFilters_`
+  en `app.js`) ya lista todas las filas de `listDocuments_` sin filtrar
+  por nombre, así que cada versión queda visible/descargable ahí
+  automáticamente. No hizo falta UI nueva para esto.
+- **`electrical_report_file_id`** — columna en `HEADERS.TRANSFORMADORES`
+  (al final). Es una propiedad **del transformador**, no de la prueba, y
+  **solo cachea el fileId del PDF más reciente** — nunca se lee como
+  fuente de histórico, se sobrescribe en cada generación.
+  `transformerRowToJson_` la expone como `electrical_report_url`
+  (`driveFileUrl_(...)`, `null` si nunca se generó). En el frontend
+  (`renderDetail()` en `app.js`) aparece como un pill verde clickeable
+  "Informe eléctrico combinado (PDF)" junto al pill de Grupo, en el header
+  del detalle del equipo — acceso rápido al último, no al historial.
+
+`persistTest_` — para TTR/Devanados/Aislamiento, después de guardar la
+fila en `PRUEBAS` (con `report_file_id` vacío: esta prueba individual no
+genera su propio PDF suelto, entra al combinado), llama a
+`regenerateElectricalCombinedReport_(transformer, site, folderId, testedBy)`
+dentro de su propio `try/catch` (nunca bloquea el guardado de la prueba,
+igual que el resto de la generación de informes):
+
+1. `findLatestElectricalTestsByType_(transformerId)` — recorre `PRUEBAS`
+   una vez y se queda con la fila más reciente (`created_at` más alto) de
+   cada uno de los 3 tipos; un tipo nunca probado queda `null`. La prueba
+   recién guardada ya está en la hoja para este momento, así que sí entra
+   en la comparación.
+2. Se arma **un solo** Doc: `appendReportHeader_` (encabezado + datos del
+   cliente y equipo, una sola vez) → por cada tipo presente, en orden fijo
+   TTR → Devanados → Aislamiento,
+   `appendElectricalTypeSection_(body, type, latestTest)` — que es
+   `appendTestMetaSection_(body, testMeta, TEST_TYPE_DISPLAY_LABEL_[type])`
+   (el título lleva el tipo, ej. "Datos de la prueba — TTR", porque puede
+   haber hasta 3 en el mismo documento) + la tabla de resultados de ese
+   tipo (`appendTtrResultsTable_`/`appendWindingResultsTable_`/
+   `appendInsulationResultsTable_`, sin cambios) + su veredicto — → un solo
+   `appendSignatureSection_` al final, firmado por el técnico de la prueba
+   más reciente de las presentes.
+3. `finalizeReportPdf_` guarda el PDF nuevo con nombre timestamped
+   (`fmtTimestampForFilename_`, mismo cuidado de timezone que
+   `fmtDatePdf_` — `Utilities.formatDate` en `America/Bogota`, no
+   `toISOString()` que da UTC), se **sobrescribe** el caché
+   `TRANSFORMADORES.electrical_report_file_id` con el fileId nuevo
+   (`colIndex_('TRANSFORMADORES', 'electrical_report_file_id')`), y se
+   **agrega** (nunca se reemplaza) una fila nueva en `DOCUMENTOS`.
+
+Si un transformador solo tiene TTR probado (Devanados/Aislamiento nunca
+enviados), el PDF combinado tiene una sola sección — no hay tablas vacías
+para los tipos ausentes, `present = order.filter(t => latest[t])` los
+excluye desde el armado.
+
+- **TTR** (`appendTtrResultsTable_`): una fila por (TAP, fase) —
+  `calculated.taps` recorrido con `Object.keys().map(Number).sort()` para
+  que salga en orden numérico aunque el objeto no lo garantice.
+- **Devanados** (`appendWindingResultsTable_`): tabla del primario (una
+  fila por TAP × fase) + tabla "Secundario" aparte **solo si**
+  `calculated.secondary` no es `null`.
+- **Aislamiento** (`appendInsulationResultsTable_`): una fila por
+  combinación de `calculated.measurements` (en la práctica siempre
+  AT-BT/AT-Tierra/BT-Tierra, pero el código no asume esas claves — igual
+  de genérico que el propio `calculateInsulation_`).
+
+Verificado en vivo (2026-08-30): transformador de prueba con TTR →
+Devanados → Aislamiento enviados en secuencia — cada envío generó un PDF
+combinado nuevo (fileId distinto cada vez), acumulando filas en
+`DOCUMENTOS` en vez de reemplazar (2 envíos de TTR seguidos → 2 PDFs
+distintos, 2 filas). El pill del header siguió apuntando al más reciente
+después de cada envío. El PDF final (inspeccionado directamente, descargado
+vía un endpoint de debug temporal) contiene las secciones de los tipos
+probados con los datos más recientes de cada uno, un solo encabezado y una
+sola sección de firmas.
+
+### Informe de Análisis de Aceite Dieléctrico — plantilla distinta
+
+`generateOilTestReportPdf_` — mismo encabezado compartido, pero después:
+"Datos de la muestra" (`sample_taken_by`/`sample_date`, no instrumento de
+M&A) → **solo** las secciones con `calculated.sections.<nombre>` presente
+(Fisicoquímico con las 7 lecturas ASTM del `rawReadings` + su método;
+DGA con los 9 gases + nota de que no tiene interpretación automática
+todavía; PCB con los 7 Aroclores + total + nota IDEAM) → referencia al
+adjunto crudo si el técnico subió uno ("Este informe es un resumen/
+interpretación... no reemplaza el certificado del laboratorio acreditado")
+→ veredicto general → Área de control de calidad.
+
+### Storage y el link en el historial de pruebas
+
+`report_file_id` — columna en `HEADERS.PRUEBAS`, al final (misma regla de
+siempre: nunca insertar en medio). **Desde la corrección de arquitectura
+de arriba, solo la queda usando Aceite** — TTR/Devanados/Aislamiento
+guardan su fila de `PRUEBAS` con `report_file_id` vacío, porque su informe
+ya no es por-prueba sino por-transformador
+(`TRANSFORMADORES.electrical_report_file_id`, ver arriba). El PDF
+generado (de cualquiera de los dos mecanismos) se indexa **también** en
+`DOCUMENTOS` (categoría `CERTIFICADOS`, `file_name` con prefijo `Informe_`
+para distinguirlo del adjunto crudo que no lo lleva) — así aparece en el
+listado de Documentos e Informes igual que cualquier otro certificado.
+
+`listTests_` expone `report_url` **además de** (no en vez de)
+`attachment_url` — son cosas distintas: `report_url` es el informe
+generado, `attachment_url` es lo que el técnico subió a mano (evidencia
+cruda, foto del equipo de prueba, etc.), y pueden coexistir. En el
+historial de pruebas (`renderDetail()` en `app.js`), la columna
+"Documentos" muestra hasta dos links **claramente etiquetados por
+separado**: "Informe" (si existe) y "Evidencia" (si el técnico subió
+algo) — nunca un solo link ambiguo que mezcle los dos. Para Aceite,
+`report_url` normalmente está presente (informe por envío). Para
+TTR/Devanados/Aislamiento, `report_url` es `null` por diseño — el informe
+de esas pruebas no vive en la fila de la prueba sino en el pill "Informe
+eléctrico combinado (PDF)" del header del equipo
+(`transformer.electrical_report_url`); esas filas del historial muestran
+"Evidencia" si el técnico adjuntó algo, o "—" si no.
+
+### Dos bugs reales encontrados generando los 4 informes de prueba en vivo
+
+- **`appendInfoTable_` coerciona números a "N.0"**: pasar un valor numérico
+  crudo (ej. `transformer.manufacture_year`, un `Number` de Sheets) directo
+  a una celda de `appendTable` lo mostraba como "2020.0" en vez de "2020"
+  — problema del puente V8↔Docs-API de Apps Script con números crudos, no
+  de JS. Corregido convirtiendo explícitamente con `String(...)` antes de
+  pasarlo. Los demás campos numéricos del informe ya iban concatenados con
+  texto (`transformer.rated_power_kva + ' kVA'`), lo que ya fuerza
+  coerción a string en JS antes de cruzar ese límite, así que no tenían el
+  mismo problema — revisado uno por uno, `manufacture_year` era el único
+  caso que pasaba el número crudo sin concatenar.
+- **`fmtDatePdf_` corría un día atrás con fechas puras** ("2026-08-29" se
+  mostraba como "28/08/2026"): `new Date("2026-08-29")` interpreta esa
+  cadena como medianoche **UTC**, y al formatear en `America/Bogota`
+  (UTC-5) se corre al día anterior. Mismo tipo de cuidado que el gotcha de
+  Sheets-Date ya documentado en Comercial/Calibraciones, pero de causa
+  distinta (timezone, no autoconversión de Sheets). Corregido: una fecha
+  pura `YYYY-MM-DD` (sin hora, como `sample_date` de un
+  `<input type="date">`) se construye con `new Date(año, mes-1, día)`, que
+  Apps Script interpreta en el timezone del script (`America/Bogota`, ver
+  `appsscript.json`) en vez de UTC. Un `Date` real (de Sheets) o un ISO
+  completo con hora (`created_at`) siguen su camino normal — el bug era
+  específico de fechas puras sin componente de hora.
+
+### Gotcha de despliegue — mismo patrón que la migración de cuenta, para un scope nuevo
+
+Agregar `DocumentApp` requirió sumar `https://www.googleapis.com/auth/documents`
+a `oauthScopes` en `appsscript.json`. Como con el gotcha ya documentado en
+"Infraestructura / cuentas" (acceso anónimo 403 tras crear un deployment
+nuevo), **agregar un scope nuevo al manifiesto y desplegar por
+`clasp deploy` no completa la autorización real** — las llamadas a
+`DocumentApp` seguían fallando con "No cuentas con el permiso..." aunque
+el manifiesto y el deployment ya estuvieran actualizados. La diferencia
+esta vez: `testAuthorization()` (la función pública que ya existía para
+forzar la ventana de autorización) **no sirve para esto** porque no llama
+`DocumentApp` para nada — hizo falta agregar `testDocumentAuthorization()`
+(crea un Doc de prueba y lo manda a la papelera), ejecutarla manualmente
+desde el editor de Apps Script y aceptar el permiso nuevo ahí. Se dejó en
+el código (igual que `testAuthorization()`) por si hace falta de nuevo con
+un scope futuro.
 
 ## Navegación (8 módulos)
 

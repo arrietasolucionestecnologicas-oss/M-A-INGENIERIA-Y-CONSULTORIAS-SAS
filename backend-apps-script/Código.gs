@@ -41,6 +41,21 @@ function testAuthorization() {
   Logger.log('UrlFetchApp OK, respuesta: ' + response.getContentText());
 }
 
+/** Igual que testAuthorization() pero para el scope de Google Docs
+ *  (agregado para los informes PDF) — testAuthorization() no llama
+ *  DocumentApp para nada, así que ejecutarla no dispara el consentimiento
+ *  de este scope nuevo. Crea un Doc de prueba y lo manda a la papelera de
+ *  inmediato. Selecciona "testDocumentAuthorization" en el selector de
+ *  funciones del editor y dale a Ejecutar — debería pedir el permiso nuevo
+ *  de Documents la primera vez. Se puede borrar después. */
+function testDocumentAuthorization() {
+  var doc = DocumentApp.create('tmp_test_auth_' + Date.now());
+  doc.getBody().appendParagraph('test');
+  doc.saveAndClose();
+  DriveApp.getFileById(doc.getId()).setTrashed(true);
+  Logger.log('DocumentApp OK');
+}
+
 // ---------------------------------------------------------------------------
 // Configuración
 // ---------------------------------------------------------------------------
@@ -84,12 +99,12 @@ var HEADERS = {
     'tap_config_json', 'is_special_design', 'custom_tap_ratio_matrix_json',
     'estado_equipo', 'plate_photo_file_id', 'created_at', 'updated_at',
     'cooling_type', 'impedance_percent', 'insulation_type',
-    'numero_posiciones_tap'
+    'numero_posiciones_tap', 'electrical_report_file_id'
   ],
   PRUEBAS: [
     'id', 'transformer_id', 'test_type', 'raw_readings_json',
     'calculated_results_json', 'verdict', 'instrument_used', 'tested_by',
-    'attachment_file_id', 'created_at'
+    'attachment_file_id', 'created_at', 'report_file_id'
   ],
   /** Índice de documentos subidos a Drive (certificados automáticos + subida manual) —
    *  existe porque "Documentos e Informes" necesita listar/filtrar por cliente, tipo y
@@ -552,6 +567,7 @@ function transformerRowToJson_(row) {
     impedance_percent: row.impedance_percent,
     insulation_type: row.insulation_type || '',
     numero_posiciones_tap: row.numero_posiciones_tap || null,
+    electrical_report_url: row.electrical_report_file_id ? driveFileUrl_(row.electrical_report_file_id) : null,
     created_at: row.created_at,
     updated_at: row.updated_at
   };
@@ -748,11 +764,12 @@ function getTransformer_(params) {
  *  para que aparezca listado en el módulo Documentos e Informes junto con las
  *  subidas manuales. */
 function persistTest_(transformer, testType, rawReadings, calculated, params, auth) {
+  var site = findSiteRow_(transformer.site_id);
+  var folders = ensureSiteFolders_(site);
+
   var attachmentId = '';
   var fileName = '';
   if (params.file_base64) {
-    var site = findSiteRow_(transformer.site_id);
-    var folders = ensureSiteFolders_(site);
     fileName = testType.toLowerCase() + '_' + transformer.serial_number + '_' + Date.now();
     var saved = saveFileToDriveIn_(
       folders.certificadosFolderId,
@@ -775,6 +792,40 @@ function persistTest_(transformer, testType, rawReadings, calculated, params, au
   }
 
   var id = generateId_();
+  var createdAt = new Date().toISOString();
+  var testedBy = auth.username || params.instrument_used || 'desconocido';
+  var reportFileId = '';
+
+  if (testType === 'ACEITE_DIELECTRICO') {
+    // Aceite: un informe por envío — no se consolida como las 3 pruebas
+    // eléctricas (ver regenerateElectricalCombinedReport_ para el porqué),
+    // porque conceptualmente es un análisis de una muestra puntual, no una
+    // medición eléctrica repetible del mismo equipo. Nunca debe impedir que
+    // la prueba se guarde: si falla, reportFileId queda vacío.
+    try {
+      var oilTestMeta = {
+        created_at: createdAt,
+        tested_by: testedBy,
+        instrument_used: params.instrument_used || '',
+        attachment_url: attachmentId ? driveFileUrl_(attachmentId) : null
+      };
+      var oilReport = generateOilTestReportPdf_(transformer, site, rawReadings, calculated, oilTestMeta, folders.certificadosFolderId);
+      reportFileId = oilReport.fileId;
+      appendRow_('DOCUMENTOS', {
+        id: generateId_(),
+        site_id: transformer.site_id,
+        category: 'CERTIFICADOS',
+        file_name: 'Informe_' + TEST_TYPE_LABELS_[testType] + '_' + transformer.serial_number,
+        file_id: reportFileId,
+        mime_type: 'application/pdf',
+        uploaded_by: auth.username || 'desconocido',
+        created_at: createdAt
+      });
+    } catch (reportErr) {
+      // No relanzar.
+    }
+  }
+
   appendRow_('PRUEBAS', {
     id: id,
     transformer_id: transformer.id,
@@ -783,12 +834,26 @@ function persistTest_(transformer, testType, rawReadings, calculated, params, au
     calculated_results_json: JSON.stringify(calculated),
     verdict: calculated.overallVerdict,
     instrument_used: params.instrument_used || '',
-    tested_by: auth.username || params.instrument_used || 'desconocido',
+    tested_by: testedBy,
     attachment_file_id: attachmentId,
-    created_at: new Date().toISOString()
+    created_at: createdAt,
+    report_file_id: reportFileId
   });
 
-  return { id: id, calculated_results: calculated };
+  if (testType === 'TTR' || testType === 'RESISTENCIA_DEVANADOS' || testType === 'AISLAMIENTO') {
+    // Combinado por transformador (2026-08-30, reemplazó un informe por
+    // envío para estas 3 — ver regenerateElectricalCombinedReport_). La
+    // fila de PRUEBAS ya se guardó arriba, así que la consulta de "más
+    // reciente por tipo" adentro de esta función SÍ ve la que se acaba de
+    // guardar. Nunca debe impedir que la prueba se guarde (ya se guardó).
+    try {
+      regenerateElectricalCombinedReport_(transformer, site, folders.certificadosFolderId, testedBy);
+    } catch (combinedErr) {
+      // No relanzar.
+    }
+  }
+
+  return { id: id, calculated_results: calculated, report_url: reportFileId ? driveFileUrl_(reportFileId) : null };
 }
 
 function submitTtrTest_(params, auth) {
@@ -878,6 +943,7 @@ function listTests_(params) {
       instrument_used: obj.instrument_used,
       tested_by: obj.tested_by,
       attachment_url: obj.attachment_file_id ? driveFileUrl_(obj.attachment_file_id) : null,
+      report_url: obj.report_file_id ? driveFileUrl_(obj.report_file_id) : null,
       created_at: obj.created_at
     };
     if (!light) {
@@ -908,6 +974,18 @@ function calculateTtr_(transformer, readings) {
     if (multiplier === undefined) throw new Error('Grupo de conexión desconocido: ' + transformer.vector_group);
   }
 
+  /** Mismo criterio que computeStandardTtrTheoretical_ en app.js (vista
+   *  previa) — extendido aquí al backend/PDF a pedido del usuario, para que
+   *  el informe generado no muestre un teórico silenciosamente dudoso o
+   *  ausente sin ninguna marca. Solo aplica a la ruta estándar: con matriz
+   *  personalizada los valores son explícitos, siempre confiables/
+   *  disponibles. `theoreticalAvailable` se apaga si falta lv_nominal_voltage
+   *  (chequeo aquí) o si algún TAP medido no tiene voltaje configurado
+   *  (chequeo dentro del loop de abajo, típicamente por hv_nominal_voltage
+   *  vacío al crear el equipo — ver buildDefaultTapPositions_ en app.js). */
+  var theoreticalReliable = usesCustomMatrix || !!transformer.vector_group;
+  var theoreticalAvailable = usesCustomMatrix || !!transformer.lv_nominal_voltage;
+
   var matrixByTap = {};
   if (customMatrix && customMatrix.taps) {
     customMatrix.taps.forEach(function (t) { matrixByTap[t.tapPosition] = t; });
@@ -921,6 +999,7 @@ function calculateTtr_(transformer, readings) {
     var tapPosition = parseInt(tapPosStr, 10);
     var tapCfg = (tapConfig.positions || []).filter(function (p) { return p.position === tapPosition; })[0];
     if (!tapCfg) throw new Error('La posición de TAP ' + tapPosition + ' no existe en tap_config del transformador');
+    if (!usesCustomMatrix && !tapCfg.voltage) theoreticalAvailable = false;
 
     var phaseReadings = readings.measurements[tapPosStr];
     var phaseKeys = Object.keys(phaseReadings);
@@ -962,6 +1041,8 @@ function calculateTtr_(transformer, readings) {
   return {
     theoreticalSource: usesCustomMatrix ? 'CUSTOM_MATRIX' : 'VECTOR_GROUP_FORMULA',
     vectorGroupApplied: transformer.vector_group || null,
+    theoreticalReliable: theoreticalReliable,
+    theoreticalAvailable: theoreticalAvailable,
     tolerancePercent: TOLERANCE_PERCENT,
     taps: taps,
     overallVerdict: overallVerdict
@@ -1213,6 +1294,613 @@ function submitOilAnalysisTest_(params, auth) {
     var saved = persistTest_(transformer, 'ACEITE_DIELECTRICO', r, calculated, params, auth);
     return jsonResponse_({ status: 201, message: 'Prueba de aceite dieléctrico registrada', data: saved });
   });
+}
+
+// ---------------------------------------------------------------------------
+// Informes PDF de pruebas — generación programática con DocumentApp, NO
+// plantilla de Google Docs con reemplazo de texto. Los dos requisitos que
+// más importan (TTR con cualquier número de TAPs, Aceite con 1-3 secciones
+// que pueden estar activas o no) son tamaño/estructura variable — una
+// plantilla de texto fijo los maneja mal (tabla de filas fijas; soportar
+// "cualquier cantidad de TAPs" igual requeriría manipular filas ya copiadas
+// en código, tan frágil como construir desde cero pero con una capa extra
+// de fragilidad para encontrar/borrar secciones por texto). Construir el
+// documento completo por código evita eso: los bucles arman las tablas con
+// cualquier cantidad de filas, y las secciones de Aceite simplemente no se
+// agregan si no están activas. Se genera un Google Doc temporal, se exporta
+// a PDF, y el Doc intermedio se manda a la papelera — solo el PDF queda en
+// Drive, en la misma carpeta [Cliente]/Certificados de Pruebas/ que ya usa
+// el adjunto crudo (si el técnico subió uno).
+// ---------------------------------------------------------------------------
+
+var TEST_TYPE_LABELS_ = {
+  TTR: 'TTR',
+  RESISTENCIA_DEVANADOS: 'Resistencia_Devanados',
+  AISLAMIENTO: 'Resistencia_Aislamiento',
+  ACEITE_DIELECTRICO: 'Aceite_Dielectrico'
+};
+
+var OIL_DGA_GASES_ = [
+  { key: 'h2', label: 'Hidrógeno (H2)' },
+  { key: 'o2', label: 'Oxígeno (O2)' },
+  { key: 'n2', label: 'Nitrógeno (N2)' },
+  { key: 'ch4', label: 'Metano (CH4)' },
+  { key: 'co', label: 'Monóxido de carbono (CO)' },
+  { key: 'co2', label: 'Dióxido de carbono (CO2)' },
+  { key: 'c2h2', label: 'Acetileno (C2H2)' },
+  { key: 'c2h4', label: 'Etileno (C2H4)' },
+  { key: 'c2h6', label: 'Etano (C2H6)' }
+];
+
+/** Colores exactos del sistema de diseño de la app (ver comentario al
+ *  inicio de styles.css) — duplicados a propósito porque un PDF no puede
+ *  leer variables CSS. Si cambian los colores de la app, cambiar aquí
+ *  también. */
+var PDF_COLORS_ = {
+  ACCENT: '#258fbf',
+  ACCENT_SOFT: '#e9f4f9',
+  TEXT: '#152618',
+  TEXT_MUTED: '#5a6983',
+  SUCCESS: '#3aaa35', SUCCESS_BG: '#ebf7eb',
+  WARNING: '#f4c123', WARNING_BG: '#fdf6de',
+  DANGER: '#8f2d2d', DANGER_BG: '#f4eaea',
+  NEUTRAL_BG: '#f2f2f2',
+  BORDER: '#b2b2b2'
+};
+
+/** Título de protocolo — barra prominente bajo el encabezado, formato
+ *  "protocolo de pruebas" estándar de la industria (referencia visual dada
+ *  por el usuario: dense datasheet grid + barras de sección + bloque de
+ *  "área de control de calidad" al final). Las 3 pruebas eléctricas ya no
+ *  tienen título propio: comparten uno solo en el informe combinado
+ *  (regenerateElectricalCombinedReport_); solo Aceite sigue siendo un
+ *  informe independiente por envío. */
+var TEST_TYPE_PROTOCOL_TITLE_ = {
+  ACEITE_DIELECTRICO: 'PROTOCOLO DE ANÁLISIS DE ACEITE DIELÉCTRICO'
+};
+
+/** Mismo criterio de severidad que ya usa la app para pintar pills
+ *  (success/warning/danger) — mapea cualquier veredicto de los 4 módulos de
+ *  prueba a un color. REGISTRADO (Aceite con solo DGA, sin veredicto
+ *  propio) y cualquier valor no reconocido caen en neutro. */
+function verdictColor_(verdict) {
+  var v = String(verdict || '');
+  if (v === 'APROBADO' || v === 'No contaminado') return { bg: PDF_COLORS_.SUCCESS_BG, text: PDF_COLORS_.SUCCESS };
+  if (v === 'RECHAZADO' || v.indexOf('REQUIERE REGENERACIÓN') === 0 || v.indexOf('Contaminado') === 0) return { bg: PDF_COLORS_.DANGER_BG, text: PDF_COLORS_.DANGER };
+  if (v === 'OBSERVADO' || v.indexOf('REQUIERE TERMOVACÍO') === 0) return { bg: PDF_COLORS_.WARNING_BG, text: PDF_COLORS_.WARNING };
+  return { bg: PDF_COLORS_.NEUTRAL_BG, text: PDF_COLORS_.TEXT_MUTED };
+}
+
+/** Logo de M&A — subido una sola vez a la carpeta raíz vía uploadLogoAsset_
+ *  (solo Administrador), ID persistido en Propiedades del script. Si nunca
+ *  se subió, los informes se generan igual, solo sin logo — nunca debe
+ *  bloquear la generación de un informe real. */
+function getLogoBlob_() {
+  var id = PropertiesService.getScriptProperties().getProperty('LOGO_FILE_ID');
+  if (!id) return null;
+  try { return DriveApp.getFileById(id).getBlob(); } catch (e) { return null; }
+}
+
+/** Solo Administrador. Sube el PNG del logo tal cual a la carpeta raíz del
+ *  proyecto y persiste su fileId — mismo patrón que
+ *  getRootFolder_/getCalibracionesFolder_. Un solo uso normalmente (o para
+ *  reemplazar el logo si cambia). */
+function uploadLogoAsset_(params, auth) {
+  if (auth.role !== 'Administrador') {
+    return jsonResponse_({ status: 403, message: 'Solo un Administrador puede subir el logo' });
+  }
+  if (!params.file_base64) return jsonResponse_({ status: 400, message: 'file_base64 es obligatorio' });
+  var root = getRootFolder_();
+  var decoded = Utilities.base64Decode(stripBase64Prefix_(params.file_base64));
+  var blob = Utilities.newBlob(decoded, params.file_mime_type || 'image/png', 'logo-ma.png');
+  var file = root.createFile(blob);
+  PropertiesService.getScriptProperties().setProperty('LOGO_FILE_ID', file.getId());
+  return jsonResponse_({ status: 200, message: 'Logo subido', data: { fileId: file.getId() } });
+}
+
+/** Minúsculas, sin acentos, solo alfanumérico — réplica exacta de
+ *  normalizeInstrumentText_ en app.js (mismo algoritmo, dos runtimes
+ *  distintos, no se puede compartir código entre backend y frontend). */
+function normalizeInstrumentTextServer_(s) {
+  return String(s || '').toLowerCase().normalize('NFD').replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+/** Réplica server-side de findMatchingCalibracion_ en app.js — hace falta
+ *  porque el informe PDF se genera en el backend, sin acceso al JS del
+ *  frontend. Mismo algoritmo (contención de substring, mínimo 3
+ *  caracteres); si no encuentra nada, el informe simplemente no muestra
+ *  estado de vigencia — no bloquea la generación. */
+function findMatchingCalibracionServer_(instrumentText) {
+  var normalized = normalizeInstrumentTextServer_(instrumentText);
+  if (normalized.length < 3) return null;
+  var sheet = getSheet_('CALIBRACIONES');
+  var data = sheet.getDataRange().getValues();
+  for (var r = 1; r < data.length; r++) {
+    var row = rowToObject_(data[r], 'CALIBRACIONES', r + 1);
+    var modelo = normalizeInstrumentTextServer_(row.modelo);
+    var serie = normalizeInstrumentTextServer_(row.numero_serie);
+    var isMatch = (modelo.length >= 3 && (normalized.indexOf(modelo) !== -1 || modelo.indexOf(normalized) !== -1)) ||
+                  (serie.length >= 3 && (normalized.indexOf(serie) !== -1 || serie.indexOf(normalized) !== -1));
+    if (isMatch) {
+      return { modelo: row.modelo, numero_serie: row.numero_serie, estado: computeCalibracionEstado_(row.fecha_proxima_calibracion) };
+    }
+  }
+  return null;
+}
+
+function fmtDatePdf_(iso) {
+  if (!iso) return '—';
+  var d;
+  if (iso instanceof Date) {
+    d = iso;
+  } else if (typeof iso === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(iso)) {
+    // Fecha pura sin hora (p. ej. sample_date de un <input type="date">) —
+    // se construye en el timezone del script (America/Bogota, ver
+    // appsscript.json) en vez de new Date(iso), que interpreta
+    // "2026-08-29" como medianoche UTC y al convertir a Bogotá (UTC-5) se
+    // corre al día anterior (28/08). Mismo cuidado que el gotcha de fechas
+    // ya documentado con Sheets-Date en Comercial/Calibraciones, pero de
+    // timezone en vez de tipo de dato.
+    var parts = iso.split('-');
+    d = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+  } else {
+    d = new Date(iso);
+  }
+  if (isNaN(d.getTime())) return String(iso);
+  return Utilities.formatDate(d, 'America/Bogota', 'dd/MM/yyyy');
+}
+
+function numOrDash_(v) {
+  return (typeof v === 'number' && !isNaN(v)) ? v : '—';
+}
+
+/** Barra de sección — fondo acento sólido, texto blanco en mayúsculas,
+ *  ancho completo — mismo tratamiento que el protocolo de referencia dado
+ *  por el usuario (secciones como "DATOS DEL TRANSFORMADOR" en barra de
+ *  color, no solo texto resaltado). */
+function appendSectionTitle_(body, text) {
+  var table = body.appendTable([[text.toUpperCase()]]);
+  table.setBorderWidth(0);
+  var cell = table.getRow(0).getCell(0);
+  cell.setBackgroundColor(PDF_COLORS_.ACCENT);
+  cell.editAsText().setBold(true).setFontSize(10).setForegroundColor('#ffffff');
+  return table;
+}
+
+/** Caja de título del protocolo — borde y fondo acento suave, texto acento
+ *  en mayúsculas, centrado. Va justo bajo el encabezado (logo + nombre),
+ *  antes de cualquier sección de datos. */
+function appendProtocolTitle_(body, text) {
+  var table = body.appendTable([[text]]);
+  table.setBorderColor(PDF_COLORS_.ACCENT);
+  var cell = table.getRow(0).getCell(0);
+  cell.setBackgroundColor(PDF_COLORS_.ACCENT_SOFT);
+  var par = cell.getChild(0).asParagraph();
+  par.setAlignment(DocumentApp.HorizontalAlignment.CENTER);
+  cell.editAsText().setBold(true).setFontSize(13).setForegroundColor(PDF_COLORS_.ACCENT);
+  return table;
+}
+
+/** Grilla densa de 4 columnas (etiqueta/valor × 2 por fila) — mismo
+ *  criterio de densidad que el protocolo de referencia (MARCA | valor |
+ *  POTENCIA | valor, en vez de una etiqueta por fila). Etiquetas en
+ *  mayúsculas con fondo gris claro. `rows` es un arreglo de arreglos de 4
+ *  strings: [etiqueta, valor, etiqueta, valor]. */
+function appendDenseInfoGrid_(body, rows) {
+  var table = body.appendTable(rows);
+  table.setBorderColor(PDF_COLORS_.BORDER);
+  for (var r = 0; r < table.getNumRows(); r++) {
+    var row = table.getRow(r);
+    for (var c = 0; c < row.getNumCells(); c++) {
+      var cell = row.getCell(c);
+      if (c % 2 === 0) {
+        cell.setBackgroundColor(PDF_COLORS_.NEUTRAL_BG);
+        cell.setWidth(115);
+        cell.editAsText().setBold(true).setFontSize(8).setForegroundColor(PDF_COLORS_.TEXT);
+      } else {
+        cell.editAsText().setFontSize(9).setForegroundColor(PDF_COLORS_.TEXT);
+      }
+    }
+  }
+  return table;
+}
+
+/** Tabla de resultados con encabezado resaltado (fondo acento, texto
+ *  blanco) — reusada por los 3 informes eléctricos y por cada sub-sección
+ *  activa de Aceite. */
+function appendResultsTable_(body, rows) {
+  var table = body.appendTable(rows);
+  table.setBorderColor(PDF_COLORS_.BORDER);
+  var header = table.getRow(0);
+  for (var c = 0; c < header.getNumCells(); c++) {
+    header.getCell(c).setBackgroundColor(PDF_COLORS_.ACCENT);
+    header.getCell(c).editAsText().setBold(true).setFontSize(9).setForegroundColor('#ffffff');
+  }
+  for (var r = 1; r < table.getNumRows(); r++) {
+    for (var c2 = 0; c2 < table.getRow(r).getNumCells(); c2++) {
+      table.getRow(r).getCell(c2).editAsText().setFontSize(9);
+    }
+  }
+  return table;
+}
+
+/** Encabezado compartido por los 2 formatos: logo + nombre lado a lado
+ *  (tabla sin bordes de 1x2, mismo truco que usa el protocolo de
+ *  referencia con el logo junto al eslogan) + caja de título del
+ *  protocolo + datos del cliente y del equipo en una grilla densa (mismo
+ *  criterio del protocolo de referencia: MARCA | valor | POTENCIA | valor,
+ *  no una etiqueta por fila). */
+function appendReportHeader_(body, site, transformer, protocolTitle) {
+  var logoBlob = getLogoBlob_();
+  var headTable = body.appendTable([['', 'M&A Ingeniería y Consultoría SAS']]);
+  headTable.setBorderWidth(0);
+  var logoCell = headTable.getRow(0).getCell(0);
+  logoCell.setWidth(75);
+  if (logoBlob) {
+    var img = logoCell.appendImage(logoBlob);
+    var ratio = img.getHeight() / img.getWidth();
+    img.setWidth(55);
+    img.setHeight(Math.round(55 * ratio));
+  }
+  var nameCell = headTable.getRow(0).getCell(1);
+  nameCell.editAsText().setBold(true).setFontSize(14).setForegroundColor(PDF_COLORS_.TEXT);
+
+  body.appendParagraph('');
+  appendProtocolTitle_(body, protocolTitle);
+  body.appendParagraph('');
+
+  appendSectionTitle_(body, 'Datos del cliente y del equipo');
+  appendDenseInfoGrid_(body, [
+    ['CLIENTE', site.client_name || '—', 'NIT', site.nit || '—'],
+    ['CIUDAD', site.ciudad || '—', 'PROYECTO', site.project_name || '—'],
+    ['FABRICANTE', transformer.manufacturer || '—', 'N° DE SERIE', transformer.serial_number || '—'],
+    ['GRUPO DE CONEXIÓN', transformer.vector_group || '—', 'POTENCIA NOMINAL', transformer.rated_power_kva ? (String(transformer.rated_power_kva) + ' kVA') : '—'],
+    ['TENSIÓN PRIMARIA', transformer.hv_nominal_voltage ? (String(transformer.hv_nominal_voltage) + ' V') : '—', 'TENSIÓN SECUNDARIA', transformer.lv_nominal_voltage ? (String(transformer.lv_nominal_voltage) + ' V') : '—'],
+    ['REFRIGERACIÓN', transformer.cooling_type || '—', 'AÑO DE FABRICACIÓN', transformer.manufacture_year ? String(transformer.manufacture_year) : '—']
+  ]);
+}
+
+/** Datos de la prueba (fecha, técnico, instrumento + vigencia según
+ *  Calibraciones, norma de referencia) — compartido por los 3 informes
+ *  eléctricos. Aceite usa su propia sección "Datos de la muestra" en su
+ *  lugar (muestra, no instrumento de M&A). */
+/** `typeLabel` opcional — se usa en el informe combinado de pruebas
+ *  eléctricas, donde puede haber hasta 3 bloques "Datos de la prueba" (uno
+ *  por tipo) en el mismo documento y hace falta distinguirlos. */
+function appendTestMetaSection_(body, testMeta, typeLabel) {
+  appendSectionTitle_(body, typeLabel ? ('Datos de la prueba — ' + typeLabel) : 'Datos de la prueba');
+  var calMatch = findMatchingCalibracionServer_(testMeta.instrument_used);
+  var instrumentoLine = testMeta.instrument_used || '—';
+  if (calMatch) instrumentoLine += ' (' + calMatch.estado + ')';
+  appendDenseInfoGrid_(body, [
+    ['FECHA', fmtDatePdf_(testMeta.created_at), 'TÉCNICO RESPONSABLE', testMeta.tested_by || '—'],
+    ['INSTRUMENTO UTILIZADO', instrumentoLine, 'NORMA DE REFERENCIA', 'IEEE C57.12.90']
+  ]);
+}
+
+/** Banner de veredicto — el elemento más visible del informe, mismo color
+ *  que ya usa la app en pantalla (verdictColor_). */
+function appendVerdictBanner_(body, label, verdict) {
+  var colors = verdictColor_(verdict);
+  var table = body.appendTable([[label + ': ' + verdict]]);
+  table.setBorderWidth(0);
+  var cell = table.getRow(0).getCell(0);
+  cell.setBackgroundColor(colors.bg);
+  cell.editAsText().setBold(true).setFontSize(13).setForegroundColor(colors.text);
+}
+
+/** "Área de control de calidad" — mismo nombre y ubicación (al final, junto
+ *  a las firmas) que el protocolo de referencia dado por el usuario. */
+function appendSignatureSection_(body, testedBy) {
+  body.appendParagraph('');
+  appendSectionTitle_(body, 'Área de control de calidad');
+  var table = body.appendTable([
+    ['PROBADO POR', 'REVISIÓN'],
+    ['\n\n_____________________________\n' + (testedBy || ''), '\n\n_____________________________\n']
+  ]);
+  table.setBorderColor(PDF_COLORS_.BORDER);
+  for (var c = 0; c < 2; c++) {
+    table.getRow(0).getCell(c).setBackgroundColor(PDF_COLORS_.NEUTRAL_BG);
+    table.getRow(0).getCell(c).editAsText().setBold(true).setFontSize(8);
+    table.getRow(1).getCell(c).editAsText().setFontSize(9);
+  }
+}
+
+/** Mismo lenguaje que la vista previa del frontend (computeStandardTtrTheoretical_
+ *  en app.js) — si calculateTtr_ marcó el teórico como no disponible o no
+ *  confiable, el PDF lo advierte en vez de dejar un número (o su ausencia)
+ *  sin explicación. `undefined` en cualquiera de los dos flags (informes
+ *  generados antes de este cambio, calculated_results_json sin los campos
+ *  nuevos) no dispara advertencia — solo `=== false` explícito. */
+function appendTtrTheoreticalWarning_(body, calculated) {
+  var text = null;
+  if (calculated.theoreticalAvailable === false) {
+    text = 'Teórico no disponible — falta voltaje nominal de placa.';
+  } else if (calculated.theoreticalReliable === false) {
+    text = '⚠ Grupo de conexión no registrado en placa — teórico sin factor de relación trifásica, puede ser impreciso.';
+  }
+  if (!text) return;
+  var table = body.appendTable([[text]]);
+  table.setBorderWidth(0);
+  var cell = table.getRow(0).getCell(0);
+  cell.setBackgroundColor(PDF_COLORS_.WARNING_BG);
+  cell.editAsText().setBold(true).setFontSize(9).setForegroundColor(PDF_COLORS_.WARNING);
+}
+
+function appendTtrResultsTable_(body, calculated) {
+  appendSectionTitle_(body, 'Resultados — TTR (Relación de Transformación)');
+  appendTtrTheoreticalWarning_(body, calculated);
+  var rows = [['TAP', 'FASE', 'RELACIÓN MEDIDA', 'RELACIÓN TEÓRICA', 'ERROR %', 'ESTADO']];
+  var theoAvailable = calculated.theoreticalAvailable !== false;
+  Object.keys(calculated.taps).map(Number).sort(function (a, b) { return a - b; }).forEach(function (tapNum) {
+    var tap = calculated.taps[String(tapNum)];
+    Object.keys(tap.phases).forEach(function (phaseKey) {
+      var p = tap.phases[phaseKey];
+      rows.push([
+        String(tapNum),
+        phaseKey,
+        p.measuredRatio != null ? p.measuredRatio.toFixed(4) : '—',
+        theoAvailable && p.appliedTheoreticalRatio != null ? p.appliedTheoreticalRatio.toFixed(4) : '—',
+        theoAvailable && p.errorPercent != null ? p.errorPercent.toFixed(2) + ' %' : '—',
+        theoAvailable ? p.status : 'PENDIENTE'
+      ]);
+    });
+  });
+  appendResultsTable_(body, rows);
+  appendVerdictBanner_(body, 'Veredicto', calculated.overallVerdict);
+}
+
+function appendWindingResultsTable_(body, calculated) {
+  appendSectionTitle_(body, 'Resultados — Resistencia de Devanados');
+  var rows = [['TAP', 'FASE', 'RESISTENCIA (Ω)', 'DESVIACIÓN %', 'ESTADO']];
+  calculated.taps.forEach(function (tap) {
+    Object.keys(tap.phases).forEach(function (phaseKey) {
+      var p = tap.phases[phaseKey];
+      rows.push([String(tap.tapPosition), phaseKey, p.resistanceOhm.toFixed(4), p.deviationFromAvgPercent.toFixed(2) + ' %', p.status]);
+    });
+  });
+  appendResultsTable_(body, rows);
+
+  if (calculated.secondary) {
+    var secTitle = body.appendParagraph('SECUNDARIO');
+    secTitle.editAsText().setBold(true).setFontSize(10);
+    var secRows = [['FASE', 'RESISTENCIA (Ω)', 'DESVIACIÓN %', 'ESTADO']];
+    Object.keys(calculated.secondary.phases).forEach(function (phaseKey) {
+      var p = calculated.secondary.phases[phaseKey];
+      secRows.push([phaseKey, p.resistanceOhm.toFixed(4), p.deviationFromAvgPercent.toFixed(2) + ' %', p.status]);
+    });
+    appendResultsTable_(body, secRows);
+  }
+
+  appendVerdictBanner_(body, 'Veredicto', calculated.overallVerdict);
+}
+
+function appendInsulationResultsTable_(body, calculated) {
+  appendSectionTitle_(body, 'Resultados — Resistencia de Aislamiento (DAR/IP)');
+  var rows = [['COMBINACIÓN', 'DAR', 'CALIFICACIÓN DAR', 'IP', 'CALIFICACIÓN IP']];
+  Object.keys(calculated.measurements).forEach(function (key) {
+    var m = calculated.measurements[key];
+    rows.push([key, m.dar.toFixed(2), m.darRating, m.ip.toFixed(2), m.ipRating]);
+  });
+  appendResultsTable_(body, rows);
+  appendVerdictBanner_(body, 'Veredicto', calculated.overallVerdict);
+}
+
+var TEST_TYPE_DISPLAY_LABEL_ = {
+  TTR: 'TTR',
+  RESISTENCIA_DEVANADOS: 'Resistencia de Devanados',
+  AISLAMIENTO: 'Resistencia de Aislamiento'
+};
+
+/** `iso` puede llegar como string o como Date real (autoconversión de
+ *  Sheets) — normaliza a milisegundos para poder comparar cuál prueba es
+ *  más reciente sin repetir el gotcha de Sheets-Date ya documentado. */
+function toComparableDate_(iso) {
+  if (iso instanceof Date) return iso.getTime();
+  var t = new Date(iso).getTime();
+  return isNaN(t) ? 0 : t;
+}
+
+/** La prueba MÁS RECIENTE de cada uno de los 3 tipos eléctricos para un
+ *  transformador — `null` si ese tipo nunca se probó. Aceite dieléctrico
+ *  no entra aquí a propósito (no es parte del combinado). */
+function findLatestElectricalTestsByType_(transformerId) {
+  var sheet = getSheet_('PRUEBAS');
+  var data = sheet.getDataRange().getValues();
+  var transformerCol = HEADERS.PRUEBAS.indexOf('transformer_id');
+  var typeCol = HEADERS.PRUEBAS.indexOf('test_type');
+  var latest = { TTR: null, RESISTENCIA_DEVANADOS: null, AISLAMIENTO: null };
+  for (var r = 1; r < data.length; r++) {
+    if (data[r][transformerCol] !== transformerId) continue;
+    var type = data[r][typeCol];
+    if (!(type in latest)) continue;
+    var obj = rowToObject_(data[r], 'PRUEBAS', r + 1);
+    if (!latest[type] || toComparableDate_(obj.created_at) > toComparableDate_(latest[type].created_at)) {
+      latest[type] = obj;
+    }
+  }
+  return latest;
+}
+
+/** Timestamp seguro para nombre de archivo, en el timezone del script
+ *  (America/Bogota, ver appsscript.json) — mismo cuidado de timezone que
+ *  fmtDatePdf_, formateado con Utilities.formatDate en vez de toISOString()
+ *  (que siempre da UTC) para que el nombre del archivo coincida con la
+ *  hora local que ve el técnico. ':' no es válido en nombres de Drive en
+ *  algunos clientes, por eso '-' en la hora. */
+function fmtTimestampForFilename_(date) {
+  return Utilities.formatDate(date, 'America/Bogota', "yyyy-MM-dd'T'HH-mm-ss");
+}
+
+/** Datos de la prueba (con el tipo en el título, para distinguir bloques
+ *  cuando hay varios en el mismo documento) + tabla de resultados
+ *  específica por tipo — una "sección" completa para un tipo eléctrico
+ *  dentro del informe combinado. */
+function appendElectricalTypeSection_(body, testType, testRow) {
+  var calculated = safeParseJson_(testRow.calculated_results_json);
+  var testMeta = {
+    created_at: testRow.created_at,
+    tested_by: testRow.tested_by,
+    instrument_used: testRow.instrument_used
+  };
+  appendTestMetaSection_(body, testMeta, TEST_TYPE_DISPLAY_LABEL_[testType]);
+  if (testType === 'TTR') appendTtrResultsTable_(body, calculated);
+  else if (testType === 'RESISTENCIA_DEVANADOS') appendWindingResultsTable_(body, calculated);
+  else if (testType === 'AISLAMIENTO') appendInsulationResultsTable_(body, calculated);
+  body.appendParagraph('');
+}
+
+/**
+ * Un PDF combinado (TTR/Devanados/Aislamiento en un solo documento) por
+ * cada envío de una prueba eléctrica — decisión del usuario (2026-08-30)
+ * tras ver que la primera versión (un PDF por CADA prueba individual, sin
+ * agrupar) no coincidía con cómo se maneja un protocolo de pruebas en la
+ * práctica. Corregido de nuevo el mismo día: la primera implementación de
+ * "un solo documento" reemplazaba el PDF anterior en cada envío (borraba
+ * el archivo viejo de Drive y su fila en DOCUMENTOS) — el usuario pidió
+ * explícitamente **no perder histórico**: cada envío que dispara una
+ * regeneración debe quedar como su propio PDF con timestamp, sin borrar
+ * ni sobrescribir los anteriores. Si un tipo nunca se probó, su sección
+ * simplemente no aparece en el PDF de ese envío.
+ *
+ * Aceite dieléctrico NO entra aquí — sigue con un informe por envío
+ * (generateOilTestReportPdf_): es un análisis de una muestra puntual con
+ * su propio laboratorio acreditado, conceptualmente distinto a una
+ * medición eléctrica repetible del mismo equipo.
+ *
+ * Se llama desde persistTest_ cada vez que se guarda un TTR/Devanados/
+ * Aislamiento — la fila de PRUEBAS de esa prueba ya está guardada para
+ * ese momento, así que `findLatestElectricalTestsByType_` sí la ve como
+ * candidata a "más reciente".
+ *
+ * Fuente de verdad del histórico completo: las filas de DOCUMENTOS
+ * (categoría CERTIFICADOS, nombre con timestamp) — ya se listan sin
+ * deduplicar en el módulo "Documentos e Informes"
+ * (`applyDocumentFilters_` en app.js), así que cada versión queda
+ * visible/descargable ahí automáticamente, sin UI nueva.
+ * `TRANSFORMADORES.electrical_report_file_id` sigue existiendo, pero solo
+ * como caché del más reciente para el pill de acceso rápido en el header
+ * del equipo — nunca se lee como fuente de histórico.
+ */
+function regenerateElectricalCombinedReport_(transformer, site, folderId, uploadedBy) {
+  var latest = findLatestElectricalTestsByType_(transformer.id);
+  var order = ['TTR', 'RESISTENCIA_DEVANADOS', 'AISLAMIENTO'];
+  var present = order.filter(function (t) { return latest[t]; });
+  if (present.length === 0) return null;
+
+  var doc = DocumentApp.create('tmp_informe_electrico_' + Date.now());
+  var body = doc.getBody();
+  body.setMarginTop(36).setMarginBottom(36).setMarginLeft(50).setMarginRight(50);
+
+  appendReportHeader_(body, site, transformer, 'PROTOCOLO DE PRUEBAS ELÉCTRICAS');
+  present.forEach(function (type) {
+    appendElectricalTypeSection_(body, type, latest[type]);
+  });
+
+  var mostRecentType = present.reduce(function (a, b) {
+    return toComparableDate_(latest[a].created_at) >= toComparableDate_(latest[b].created_at) ? a : b;
+  });
+  appendSignatureSection_(body, latest[mostRecentType].tested_by);
+
+  var fileName = 'Informe_Electrico_' + transformer.serial_number + '_' + fmtTimestampForFilename_(new Date());
+  var saved = finalizeReportPdf_(doc, folderId, fileName);
+
+  getSheet_('TRANSFORMADORES').getRange(transformer._row, colIndex_('TRANSFORMADORES', 'electrical_report_file_id')).setValue(saved.fileId);
+
+  appendRow_('DOCUMENTOS', {
+    id: generateId_(),
+    site_id: transformer.site_id,
+    category: 'CERTIFICADOS',
+    file_name: fileName,
+    file_id: saved.fileId,
+    mime_type: 'application/pdf',
+    uploaded_by: uploadedBy || 'desconocido',
+    created_at: new Date().toISOString()
+  });
+
+  return saved;
+}
+
+/** Aceite dieléctrico — plantilla distinta: datos de muestra en vez de
+ *  instrumento de M&A, solo las secciones activas
+ *  (fisicoquimico_realizado/dga_realizado/pcb_realizado), cada valor junto
+ *  a su método ASTM, referencia al certificado del laboratorio ya subido
+ *  (no lo reemplaza, solo lo referencia). */
+function generateOilTestReportPdf_(transformer, site, rawReadings, calculated, testMeta, folderId) {
+  var doc = DocumentApp.create('tmp_informe_aceite_' + Date.now());
+  var body = doc.getBody();
+  body.setMarginTop(36).setMarginBottom(36).setMarginLeft(50).setMarginRight(50);
+
+  appendReportHeader_(body, site, transformer, TEST_TYPE_PROTOCOL_TITLE_.ACEITE_DIELECTRICO);
+
+  appendSectionTitle_(body, 'Datos de la muestra');
+  appendDenseInfoGrid_(body, [
+    ['FECHA', fmtDatePdf_(testMeta.created_at), 'TÉCNICO RESPONSABLE', testMeta.tested_by || '—'],
+    ['MUESTRA TOMADA POR', rawReadings.sample_taken_by || '—', 'FECHA DE MUESTREO', rawReadings.sample_date ? fmtDatePdf_(rawReadings.sample_date) : '—']
+  ]);
+
+  if (calculated.sections.fisicoquimico) {
+    appendSectionTitle_(body, 'Fisicoquímico');
+    appendResultsTable_(body, [
+      ['ENSAYO', 'VALOR', 'MÉTODO ASTM'],
+      ['Agua', numOrDash_(rawReadings.agua_ppm) + ' ppm', 'ASTM D1533-20'],
+      ['Rigidez dieléctrica', numOrDash_(rawReadings.rigidez_dielectrica_kv) + ' kV', 'ASTM D1816-12(2019)'],
+      ['Tensión interfacial', numOrDash_(rawReadings.tension_interfacial_dinas_cm) + ' dinas/cm', 'ASTM D971-20'],
+      ['Número ácido', numOrDash_(rawReadings.numero_acido_mg_koh_g) + ' mg KOH/g', 'ASTM D974-22'],
+      ['Densidad relativa', String(numOrDash_(rawReadings.densidad_relativa)), 'ASTM D1298-12b(2017)e1'],
+      ['Color', rawReadings.color_astm || '—', 'ASTM D1500-24'],
+      ['Examen visual', rawReadings.examen_visual || '—', 'ASTM D1524-15(2022)']
+    ]);
+    appendVerdictBanner_(body, 'Fisicoquímico', calculated.sections.fisicoquimico.verdict);
+  }
+
+  if (calculated.sections.dga) {
+    appendSectionTitle_(body, 'Cromatografía de Gases Disueltos (DGA)');
+    var dgaRows = [['GAS', 'VALOR (PPM)']];
+    OIL_DGA_GASES_.forEach(function (g) {
+      dgaRows.push([g.label, String(numOrDash_(rawReadings[g.key]))]);
+    });
+    appendResultsTable_(body, dgaRows);
+    var note = body.appendParagraph('Método ASTM D3612-02(2017), Método C — solo captura de datos, sin matriz de interpretación automática todavía.');
+    note.editAsText().setItalic(true).setFontSize(8).setForegroundColor(PDF_COLORS_.TEXT_MUTED);
+  }
+
+  if (calculated.sections.pcb) {
+    appendSectionTitle_(body, 'Cromatografía de PCB');
+    var pcbRows = [['AROCLOR', 'VALOR (PPM)']];
+    OIL_PCB_AROCLORES.forEach(function (key) {
+      pcbRows.push([key.replace('aroclor_', 'Aroclor '), String(numOrDash_(rawReadings[key]))]);
+    });
+    pcbRows.push(['Total PCB', calculated.sections.pcb.totalPcbPpm.toFixed(2) + ' ppm']);
+    appendResultsTable_(body, pcbRows);
+    var pcbNote = body.appendParagraph('Método ASTM D4059-00(2018) · ente acreditado IDEAM.');
+    pcbNote.editAsText().setItalic(true).setFontSize(8).setForegroundColor(PDF_COLORS_.TEXT_MUTED);
+    appendVerdictBanner_(body, 'PCB', calculated.sections.pcb.verdict);
+  }
+
+  if (testMeta.attachment_url) {
+    body.appendParagraph('');
+    var certPar = body.appendParagraph('Certificado del laboratorio acreditado: ' + testMeta.attachment_url);
+    certPar.editAsText().setFontSize(9).setForegroundColor(PDF_COLORS_.ACCENT);
+    var noteReplace = body.appendParagraph('Este informe es un resumen/interpretación de los resultados — no reemplaza el certificado del laboratorio acreditado.');
+    noteReplace.editAsText().setItalic(true).setFontSize(8).setForegroundColor(PDF_COLORS_.TEXT_MUTED);
+  }
+
+  appendVerdictBanner_(body, 'Veredicto general', calculated.overallVerdict);
+  appendSignatureSection_(body, testMeta.tested_by);
+  return finalizeReportPdf_(doc, folderId, 'Informe_Aceite_' + transformer.serial_number);
+}
+
+/** Exporta el Doc a PDF, lo guarda en la carpeta destino, y manda el Doc
+ *  intermedio a la papelera — solo el PDF queda como archivo real. */
+function finalizeReportPdf_(doc, folderId, fileName) {
+  doc.saveAndClose();
+  var docFile = DriveApp.getFileById(doc.getId());
+  var pdfBlob = docFile.getAs('application/pdf').setName(fileName + '.pdf');
+  var folder = DriveApp.getFolderById(folderId);
+  var pdfFile = folder.createFile(pdfBlob);
+  docFile.setTrashed(true);
+  return { fileId: pdfFile.getId(), url: pdfFile.getUrl() };
 }
 
 // ---------------------------------------------------------------------------
@@ -1885,7 +2573,8 @@ var POST_ACTIONS = {
   deleteOferta: deleteOferta_,
   createCalibracion: createCalibracion_,
   updateCalibracion: updateCalibracion_,
-  deleteCalibracion: deleteCalibracion_
+  deleteCalibracion: deleteCalibracion_,
+  uploadLogoAsset: uploadLogoAsset_
 };
 
 var GET_ACTIONS = {

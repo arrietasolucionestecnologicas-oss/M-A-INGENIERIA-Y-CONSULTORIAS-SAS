@@ -22,6 +22,16 @@ const APP_ID = "MYA_PRUEBAS";
 const TOLERANCE_PERCENT = 0.5;
 const UNBALANCE_THRESHOLD = 5.0;
 
+/** Debe reflejar exactamente VECTOR_GROUP_MULTIPLIERS en Código.gs (calculateTtr_) —
+ *  es la vista previa local del mismo cálculo que hace el backend al guardar. Si
+ *  cambias un factor o agregas un grupo, cámbialo en los dos lados. */
+const VECTOR_GROUP_MULTIPLIERS = {
+  Dyn11: Math.sqrt(3), Dyn5: Math.sqrt(3), Dyn1: Math.sqrt(3), Dyn7: Math.sqrt(3),
+  Yyn0: 1, Yyn6: 1, Dd0: 1,
+  Yd1: 1 / Math.sqrt(3), Yd11: 1 / Math.sqrt(3),
+  Ynd1: 1 / Math.sqrt(3), Ynd11: 1 / Math.sqrt(3)
+};
+
 /** Debe reflejar exactamente los umbrales de calculateOilAnalysis_ en Código.gs. */
 const OIL_ACIDEZ_MAX = 0.15;
 const OIL_TENSION_INTERFACIAL_MIN = 24;
@@ -1491,6 +1501,9 @@ function renderDetail() {
   var badges = [];
   if (t.is_special_design) badges.push('<span class="tag">Diseño especial</span>');
   badges.push('<span class="pill neutral">Grupo: ' + escapeHtml_(t.vector_group || 'N/A') + '</span>');
+  if (t.electrical_report_url) {
+    badges.push('<a class="pill success" href="' + t.electrical_report_url + '" target="_blank" rel="noopener">Informe eléctrico combinado (PDF)</a>');
+  }
   document.getElementById('detailBadges').innerHTML = badges.join('');
 
   var cfg = t.tap_config || {};
@@ -1516,13 +1529,16 @@ function renderDetail() {
     histBody.innerHTML = '<tr><td colspan="6" class="empty-note">Aún no hay pruebas registradas para este transformador.</td></tr>';
   } else {
     histBody.innerHTML = state.currentTests.slice().reverse().map(function (test) {
+      var links = [];
+      if (test.report_url) links.push('<a href="' + test.report_url + '" target="_blank" rel="noopener">Informe</a>');
+      if (test.attachment_url) links.push('<a href="' + test.attachment_url + '" target="_blank" rel="noopener">Evidencia</a>');
       return '<tr>' +
         '<td>' + fmtDate_(test.created_at) + '</td>' +
         '<td>' + escapeHtml_(test.test_type) + '</td>' +
         '<td>' + escapeHtml_(test.instrument_used || '—') + '</td>' +
         '<td>' + escapeHtml_(test.tested_by || '—') + '</td>' +
         '<td><span class="pill ' + verdictPillClass_(test.verdict) + '">' + escapeHtml_(test.verdict) + '</span></td>' +
-        '<td>' + (test.attachment_url ? '<a href="' + test.attachment_url + '" target="_blank" rel="noopener">Ver / descargar</a>' : '') + '</td>' +
+        '<td>' + (links.length ? links.join(' · ') : '—') + '</td>' +
         '</tr>';
     }).join('');
   }
@@ -1716,17 +1732,69 @@ function saveMatrix() {
 
 // ---- Cálculo local (vista previa) y payloads ----
 
+/**
+ * Réplica EXACTA de la fórmula estándar (no-matriz-personalizada) de
+ * calculateTtr_ en Código.gs: `multiplier * (tapVoltage / lvNominalVoltage)`,
+ * con `multiplier` de VECTOR_GROUP_MULTIPLIERS si hay grupo de conexión, 1 si
+ * no. Copiada aquí a propósito (mismo criterio de duplicación que el resto de
+ * la app — NIT, umbrales de Aceite, etc., ver CLAUDE.md) porque no hay build
+ * step que comparta código entre el frontend y Apps Script.
+ *
+ * A diferencia del backend (que lanza una excepción si falta un dato),
+ * esta versión NUNCA lanza — el técnico sigue midiendo y enviando aunque
+ * falte tensión de placa o grupo de conexión, así que la vista previa debe
+ * degradarse a un estado explícito en vez de romperse. Devuelve:
+ *   - { state: 'unavailable' } — falta tensión nominal (primaria y/o
+ *     secundaria) o el TAP no tiene voltaje configurado (tap_config en 0,
+ *     típicamente porque la tensión primaria estaba vacía al crear el
+ *     equipo) → no hay ningún teórico que mostrar, ni siquiera impreciso.
+ *   - { state: 'unreliable', value } — sí hay tensiones, pero el grupo de
+ *     conexión está vacío: se calcula igual con multiplier=1 (mismo
+ *     comportamiento que el backend), pero marcado como no confiable — el
+ *     factor √3 puede faltar y no hay forma de saberlo sin el dato.
+ *   - { state: 'ok', value } — grupo de conexión reconocido, cálculo normal.
+ *
+ * Verificación de alineación con el backend (caso conocido, documentado en
+ * CLAUDE.md "TTR — vista previa..."): transformador Dyn5, TAP con
+ * tapVoltage=13860, lv_nominal_voltage=440 → multiplier=√3≈1.7320508 →
+ * theoretical≈54.548... Confirmado en vivo que este valor coincide, dígito
+ * por dígito hasta el redondeo de UI, entre esta función y lo que guarda
+ * calculateTtr_ para el mismo envío real.
+ */
+function computeStandardTtrTheoretical_(tapVoltage, lvNominalVoltage, vectorGroup) {
+  if (!tapVoltage || !lvNominalVoltage) return { state: 'unavailable' };
+  if (!vectorGroup) return { state: 'unreliable', value: 1 * (tapVoltage / lvNominalVoltage) };
+  var multiplier = VECTOR_GROUP_MULTIPLIERS[vectorGroup];
+  if (multiplier === undefined) return { state: 'unreliable', value: 1 * (tapVoltage / lvNominalVoltage) };
+  return { state: 'ok', value: multiplier * (tapVoltage / lvNominalVoltage) };
+}
+
 function computeTtrPreview(p) {
-  var mrow = state.matrix.taps.filter(function (t) { return t.tapPosition === p; })[0];
+  var t = state.currentTransformer;
+  var useCustom = usesCustomMatrix();
+  var mrow = useCustom ? state.matrix.taps.filter(function (tp) { return tp.tapPosition === p; })[0] : null;
+  var tapVoltage = tapVoltageFor(p);
   var readings = state.ttr.readings[p] || {};
+
   var rows = getPhaseKeys().map(function (k) {
-    var theoretical = mrow && mrow.phases[k] ? mrow.phases[k].theoreticalRatio : null;
     var measured = readings[k] ? readings[k].measuredRatio : null;
-    if (!theoretical || measured == null || measured === 0) {
-      return { key: k, measured: measured, theoretical: theoretical, errorPercent: null, status: 'pending' };
+    var theoretical = null;
+    var theoState = 'ok';
+
+    if (useCustom) {
+      theoretical = mrow && mrow.phases[k] ? mrow.phases[k].theoreticalRatio : null;
+      if (!theoretical) theoretical = null;
+    } else {
+      var calc = computeStandardTtrTheoretical_(tapVoltage, t && t.lv_nominal_voltage, t && t.vector_group);
+      theoState = calc.state;
+      theoretical = calc.state === 'unavailable' ? null : calc.value;
+    }
+
+    if (theoretical == null || measured == null || measured === 0) {
+      return { key: k, measured: measured, theoretical: theoretical, theoState: theoState, errorPercent: null, status: 'pending' };
     }
     var err = ((measured - theoretical) / theoretical) * 100;
-    return { key: k, measured: measured, theoretical: theoretical, errorPercent: err, status: Math.abs(err) <= TOLERANCE_PERCENT ? 'APROBADO' : 'RECHAZADO' };
+    return { key: k, measured: measured, theoretical: theoretical, theoState: theoState, errorPercent: err, status: Math.abs(err) <= TOLERANCE_PERCENT ? 'APROBADO' : 'RECHAZADO' };
   });
   var verdict = rows.some(function (r) { return r.status === 'pending'; }) ? 'PENDIENTE'
     : (rows.every(function (r) { return r.status === 'APROBADO'; }) ? 'APROBADO' : 'RECHAZADO');
@@ -1743,8 +1811,17 @@ function renderTtrPreview() {
     var errText, errCls;
     if (r.status === 'pending') { errText = '&mdash;'; errCls = 'pending'; }
     else { errText = (r.errorPercent >= 0 ? '+' : '') + r.errorPercent.toFixed(2) + ' %'; errCls = r.status === 'APROBADO' ? 'ok' : 'bad'; }
+    if (r.theoState === 'unreliable' && errCls !== 'pending') errCls = 'warn';
     var measuredTxt = r.measured != null ? r.measured.toFixed(3) : '&mdash;';
-    var theoTxt = r.theoretical != null ? r.theoretical.toFixed(3) : '&mdash;';
+    var theoTxt;
+    if (r.theoState === 'unavailable') {
+      theoTxt = '<span class="theo-flag theo-unavailable">Teórico no disponible &mdash; falta voltaje nominal de placa</span>';
+    } else if (r.theoState === 'unreliable') {
+      theoTxt = '<span class="theo-flag theo-unreliable">&#9888;&#65039; ' + r.theoretical.toFixed(3) +
+        ' &mdash; grupo de conexión no registrado en placa: teórico sin factor de relación trifásica, puede ser impreciso</span>';
+    } else {
+      theoTxt = r.theoretical != null ? r.theoretical.toFixed(3) : '&mdash;';
+    }
     return '<div class="preview-row"><span class="phase-name">' + r.key + '</span>' +
       '<span class="num">medido ' + measuredTxt + ' &middot; teórico ' + theoTxt + '</span>' +
       '<span class="err ' + errCls + '">' + errText + '</span></div>';
