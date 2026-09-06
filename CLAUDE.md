@@ -653,6 +653,190 @@ para las 4 pruebas (logo, datos de cliente/equipo, resultados, veredicto,
 firmas) y lo guarda en la misma carpeta — ver "Informes PDF de pruebas"
 más abajo para el mecanismo completo.
 
+## Flujo de certificación de pruebas (Borrador → Certificada / Rechazada)
+
+**Construido (2026-09-05), código completo y verificado con `node --check`,
+pero AÚN NO DESPLEGADO** — el usuario desconectó `clasp` de su cuenta y pidió
+esperar a reconectarlo (`clasp login`) antes de `clasp push`/`clasp deploy`.
+Hasta que eso pase, `Código.gs`/`app.js` en el repo tienen este flujo pero el
+Web App en producción sigue corriendo la versión anterior (todo envío
+definitivo de inmediato, PDF/informe combinado generado sin revisión). No
+asumas que esto ya está en vivo sin confirmar el estado del deployment.
+
+**Motivación** (reportada por el usuario): antes de este cambio, cualquier
+envío de las 4 pruebas (`persistTest_`) quedaba como registro definitivo al
+instante, y generaba su PDF (Aceite) o regeneraba el informe eléctrico
+combinado del equipo (TTR/Devanados/Aislamiento) sin que nadie revisara el
+dato. No había ninguna acción de editar/borrar una prueba ya enviada
+(confirmado con `grep` sobre `POST_ACTIONS` antes de construir nada — no
+existía `deleteTest`/`updateTest`).
+
+### Esquema (`HEADERS.PRUEBAS`, columnas nuevas al final, mismo criterio de
+migración que el resto del proyecto — nunca insertar en medio)
+
+```
+..., report_file_id, estado_certificacion, revisado_por, revisado_at
+```
+
+- **`estado_certificacion`**: `Borrador` / `Certificada` / `Rechazada`.
+  `normalizeEstadoCertificacion_()` (mismo patrón que
+  `normalizeEstadoEquipo_`) trata cualquier fila vieja o con la celda vacía
+  como `Certificada` — **grandfathering deliberado**: todas las pruebas
+  registradas antes de este cambio ya tienen su PDF/informe generado y
+  entregado, no tiene sentido (ni sería seguro) retroactivamente marcarlas
+  como pendientes de revisión.
+- **`revisado_por`/`revisado_at`**: quién certificó o rechazó y cuándo —
+  vacíos mientras la prueba sigue en `Borrador`.
+
+### Ciclo de vida
+
+1. **`persistTest_`** ya no genera ningún PDF/informe. Cualquier envío
+   (`submitTtrTest_`/`submitWindingResistanceTest_`/`submitInsulationTest_`/
+   `submitOilAnalysisTest_`) crea la fila con `estado_certificacion:
+   'Borrador'` y devuelve `report_url: null` — el frontend muestra "Guardada
+   como borrador · veredicto/dictamen preliminar: X · pendiente de
+   certificación" en vez del antiguo "Prueba registrada".
+2. **`certifyTest_`** (acción `certifyTest`, **solo Supervisor o
+   Administrador — nunca Técnico**, ni siquiera el mismo que la registró: es
+   deliberadamente una revisión de un segundo par de ojos) mueve `Borrador →
+   Certificada` y **solo en ese momento** genera el PDF: para Aceite, su
+   propio informe; para TTR/Devanados/Aislamiento, regenera el informe
+   eléctrico combinado del equipo. Certificar una prueba que ya fue
+   certificada o rechazada devuelve 400.
+3. **`rejectTest_`** (acción `rejectTest`, mismo rol que certificar) mueve
+   `Borrador → Rechazada` — **terminal, nunca genera nada, y la fila NUNCA se
+   borra** (requisito explícito del usuario: "debe quedar registrado que
+   existió"). Igual que certificar, falla con 400 si la prueba ya no está en
+   `Borrador`.
+4. **`updateTestDraft_`** (acción `updateTestDraft`, sin restricción de rol —
+   los mismos roles que pueden registrar una prueba pueden seguir
+   editándola mientras sea `Borrador`) recalcula con el mismo motor que el
+   registro original (`calculateTtr_`/`calculateWindingResistance_`/
+   `calculateInsulation_`/`calculateOilAnalysis_`) y sobrescribe
+   `raw_readings_json`/`calculated_results_json`/`verdict` (más
+   `instrument_used`/`attachment_file_id` si vienen) en la misma fila —
+   **no crea una prueba nueva**. Rechaza con 400 si la prueba ya no está en
+   `Borrador`. Pensada para el caso real reportado por el usuario: un técnico
+   midiendo 3 transformadores a la vez, entrando datos por partes (p. ej.
+   TAPs de TTR medidos en sesiones distintas) — sin esto, cada sesión habría
+   creado una prueba duplicada en vez de completar la misma.
+
+**`findLatestElectricalTestsByType_`** (el que arma el informe combinado de
+TTR/Devanados/Aislamiento) ahora filtra explícitamente `estado_certificacion
+!== 'Certificada'` dentro del bucle — pieza crítica: sin este filtro, un
+Borrador o una Rechazada podrían terminar siendo "la más reciente" de su tipo
+y colarse en el informe combinado sin haber sido revisadas. `listTests_`
+devuelve `estado_certificacion`/`revisado_por`/`revisado_at` en ambos modos
+(`light` y completo).
+
+### Frontend
+
+- Historial de pruebas (`renderDetail()`): columna nueva "Certificación" con
+  badge (`estadoCertificacionPillClass_` — `success`/`Certificada`,
+  `danger`/`Rechazada`, `warning`/`Borrador`, mismo mapeo de colores que
+  `verdictPillClass_`). Mientras la prueba está en `Borrador`: botón
+  "Editar" (visible para cualquier rol) y, **solo si `state.role !==
+  'Tecnico'`**, botones "Certificar"/"Rechazar" (`handleCertifyTest_`/
+  `handleRejectTest_`, con `confirm()` antes de llamar al backend). El modal
+  de detalle de prueba (`renderTestDetailBody_`) también muestra el badge y,
+  si ya fue revisada, quién y cuándo.
+- **Editar un Borrador** (`handleEditTestDraft_`) reabre el formulario del
+  tipo correspondiente con `state.currentTransformer` ya cargado (sin volver
+  a llamar `openTransformer`) y precarga sus lecturas guardadas en el
+  estado local de ese formulario (`state.ttr.readings`/`state.wr.readings`/
+  `state.insulation`/`state.oil`, reconstruido campo por campo desde
+  `test.raw_readings` — mapeo inverso de `buildTtrRequestBody`/
+  `buildWindingRequestBody`/`buildInsulationRequestBody`/
+  `buildOilRequestBody`). `state.editingDraftTestId`/`state.editingTestType`
+  marcan el modo edición: el subtítulo del formulario muestra "Editando
+  borrador existente" + enlace "Cancelar edición" (`cancelEditDraft_`), y el
+  botón de envío cambia a "Guardar cambios en el borrador". Al guardar,
+  `submitTtr`/`submitWinding`/`submitInsulation`/`submitOil` detectan
+  `state.editingDraftTestId` y llaman `updateTestDraft` (con el `id`) en vez
+  de crear una prueba nueva; al terminar, limpian el modo edición y vuelven
+  a la vista de detalle. Esto **reemplaza** la decisión inicial (evaluada
+  antes de construir, nunca implementada) de "no permitir editar un
+  Borrador, solo rechazar y volver a registrar" — el usuario aclaró
+  explícitamente el caso real de uso (varios equipos medidos en paralelo,
+  datos que se completan por partes) que la hacía impráctica.
+- **Nota**: el borrador local del navegador (`mya_draft_ttr_<id>` etc.,
+  `localStorage`, ya existía antes de este cambio para no perder lo digitado
+  entre sesiones **antes** de enviar) es un mecanismo distinto de este
+  `Borrador` del servidor — `handleEditTestDraft_` sobrescribe el borrador
+  local del tipo correspondiente con los datos del Borrador del servidor que
+  se está editando, a propósito.
+
+### Pendiente de esta construcción
+
+- **Desplegar** (`clasp login` → `clasp push` → `clasp deploy` con el
+  deploymentId de siempre, ver "Infraestructura / cuentas" arriba) — sigue
+  sin hacerse a pedido explícito del usuario.
+- **Verificar en vivo** una vez desplegado: ciclo completo Borrador →
+  editar → Certificar (PDF/informe combinado se genera solo ahí) y Borrador
+  → Rechazar (queda registrada, nunca genera nada) para los 4 tipos de
+  prueba, y confirmar que un Técnico no ve los botones Certificar/Rechazar.
+- Limpiar cualquier dato de prueba creado durante esa verificación (no tocar
+  el lote `DEMO -`, ver abajo).
+
+### Comportamiento anual del equipo — gráficas en el detalle del transformador
+
+**Construido (2026-09-05), a pedido del cliente** ("necesito que el
+historial de servicios/pruebas muestre una gráfica de comportamiento, cómo
+está el transformador cada año"). Es **100% frontend** — no toca
+`Código.gs` ni el esquema de ninguna hoja, así que no depende del
+despliegue pendiente de arriba: se sirve en cuanto se publique
+`index.html`/`app.js`/`styles.css` a GitHub Pages (ver "Arquitectura activa").
+Vive en un panel nuevo "Comportamiento anual del equipo" en el detalle del
+transformador, justo arriba del historial de pruebas.
+
+**Solo cuentan las pruebas Certificadas** (decidido explícitamente con el
+usuario) — un Borrador o una Rechazada todavía no es un resultado válido
+para la tendencia histórica del equipo, mismo criterio que
+`findLatestElectricalTestsByType_` en el backend. El agrupado es por año
+calendario de `created_at`. Todo se calcula en el cliente a partir de
+`state.currentTests`, ya cargado completo (con `calculated_results`) por
+`openTransformer` — no hace falta ninguna llamada nueva al backend.
+
+Se construyeron, también a pedido explícito, **sin ninguna librería de
+gráficas** (`buildStackedBarChartSvg_`/`buildLineChartSvg_` en `app.js`,
+SVG armado a mano) — mismo criterio que el resto de la app, que hasta ahora
+solo usaba tablas para sus KPIs (Comercial, Panel General).
+
+Cuatro gráficas, todas opcionales según haya datos:
+- **Veredictos por año**, barras apiladas, una barra por año, sumando las
+  cuatro pruebas juntas (TTR + Devanados + Aislamiento + Aceite). Reusa
+  directamente `verdictPillClass_(test.verdict)` para clasificar cada
+  prueba en aprobado/observado/rechazado/sin veredicto (el mismo mapeo de
+  colores que ya usan los pills del historial) — no se inventó una
+  clasificación nueva.
+- **TTR** — error % promedio por año: por cada prueba TTR certificada se
+  promedia el error % (valor absoluto) de todos sus TAP/fase, y luego se
+  promedia entre las pruebas de ese año.
+- **Resistencia de devanados** — desbalance % máximo promedio por año: por
+  cada prueba se toma el peor desbalance (el máximo entre todos los TAP del
+  primario y el secundario si vino), y se promedia entre las pruebas del
+  año.
+- **Resistencia de aislamiento** — DAR e IP promedio por año, dos líneas:
+  por cada prueba se promedia el DAR (y por separado el IP) entre sus
+  combinaciones de devanado, y luego se promedia entre las pruebas del año.
+
+**Aceite dieléctrico no tiene línea de tendencia numérica propia** — a
+diferencia de los otros tres tipos, no tiene un único número continuo que
+represente sus tres secciones independientes (Fisicoquímico/DGA/PCB), así
+que solo participa en la gráfica de veredictos por año, igual que los
+otros tres.
+
+Un año sin ninguna prueba certificada de un tipo dado no rompe la gráfica
+de ese tipo: si ningún año tiene datos para un tipo, esa gráfica completa
+no se muestra; si algunos años sí tienen y otros no, esos años simplemente
+no dibujan punto ahí (nunca se interpola ni se fuerza a 0) —
+`buildLineChartSvg_` solo traza una línea entre puntos consecutivos que
+existen. Verificado inyectando datos sintéticos en la consola del
+navegador (con pruebas Certificadas y una Borrador de control, esta última
+confirmada excluida): las 4 gráficas renderizaron sin errores de consola,
+con los años, colores y agrupados correctos, incluyendo el caso de una
+serie con un solo punto (sin línea, sin quebrarse).
+
 ## Documentos e Informes
 
 Módulo completo (dejó de ser placeholder). Reorganiza dónde vive todo en
@@ -1681,10 +1865,13 @@ a propósito.
 
 No implementado todavía, evaluado pero no decidido con el usuario:
 - `SweetAlert2` en vez de `alert()`/`confirm()` nativos.
-- Flujo de borrador/certificado en dos etapas para pruebas (hoy todo envío
-  queda como definitivo de inmediato).
 - Migrar a offline real (service worker + IndexedDB) — hoy la resiliencia de
   red es "no perder lo digitado", no "funcionar sin señal".
+
+**Construido pero pendiente de desplegar**: flujo de certificación de
+pruebas en dos etapas (Borrador → Certificada/Rechazada, con edición de
+Borrador incluida) — ver sección dedicada "Flujo de certificación de
+pruebas" arriba antes de asumir que ya está en producción.
 
 No quedan módulos en diseño pendientes de construir ni piezas diferidas —
 Calibraciones (incluida la integración `instrument_used` con sus 3

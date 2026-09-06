@@ -449,13 +449,18 @@
           <span><strong>Equipo de diseño especial:</strong> el valor teórico de cada TAP/fase se toma de <code>custom_tap_ratio_matrix</code>, no de una fórmula de grupo vectorial.</span>
         </div>
 
+        <div class="panel" id="yearlyBehaviorPanel">
+          <div class="panel-head"><h2>Comportamiento anual del equipo</h2><span class="hint">Solo pruebas certificadas</span></div>
+          <div id="yearlyBehaviorBody" style="padding: 18px;"></div>
+        </div>
+
         <div class="panel">
           <div class="panel-head"><h2>Historial de pruebas</h2></div>
           <div style="overflow-x: auto;">
             <table>
-              <thead><tr><th>Fecha</th><th>Tipo</th><th>Instrumento</th><th>Registrado por</th><th>Veredicto</th><th>Documentos</th></tr></thead>
+              <thead><tr><th>Fecha</th><th>Tipo</th><th>Instrumento</th><th>Registrado por</th><th>Veredicto</th><th>Certificación</th><th>Documentos</th></tr></thead>
               <tbody id="testHistoryRows">
-                <tr><td colspan="6" class="empty-note">Selecciona un transformador para ver su historial.</td></tr>
+                <tr><td colspan="7" class="empty-note">Selecciona un transformador para ver su historial.</td></tr>
               </tbody>
             </table>
           </div>

@@ -104,7 +104,8 @@ var HEADERS = {
   PRUEBAS: [
     'id', 'transformer_id', 'test_type', 'raw_readings_json',
     'calculated_results_json', 'verdict', 'instrument_used', 'tested_by',
-    'attachment_file_id', 'created_at', 'report_file_id'
+    'attachment_file_id', 'created_at', 'report_file_id',
+    'estado_certificacion', 'revisado_por', 'revisado_at'
   ],
   /** Índice de documentos subidos a Drive (certificados automáticos + subida manual) —
    *  existe porque "Documentos e Informes" necesita listar/filtrar por cliente, tipo y
@@ -154,6 +155,20 @@ var UNBALANCE_THRESHOLD_PERCENT = 5.0;
 var ESTADO_EQUIPO_VALUES = ['Activo', 'Fuera de servicio', 'Dado de baja'];
 function normalizeEstadoEquipo_(value) {
   return ESTADO_EQUIPO_VALUES.indexOf(value) !== -1 ? value : 'Activo';
+}
+
+/** Flujo de certificación de pruebas (2026-09-05): toda prueba nace en
+ *  'Borrador' — ver persistTest_ — y un Supervisor o Administrador la mueve
+ *  a 'Certificada' (certifyTest_, dispara la generación del PDF/informe
+ *  combinado en ese momento, nunca antes) o 'Rechazada' (rejectTest_,
+ *  nunca genera nada, pero la fila nunca se borra — queda registrado que
+ *  existió). Migración perezosa igual que estado_equipo: cualquier fila
+ *  vieja (de antes de este cambio, sin esta columna) se trata como
+ *  'Certificada' — ya tenían su informe generado y forman parte del
+ *  historial oficial, no tiene sentido pedirles certificación retroactiva. */
+var ESTADO_CERTIFICACION_VALUES = ['Borrador', 'Certificada', 'Rechazada'];
+function normalizeEstadoCertificacion_(value) {
+  return ESTADO_CERTIFICACION_VALUES.indexOf(value) !== -1 ? value : 'Certificada';
 }
 
 /** Semáforo de vigencia de Calibraciones — Vigente (>30 días), Por vencer
@@ -773,19 +788,42 @@ function getTransformer_(params) {
 // Pruebas (TTR / Resistencia de devanados / Aislamiento)
 // ---------------------------------------------------------------------------
 
-/** El certificado de una prueba se guarda en [Cliente]/Certificados de Pruebas/
- *  (carpeta persistida en el Sitio, ver ensureSiteFolders_) — no en la carpeta
- *  plana TMS_Adjuntos. También se indexa en DOCUMENTOS (category CERTIFICADOS)
- *  para que aparezca listado en el módulo Documentos e Informes junto con las
- *  subidas manuales. */
+/** Busca una fila de PRUEBAS por id — no existía antes porque nada necesitaba
+ *  releer una prueba puntual (solo se insertaban o se listaban todas); hizo
+ *  falta con el flujo de certificación (certifyTest_/rejectTest_). Mismo
+ *  patrón que findTransformerRow_/findSiteRow_/etc. */
+function findTestRow_(id) {
+  var sheet = getSheet_('PRUEBAS');
+  var data = sheet.getDataRange().getValues();
+  var idCol = HEADERS.PRUEBAS.indexOf('id');
+  for (var r = 1; r < data.length; r++) {
+    if (data[r][idCol] === id) return rowToObject_(data[r], 'PRUEBAS', r + 1);
+  }
+  return null;
+}
+
+/**
+ * Toda prueba nace en estado 'Borrador' — nunca genera ningún PDF ni
+ * modifica el informe combinado del equipo en este momento. Antes
+ * (2026-08-30 y anterior) esta función generaba el informe/certificado de
+ * inmediato al guardar; el usuario reportó que eso es una falla real: una
+ * prueba enviada por error (un ensayo del formulario, un dato mal digitado)
+ * quedaba de inmediato como el informe oficial vigente del equipo, sin que
+ * nadie la hubiera revisado. Ahora la generación del PDF se movió por
+ * completo a certifyTest_ — ver ahí.
+ *
+ * El adjunto crudo que el técnico sube junto con la prueba (foto/PDF de
+ * evidencia de campo) SÍ se sigue subiendo de inmediato, sin esperar
+ * certificación — es evidencia de respaldo del técnico, no el informe
+ * oficial generado por el sistema, así que no aplica la misma regla.
+ */
 function persistTest_(transformer, testType, rawReadings, calculated, params, auth) {
   var site = findSiteRow_(transformer.site_id);
   var folders = ensureSiteFolders_(site);
 
   var attachmentId = '';
-  var fileName = '';
   if (params.file_base64) {
-    fileName = testType.toLowerCase() + '_' + transformer.serial_number + '_' + Date.now();
+    var fileName = testType.toLowerCase() + '_' + transformer.serial_number + '_' + Date.now();
     var saved = saveFileToDriveIn_(
       folders.certificadosFolderId,
       stripBase64Prefix_(params.file_base64),
@@ -809,37 +847,6 @@ function persistTest_(transformer, testType, rawReadings, calculated, params, au
   var id = generateId_();
   var createdAt = new Date().toISOString();
   var testedBy = auth.username || params.instrument_used || 'desconocido';
-  var reportFileId = '';
-
-  if (testType === 'ACEITE_DIELECTRICO') {
-    // Aceite: un informe por envío — no se consolida como las 3 pruebas
-    // eléctricas (ver regenerateElectricalCombinedReport_ para el porqué),
-    // porque conceptualmente es un análisis de una muestra puntual, no una
-    // medición eléctrica repetible del mismo equipo. Nunca debe impedir que
-    // la prueba se guarde: si falla, reportFileId queda vacío.
-    try {
-      var oilTestMeta = {
-        created_at: createdAt,
-        tested_by: testedBy,
-        instrument_used: params.instrument_used || '',
-        attachment_url: attachmentId ? driveFileUrl_(attachmentId) : null
-      };
-      var oilReport = generateOilTestReportPdf_(transformer, site, rawReadings, calculated, oilTestMeta, folders.certificadosFolderId);
-      reportFileId = oilReport.fileId;
-      appendRow_('DOCUMENTOS', {
-        id: generateId_(),
-        site_id: transformer.site_id,
-        category: 'CERTIFICADOS',
-        file_name: 'Informe_' + TEST_TYPE_LABELS_[testType] + '_' + transformer.serial_number,
-        file_id: reportFileId,
-        mime_type: 'application/pdf',
-        uploaded_by: auth.username || 'desconocido',
-        created_at: createdAt
-      });
-    } catch (reportErr) {
-      // No relanzar.
-    }
-  }
 
   appendRow_('PRUEBAS', {
     id: id,
@@ -852,23 +859,208 @@ function persistTest_(transformer, testType, rawReadings, calculated, params, au
     tested_by: testedBy,
     attachment_file_id: attachmentId,
     created_at: createdAt,
-    report_file_id: reportFileId
+    report_file_id: '',
+    estado_certificacion: 'Borrador',
+    revisado_por: '',
+    revisado_at: ''
   });
 
-  if (testType === 'TTR' || testType === 'RESISTENCIA_DEVANADOS' || testType === 'AISLAMIENTO') {
-    // Combinado por transformador (2026-08-30, reemplazó un informe por
-    // envío para estas 3 — ver regenerateElectricalCombinedReport_). La
-    // fila de PRUEBAS ya se guardó arriba, así que la consulta de "más
-    // reciente por tipo" adentro de esta función SÍ ve la que se acaba de
-    // guardar. Nunca debe impedir que la prueba se guarde (ya se guardó).
-    try {
-      regenerateElectricalCombinedReport_(transformer, site, folders.certificadosFolderId, testedBy);
-    } catch (combinedErr) {
-      // No relanzar.
-    }
-  }
+  return { id: id, calculated_results: calculated, report_url: null, estado_certificacion: 'Borrador' };
+}
 
-  return { id: id, calculated_results: calculated, report_url: reportFileId ? driveFileUrl_(reportFileId) : null };
+/**
+ * Solo Supervisor o Administrador (nunca el mismo Técnico que registró la
+ * prueba, por diseño — es una revisión de un segundo par de ojos). Mueve
+ * una prueba de 'Borrador' a 'Certificada' y, **solo en este momento**,
+ * genera el PDF: para Aceite dieléctrico, su propio informe; para
+ * TTR/Devanados/Aislamiento, regenera el informe eléctrico combinado del
+ * equipo (que por diseño de findLatestElectricalTestsByType_ ya solo
+ * considera pruebas Certificadas — ver ahí). Certificar una prueba ya
+ * certificada o ya rechazada no está permitido.
+ */
+function certifyTest_(params, auth) {
+  return withLock_(function () {
+    if (auth.role === 'Tecnico') {
+      return jsonResponse_({ status: 403, message: 'Solo un Supervisor o Administrador puede certificar una prueba' });
+    }
+    if (!params.id) return jsonResponse_({ status: 400, message: 'id es obligatorio' });
+    var testObj = findTestRow_(params.id);
+    if (!testObj) return jsonResponse_({ status: 404, message: 'Prueba no encontrada' });
+
+    var currentEstado = normalizeEstadoCertificacion_(testObj.estado_certificacion);
+    if (currentEstado !== 'Borrador') {
+      return jsonResponse_({ status: 400, message: 'Esta prueba ya fue ' + (currentEstado === 'Certificada' ? 'certificada' : 'rechazada') + ' — no se puede certificar de nuevo' });
+    }
+
+    var transformer = findTransformerRow_(testObj.transformer_id);
+    if (!transformer) return jsonResponse_({ status: 404, message: 'Transformador no encontrado' });
+    var site = findSiteRow_(transformer.site_id);
+    var folders = ensureSiteFolders_(site);
+    var calculated = safeParseJson_(testObj.calculated_results_json);
+    var rawReadings = safeParseJson_(testObj.raw_readings_json);
+    var reportFileId = '';
+
+    if (testObj.test_type === 'ACEITE_DIELECTRICO') {
+      // Un informe por prueba — nunca debe impedir la certificación en sí:
+      // si falla la generación, la prueba igual queda Certificada, solo sin PDF.
+      try {
+        var oilTestMeta = {
+          created_at: testObj.created_at,
+          tested_by: testObj.tested_by,
+          instrument_used: testObj.instrument_used,
+          attachment_url: testObj.attachment_file_id ? driveFileUrl_(testObj.attachment_file_id) : null
+        };
+        var oilReport = generateOilTestReportPdf_(transformer, site, rawReadings, calculated, oilTestMeta, folders.certificadosFolderId);
+        reportFileId = oilReport.fileId;
+        appendRow_('DOCUMENTOS', {
+          id: generateId_(),
+          site_id: transformer.site_id,
+          category: 'CERTIFICADOS',
+          file_name: 'Informe_' + TEST_TYPE_LABELS_[testObj.test_type] + '_' + transformer.serial_number,
+          file_id: reportFileId,
+          mime_type: 'application/pdf',
+          uploaded_by: auth.username || 'desconocido',
+          created_at: new Date().toISOString()
+        });
+      } catch (reportErr) {
+        // No relanzar.
+      }
+    } else if (testObj.test_type === 'TTR' || testObj.test_type === 'RESISTENCIA_DEVANADOS' || testObj.test_type === 'AISLAMIENTO') {
+      try {
+        regenerateElectricalCombinedReport_(transformer, site, folders.certificadosFolderId, testObj.tested_by);
+      } catch (combinedErr) {
+        // No relanzar.
+      }
+    }
+
+    var sheet = getSheet_('PRUEBAS');
+    sheet.getRange(testObj._row, colIndex_('PRUEBAS', 'estado_certificacion')).setValue('Certificada');
+    sheet.getRange(testObj._row, colIndex_('PRUEBAS', 'revisado_por')).setValue(auth.username || 'desconocido');
+    sheet.getRange(testObj._row, colIndex_('PRUEBAS', 'revisado_at')).setValue(new Date().toISOString());
+    if (reportFileId) sheet.getRange(testObj._row, colIndex_('PRUEBAS', 'report_file_id')).setValue(reportFileId);
+
+    return jsonResponse_({ status: 200, message: 'Prueba certificada', data: { id: params.id, report_url: reportFileId ? driveFileUrl_(reportFileId) : null } });
+  });
+}
+
+/**
+ * Solo Supervisor o Administrador. Mueve una prueba de 'Borrador' a
+ * 'Rechazada' — nunca genera ni modifica ningún PDF, y la fila NUNCA se
+ * borra (a pedido explícito del usuario: "debe quedar registrado que
+ * existió"). Una prueba rechazada nunca participa en
+ * findLatestElectricalTestsByType_ (que solo considera Certificadas), así
+ * que no puede terminar apareciendo en el informe combinado por error.
+ */
+function rejectTest_(params, auth) {
+  return withLock_(function () {
+    if (auth.role === 'Tecnico') {
+      return jsonResponse_({ status: 403, message: 'Solo un Supervisor o Administrador puede rechazar una prueba' });
+    }
+    if (!params.id) return jsonResponse_({ status: 400, message: 'id es obligatorio' });
+    var testObj = findTestRow_(params.id);
+    if (!testObj) return jsonResponse_({ status: 404, message: 'Prueba no encontrada' });
+
+    var currentEstado = normalizeEstadoCertificacion_(testObj.estado_certificacion);
+    if (currentEstado !== 'Borrador') {
+      return jsonResponse_({ status: 400, message: 'Esta prueba ya fue ' + (currentEstado === 'Certificada' ? 'certificada' : 'rechazada') + ' — no se puede rechazar' });
+    }
+
+    var sheet = getSheet_('PRUEBAS');
+    sheet.getRange(testObj._row, colIndex_('PRUEBAS', 'estado_certificacion')).setValue('Rechazada');
+    sheet.getRange(testObj._row, colIndex_('PRUEBAS', 'revisado_por')).setValue(auth.username || 'desconocido');
+    sheet.getRange(testObj._row, colIndex_('PRUEBAS', 'revisado_at')).setValue(new Date().toISOString());
+
+    return jsonResponse_({ status: 200, message: 'Prueba rechazada' });
+  });
+}
+
+/**
+ * Actualiza las lecturas de una prueba que sigue en 'Borrador' — pensada
+ * para el caso real de un técnico que va midiendo por partes (p. ej. TAPs de
+ * TTR a lo largo de varias horas o días) y necesita seguir sumando datos al
+ * mismo registro en vez de crear una prueba duplicada por cada sesión de
+ * medición. Recalcula con el mismo motor que el registro original
+ * (calculateTtr_/calculateWindingResistance_/calculateInsulation_/
+ * calculateOilAnalysis_) y sobrescribe raw_readings_json/
+ * calculated_results_json/verdict en la misma fila. NUNCA permitido si la
+ * prueba ya fue Certificada o Rechazada — en ese caso el registro es
+ * definitivo (o terminal) y no se toca.
+ * No genera ni regenera ningún PDF/informe — eso solo ocurre en
+ * certifyTest_. Sin restricción de rol (los mismos roles que pueden
+ * registrar una prueba pueden seguir editándola mientras sea Borrador).
+ */
+function updateTestDraft_(params, auth) {
+  return withLock_(function () {
+    if (!params.id) return jsonResponse_({ status: 400, message: 'id es obligatorio' });
+    var testObj = findTestRow_(params.id);
+    if (!testObj) return jsonResponse_({ status: 404, message: 'Prueba no encontrada' });
+
+    var currentEstado = normalizeEstadoCertificacion_(testObj.estado_certificacion);
+    if (currentEstado !== 'Borrador') {
+      return jsonResponse_({ status: 400, message: 'Esta prueba ya fue ' + (currentEstado === 'Certificada' ? 'certificada' : 'rechazada') + ' — ya no se puede editar' });
+    }
+    if (!params.readings) return jsonResponse_({ status: 400, message: 'readings es obligatorio' });
+
+    var transformer = findTransformerRow_(testObj.transformer_id);
+    if (!transformer) return jsonResponse_({ status: 404, message: 'Transformador no encontrado' });
+
+    var calculated;
+    try {
+      if (testObj.test_type === 'TTR') {
+        if (!params.readings.measurements) return jsonResponse_({ status: 400, message: 'readings.measurements es obligatorio' });
+        calculated = calculateTtr_(transformer, params.readings);
+      } else if (testObj.test_type === 'RESISTENCIA_DEVANADOS') {
+        if (!params.readings.measurements) return jsonResponse_({ status: 400, message: 'readings.measurements es obligatorio' });
+        calculated = calculateWindingResistance_(params.readings);
+      } else if (testObj.test_type === 'AISLAMIENTO') {
+        if (!params.readings.measurements) return jsonResponse_({ status: 400, message: 'readings.measurements es obligatorio' });
+        calculated = calculateInsulation_(params.readings);
+      } else if (testObj.test_type === 'ACEITE_DIELECTRICO') {
+        var r = params.readings;
+        if (!r.fisicoquimico_realizado && !r.dga_realizado && !r.pcb_realizado) {
+          return jsonResponse_({ status: 400, message: 'Activa al menos una sección (Fisicoquímico, DGA o PCB) antes de guardar' });
+        }
+        calculated = calculateOilAnalysis_(r);
+      } else {
+        return jsonResponse_({ status: 400, message: 'Tipo de prueba no reconocido' });
+      }
+    } catch (calcErr) {
+      return jsonResponse_({ status: 422, message: calcErr.message });
+    }
+
+    var attachmentId = testObj.attachment_file_id || '';
+    if (params.file_base64) {
+      var site = findSiteRow_(transformer.site_id);
+      var folders = ensureSiteFolders_(site);
+      var fileName = testObj.test_type.toLowerCase() + '_' + transformer.serial_number + '_' + Date.now();
+      var saved = saveFileToDriveIn_(
+        folders.certificadosFolderId,
+        stripBase64Prefix_(params.file_base64),
+        fileName,
+        params.file_mime_type || 'application/octet-stream'
+      );
+      attachmentId = saved.fileId;
+      appendRow_('DOCUMENTOS', {
+        id: generateId_(),
+        site_id: transformer.site_id,
+        category: 'CERTIFICADOS',
+        file_name: fileName,
+        file_id: attachmentId,
+        mime_type: params.file_mime_type || '',
+        uploaded_by: auth.username || 'desconocido',
+        created_at: new Date().toISOString()
+      });
+    }
+
+    var sheet = getSheet_('PRUEBAS');
+    sheet.getRange(testObj._row, colIndex_('PRUEBAS', 'raw_readings_json')).setValue(JSON.stringify(params.readings));
+    sheet.getRange(testObj._row, colIndex_('PRUEBAS', 'calculated_results_json')).setValue(JSON.stringify(calculated));
+    sheet.getRange(testObj._row, colIndex_('PRUEBAS', 'verdict')).setValue(calculated.overallVerdict);
+    if (params.instrument_used) sheet.getRange(testObj._row, colIndex_('PRUEBAS', 'instrument_used')).setValue(params.instrument_used);
+    if (attachmentId) sheet.getRange(testObj._row, colIndex_('PRUEBAS', 'attachment_file_id')).setValue(attachmentId);
+
+    return jsonResponse_({ status: 200, message: 'Borrador actualizado', data: { id: params.id, calculated_results: calculated, estado_certificacion: 'Borrador' } });
+  });
 }
 
 function submitTtrTest_(params, auth) {
@@ -959,7 +1151,10 @@ function listTests_(params) {
       tested_by: obj.tested_by,
       attachment_url: obj.attachment_file_id ? driveFileUrl_(obj.attachment_file_id) : null,
       report_url: obj.report_file_id ? driveFileUrl_(obj.report_file_id) : null,
-      created_at: obj.created_at
+      created_at: obj.created_at,
+      estado_certificacion: normalizeEstadoCertificacion_(obj.estado_certificacion),
+      revisado_por: obj.revisado_por || null,
+      revisado_at: obj.revisado_at || null
     };
     if (!light) {
       item.raw_readings = safeParseJson_(obj.raw_readings_json);
@@ -1719,6 +1914,11 @@ function toComparableDate_(iso) {
 /** La prueba MÁS RECIENTE de cada uno de los 3 tipos eléctricos para un
  *  transformador — `null` si ese tipo nunca se probó. Aceite dieléctrico
  *  no entra aquí a propósito (no es parte del combinado). */
+/** Solo considera pruebas 'Certificada' (normalizeEstadoCertificacion_) — un
+ *  Borrador o una Rechazada nunca puede terminar siendo "la más reciente"
+ *  del informe combinado, sin importar qué tan reciente sea su fecha. Es la
+ *  pieza clave de que el informe oficial del equipo solo cambie cuando un
+ *  Supervisor/Administrador certifica, nunca por un envío crudo. */
 function findLatestElectricalTestsByType_(transformerId) {
   var sheet = getSheet_('PRUEBAS');
   var data = sheet.getDataRange().getValues();
@@ -1730,6 +1930,7 @@ function findLatestElectricalTestsByType_(transformerId) {
     var type = data[r][typeCol];
     if (!(type in latest)) continue;
     var obj = rowToObject_(data[r], 'PRUEBAS', r + 1);
+    if (normalizeEstadoCertificacion_(obj.estado_certificacion) !== 'Certificada') continue;
     if (!latest[type] || toComparableDate_(obj.created_at) > toComparableDate_(latest[type].created_at)) {
       latest[type] = obj;
     }
@@ -2579,6 +2780,9 @@ var POST_ACTIONS = {
   submitWindingResistanceTest: submitWindingResistanceTest_,
   submitInsulationTest: submitInsulationTest_,
   submitOilAnalysisTest: submitOilAnalysisTest_,
+  certifyTest: certifyTest_,
+  rejectTest: rejectTest_,
+  updateTestDraft: updateTestDraft_,
   uploadDocument: uploadDocument_,
   deleteDocument: deleteDocument_,
   ensureDriveStructure: ensureDriveStructure_,

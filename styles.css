@@ -306,6 +306,12 @@ tr.rowlink:hover td { background: var(--surface-alt); }
 
 .empty-note { padding: 30px 18px; text-align: center; color: var(--text-faint); font-size: 12.5px; }
 
+.yearly-chart-block + .yearly-chart-block { margin-top: 22px; }
+.yearly-chart-title { font-size: 12.5px; font-weight: 600; color: var(--text-muted); margin-bottom: 8px; }
+.yearly-chart-legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 6px; }
+.yearly-chart-legend span { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--text-muted); }
+.yearly-chart-legend i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+
 .status-line { font-size: 12px; padding: 0 18px 14px; }
 .status-line.error { color: var(--danger); }
 .status-line.ok { color: var(--success-text); }

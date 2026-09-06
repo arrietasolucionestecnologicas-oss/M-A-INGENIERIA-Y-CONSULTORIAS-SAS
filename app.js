@@ -71,6 +71,8 @@ var state = {
   currentTransformerId: null,
   currentTransformer: null,
   currentTests: [],
+  editingDraftTestId: null,
+  editingTestType: null,
   pendingContextTarget: null,
   ttr: { currentTap: null, readings: {} },
   matrix: { taps: [] },
@@ -237,6 +239,14 @@ function verdictPillClass_(verdict) {
   if (verdict === 'RECHAZADO' || verdict === 'REQUIERE REGENERACIÓN / CAMBIO' || (verdict && verdict.indexOf('Contaminado') === 0)) return 'danger';
   if (verdict === 'OBSERVADO' || verdict === 'REQUIERE TERMOVACÍO') return 'warning';
   return 'neutral'; // incluye 'REGISTRADO' (solo DGA, sin veredicto propio)
+}
+
+/** Flujo de certificación (2026-09-05) — Borrador/Certificada/Rechazada,
+ *  ver certifyTest_/rejectTest_ en Código.gs. */
+function estadoCertificacionPillClass_(estado) {
+  if (estado === 'Certificada') return 'success';
+  if (estado === 'Rechazada') return 'danger';
+  return 'warning'; // Borrador
 }
 
 function setStatus_(el, message, ok, isError) {
@@ -1584,24 +1594,327 @@ function renderDetail() {
 
   document.getElementById('detailSpecialBanner').hidden = !usesCustomMatrix();
 
+  renderYearlyBehaviorChart_();
+
   var histBody = document.getElementById('testHistoryRows');
   if (state.currentTests.length === 0) {
-    histBody.innerHTML = '<tr><td colspan="6" class="empty-note">Aún no hay pruebas registradas para este transformador.</td></tr>';
+    histBody.innerHTML = '<tr><td colspan="7" class="empty-note">Aún no hay pruebas registradas para este transformador.</td></tr>';
   } else {
     histBody.innerHTML = state.currentTests.slice().reverse().map(function (test) {
       var links = [];
       if (test.report_url) links.push('<a href="' + test.report_url + '" target="_blank" rel="noopener" onclick="event.stopPropagation()">Informe</a>');
       if (test.attachment_url) links.push('<a href="' + test.attachment_url + '" target="_blank" rel="noopener" onclick="event.stopPropagation()">Evidencia</a>');
+      var estadoCert = test.estado_certificacion || 'Certificada';
+      var certCell = '<span class="pill ' + estadoCertificacionPillClass_(estadoCert) + '">' + escapeHtml_(estadoCert) + '</span>';
+      if (estadoCert === 'Borrador') {
+        certCell += ' <button type="button" class="pill neutral pill-btn" title="Editar borrador" onclick="event.stopPropagation(); handleEditTestDraft_(\'' + test.id + '\')">Editar</button>';
+        if (state.role !== 'Tecnico') {
+          certCell += ' <button type="button" class="pill success pill-btn" title="Certificar" onclick="event.stopPropagation(); handleCertifyTest_(\'' + test.id + '\')">Certificar</button>' +
+            ' <button type="button" class="pill danger pill-btn" title="Rechazar" onclick="event.stopPropagation(); handleRejectTest_(\'' + test.id + '\')">Rechazar</button>';
+        }
+      }
       return '<tr class="rowlink" onclick="openTestDetail_(\'' + test.id + '\')">' +
         '<td>' + fmtDate_(test.created_at) + '</td>' +
         '<td>' + escapeHtml_(test.test_type) + '</td>' +
         '<td>' + escapeHtml_(test.instrument_used || '—') + '</td>' +
         '<td>' + escapeHtml_(test.tested_by || '—') + '</td>' +
         '<td><span class="pill ' + verdictPillClass_(test.verdict) + '">' + escapeHtml_(test.verdict) + '</span></td>' +
+        '<td>' + certCell + '</td>' +
         '<td>' + (links.length ? links.join(' · ') : '—') + '</td>' +
         '</tr>';
     }).join('');
   }
+}
+
+// ---------------------------------------------------------------
+// Comportamiento anual del equipo — gráficas simples en SVG propio (sin
+// librería de gráficas, mismo criterio que el resto de la app, que hasta
+// ahora solo usaba tablas para sus KPIs). Todo se calcula en el cliente a
+// partir de state.currentTests, ya cargado completo (con calculated_results)
+// por openTransformer — no hace falta ninguna llamada nueva al backend.
+// Solo cuentan las pruebas Certificadas: una en Borrador o Rechazada todavía
+// no es un resultado válido para la tendencia histórica del equipo.
+// ---------------------------------------------------------------
+
+function renderYearlyBehaviorChart_() {
+  var container = document.getElementById('yearlyBehaviorBody');
+  if (!container) return;
+
+  var relevant = state.currentTests.filter(function (t) {
+    return (t.estado_certificacion || 'Certificada') === 'Certificada' &&
+      (t.test_type === 'AISLAMIENTO' || t.test_type === 'ACEITE_DIELECTRICO');
+  });
+  if (relevant.length === 0) {
+    container.innerHTML = '<p class="empty-note">Aún no hay pruebas certificadas de Resistencia de aislamiento o Aceite dieléctrico para mostrar una tendencia.</p>';
+    return;
+  }
+
+  var byYear = {};
+  relevant.forEach(function (t) {
+    var year = new Date(t.created_at).getFullYear();
+    if (!byYear[year]) byYear[year] = [];
+    byYear[year].push(t);
+  });
+  var years = Object.keys(byYear).map(Number).sort(function (a, b) { return a - b; });
+
+  var html = '';
+
+  var insulationTrend = computeYearlyInsulationTrend_(byYear, years);
+  if (insulationTrend) {
+    html += '<div class="yearly-chart-block">' +
+      '<div class="yearly-chart-title">Resistencia de aislamiento — DAR e IP promedio por año</div>' +
+      buildLineChartSvg_(years, [
+        { label: 'DAR promedio', color: 'var(--accent)', values: insulationTrend.dar },
+        { label: 'IP promedio', color: 'var(--danger)', values: insulationTrend.ip }
+      ]) +
+      '</div>';
+  }
+
+  var oilTrend = computeYearlyOilTrend_(byYear, years);
+  if (oilTrend) {
+    html += '<div class="yearly-chart-block">' +
+      '<div class="yearly-chart-title">Aceite dieléctrico — rigidez dieléctrica promedio por año (mínimo aceptado 30 kV)</div>' +
+      buildLineChartSvg_(years, [{ label: 'Rigidez dieléctrica (kV)', color: 'var(--accent)', values: oilTrend.rigidez }]) +
+      '</div>';
+    html += '<div class="yearly-chart-block">' +
+      '<div class="yearly-chart-title">Aceite dieléctrico — número de acidez promedio por año (máximo aceptado 0.15 mg KOH/g)</div>' +
+      buildLineChartSvg_(years, [{ label: 'Número de acidez (mg KOH/g)', color: 'var(--danger)', values: oilTrend.acidez }]) +
+      '</div>';
+  }
+
+  container.innerHTML = html || '<p class="empty-note">Aún no hay pruebas certificadas de Resistencia de aislamiento o Aceite dieléctrico para mostrar una tendencia.</p>';
+}
+
+function average_(values) {
+  return values.reduce(function (a, b) { return a + b; }, 0) / values.length;
+}
+
+/** Dos series por año (DAR e IP): el promedio, entre las combinaciones de
+ *  devanado de cada prueba de Aislamiento certificada de ese año, del DAR/IP
+ *  de esa prueba (a su vez promediado entre sus combinaciones AT-BT/
+ *  AT-Tierra/BT-Tierra). */
+function computeYearlyInsulationTrend_(byYear, years) {
+  var darValues = {}, ipValues = {};
+  var any = false;
+  years.forEach(function (y) {
+    var darsPerTest = [], ipsPerTest = [];
+    byYear[y].forEach(function (t) {
+      if (t.test_type !== 'AISLAMIENTO') return;
+      var calc = t.calculated_results;
+      if (!calc || !calc.measurements) return;
+      var dars = [], ips = [];
+      Object.keys(calc.measurements).forEach(function (k) {
+        var m = calc.measurements[k];
+        if (typeof m.dar === 'number' && !isNaN(m.dar)) dars.push(m.dar);
+        if (typeof m.ip === 'number' && !isNaN(m.ip)) ips.push(m.ip);
+      });
+      if (dars.length) darsPerTest.push(average_(dars));
+      if (ips.length) ipsPerTest.push(average_(ips));
+    });
+    if (darsPerTest.length) { darValues[y] = average_(darsPerTest); any = true; } else { darValues[y] = null; }
+    if (ipsPerTest.length) { ipValues[y] = average_(ipsPerTest); any = true; } else { ipValues[y] = null; }
+  });
+  return any ? { dar: darValues, ip: ipValues } : null;
+}
+
+/** Dos series por año (rigidez dieléctrica y número de acidez): los dos
+ *  indicadores clásicos de envejecimiento del aceite (la rigidez baja y la
+ *  acidez sube con el tiempo). Se leen de raw_readings (no de
+ *  calculated_results, que para Aceite solo guarda el veredicto de cada
+ *  sección, no los valores crudos) y solo de pruebas con la sección
+ *  Fisicoquímico activada — DGA/PCB no miden ninguno de los dos. */
+function computeYearlyOilTrend_(byYear, years) {
+  var rigidezValues = {}, acidezValues = {};
+  var any = false;
+  years.forEach(function (y) {
+    var rigidezPerTest = [], acidezPerTest = [];
+    byYear[y].forEach(function (t) {
+      if (t.test_type !== 'ACEITE_DIELECTRICO') return;
+      var raw = t.raw_readings;
+      if (!raw || !raw.fisicoquimico_realizado) return;
+      if (typeof raw.rigidez_dielectrica_kv === 'number' && !isNaN(raw.rigidez_dielectrica_kv)) rigidezPerTest.push(raw.rigidez_dielectrica_kv);
+      if (typeof raw.numero_acido_mg_koh_g === 'number' && !isNaN(raw.numero_acido_mg_koh_g)) acidezPerTest.push(raw.numero_acido_mg_koh_g);
+    });
+    if (rigidezPerTest.length) { rigidezValues[y] = average_(rigidezPerTest); any = true; } else { rigidezValues[y] = null; }
+    if (acidezPerTest.length) { acidezValues[y] = average_(acidezPerTest); any = true; } else { acidezValues[y] = null; }
+  });
+  return any ? { rigidez: rigidezValues, acidez: acidezValues } : null;
+}
+
+/** Línea(s) por año, con hasta un par de series (ej. DAR e IP de
+ *  Aislamiento). Un año sin dato para una serie simplemente no dibuja punto
+ *  ahí (no interpola, no fuerza 0). SVG dibujado a mano, sin librería. */
+function buildLineChartSvg_(years, lines) {
+  var W = Math.max(340, years.length * 80);
+  var H = 200;
+  var chartTop = 20, chartBottom = 34, chartLeft = 10, chartRight = 10;
+  var chartH = H - chartTop - chartBottom;
+  var chartW = W - chartLeft - chartRight;
+
+  var allValues = [];
+  lines.forEach(function (line) {
+    years.forEach(function (y) { if (line.values[y] != null) allValues.push(line.values[y]); });
+  });
+  var maxVal = allValues.length ? Math.max.apply(null, allValues) : 1;
+  var minVal = allValues.length ? Math.min(0, Math.min.apply(null, allValues)) : 0;
+  if (maxVal === minVal) maxVal = minVal + 1;
+
+  function xFor(i) { return years.length > 1 ? chartLeft + (i / (years.length - 1)) * chartW : chartLeft + chartW / 2; }
+  function yFor(v) { return chartTop + chartH - ((v - minVal) / (maxVal - minVal)) * chartH; }
+
+  var linesSvg = lines.map(function (line) {
+    var points = [];
+    var dots = '';
+    years.forEach(function (y, i) {
+      var v = line.values[y];
+      if (v == null) return;
+      var x = xFor(i), yy = yFor(v);
+      points.push(x + ',' + yy);
+      dots += '<circle cx="' + x + '" cy="' + yy + '" r="3.5" fill="' + line.color + '"><title>' + y + ': ' + v.toFixed(2) + '</title></circle>';
+    });
+    var poly = points.length > 1 ? '<polyline points="' + points.join(' ') + '" fill="none" stroke="' + line.color + '" stroke-width="2"/>' : '';
+    return poly + dots;
+  }).join('');
+
+  var yearLabels = years.map(function (y, i) {
+    return '<text x="' + xFor(i) + '" y="' + (H - 12) + '" text-anchor="middle" font-size="12" fill="var(--text)">' + y + '</text>';
+  }).join('');
+
+  var baseline = '<line x1="' + chartLeft + '" y1="' + (chartTop + chartH) + '" x2="' + (chartLeft + chartW) + '" y2="' + (chartTop + chartH) + '" stroke="var(--border)" stroke-width="1"/>';
+
+  var legend = '<div class="yearly-chart-legend">' + lines.map(function (line) {
+    return '<span><i style="background:' + line.color + '"></i>' + escapeHtml_(line.label) + '</span>';
+  }).join('') + '</div>';
+
+  return '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%; max-width:' + W + 'px; height:auto; display:block;">' + baseline + linesSvg + yearLabels + '</svg>' + legend;
+}
+
+/** Solo Supervisor/Administrador (el backend también lo exige). Genera el
+ *  PDF/informe combinado solo ahora, al certificar. */
+function handleCertifyTest_(testId) {
+  if (!confirm('¿Certificar esta prueba? Se generará el informe/PDF correspondiente.')) return;
+  callApi('certifyTest', 'POST', { id: testId })
+    .then(function () {
+      return callApi('listTests', 'GET', { transformer_id: state.currentTransformerId });
+    })
+    .then(function (tests) {
+      state.currentTests = tests || [];
+      saveDraft_('mya_cache_tests_' + state.currentTransformerId, state.currentTests);
+      renderDetail();
+    })
+    .catch(function (err) { alert(err.message || 'No se pudo certificar la prueba.'); });
+}
+
+/** Rechazo terminal: el registro permanece (nunca se borra), pero nunca
+ *  genera PDF ni entra al informe combinado. */
+function handleRejectTest_(testId) {
+  if (!confirm('¿Rechazar esta prueba? Quedará registrada como rechazada de forma permanente.')) return;
+  callApi('rejectTest', 'POST', { id: testId })
+    .then(function () {
+      return callApi('listTests', 'GET', { transformer_id: state.currentTransformerId });
+    })
+    .then(function (tests) {
+      state.currentTests = tests || [];
+      saveDraft_('mya_cache_tests_' + state.currentTransformerId, state.currentTests);
+      renderDetail();
+    })
+    .catch(function (err) { alert(err.message || 'No se pudo rechazar la prueba.'); });
+}
+
+/** Un Borrador no se descarta y se vuelve a digitar desde cero: se reabre el
+ *  formulario del tipo correspondiente con sus lecturas ya cargadas, para
+ *  seguir sumando datos (caso real: varios TAPs de TTR medidos a lo largo de
+ *  varias sesiones) o corregir un dato antes de que un Supervisor/
+ *  Administrador lo certifique o lo rechace. Al guardar, submitTtr/
+ *  submitWinding/submitInsulation/submitOil detectan state.editingDraftTestId
+ *  y llaman updateTestDraft en vez de crear una prueba nueva. */
+function handleEditTestDraft_(testId) {
+  var test = state.currentTests.filter(function (t) { return t.id === testId; })[0];
+  if (!test) return;
+  if ((test.estado_certificacion || 'Certificada') !== 'Borrador') return;
+
+  var raw = test.raw_readings || {};
+  state.editingDraftTestId = testId;
+  state.editingTestType = test.test_type;
+
+  if (test.test_type === 'TTR') {
+    state.ttr.readings = JSON.parse(JSON.stringify(raw.measurements || {}));
+    var ttrPositions = tapPositions();
+    state.ttr.currentTap = ttrPositions.length ? ttrPositions[0] : null;
+    showView('ttr-form');
+    document.getElementById('ttrVoltage').value = raw.testVoltageV != null ? raw.testVoltageV : '';
+    document.getElementById('ttrInstrument').value = test.instrument_used || '';
+  } else if (test.test_type === 'RESISTENCIA_DEVANADOS') {
+    state.wr.readings = {};
+    (raw.measurements || []).forEach(function (m) {
+      state.wr.readings[m.tapPosition] = { windingTemperatureC: m.windingTemperatureC, phases: m.phases };
+    });
+    var wrTaps = Object.keys(state.wr.readings).map(Number).sort(function (a, b) { return a - b; });
+    state.wr.currentTap = wrTaps.length ? wrTaps[0] : null;
+    state.wr.secondary = raw.secondary ? { windingTemperatureC: raw.secondary.windingTemperatureC, phases: raw.secondary.phases } : defaultWrSecondary_();
+    showView('winding-form');
+    document.getElementById('wrInstrument').value = test.instrument_used || '';
+  } else if (test.test_type === 'AISLAMIENTO') {
+    state.insulation = {
+      windingTemperatureC: raw.windingTemperatureC != null ? raw.windingTemperatureC : 20,
+      combinations: JSON.parse(JSON.stringify(raw.measurements || defaultInsulationCombinations_()))
+    };
+    showView('insulation-form');
+    document.getElementById('insulationInstrument').value = test.instrument_used || '';
+  } else if (test.test_type === 'ACEITE_DIELECTRICO') {
+    state.oil = {
+      sampleBy: raw.sample_taken_by || '',
+      sampleDate: raw.sample_date || '',
+      fisicoquimico_realizado: !!raw.fisicoquimico_realizado,
+      dga_realizado: !!raw.dga_realizado,
+      pcb_realizado: !!raw.pcb_realizado,
+      agua_ppm: raw.agua_ppm != null ? raw.agua_ppm : null,
+      rigidez_dielectrica_kv: raw.rigidez_dielectrica_kv != null ? raw.rigidez_dielectrica_kv : null,
+      tension_interfacial_dinas_cm: raw.tension_interfacial_dinas_cm != null ? raw.tension_interfacial_dinas_cm : null,
+      numero_acido_mg_koh_g: raw.numero_acido_mg_koh_g != null ? raw.numero_acido_mg_koh_g : null,
+      densidad_relativa: raw.densidad_relativa != null ? raw.densidad_relativa : null,
+      color_astm: raw.color_astm || '',
+      examen_visual: raw.examen_visual || '',
+      dga: {}, pcb: {}
+    };
+    OIL_DGA_GASES.forEach(function (g) { state.oil.dga[g.key] = raw[g.key] != null ? raw[g.key] : null; });
+    OIL_PCB_AROCLORES.forEach(function (key) { state.oil.pcb[key] = raw[key] != null ? raw[key] : null; });
+    showView('oil-form');
+    document.getElementById('oilSampleBy').value = state.oil.sampleBy || '';
+    document.getElementById('oilSampleDate').value = state.oil.sampleDate || '';
+    document.getElementById('oilSectionFisicoquimico').checked = state.oil.fisicoquimico_realizado;
+    document.getElementById('oilBodyFisicoquimico').hidden = !state.oil.fisicoquimico_realizado;
+    document.getElementById('oilAgua').value = state.oil.agua_ppm != null ? state.oil.agua_ppm : '';
+    document.getElementById('oilRigidez').value = state.oil.rigidez_dielectrica_kv != null ? state.oil.rigidez_dielectrica_kv : '';
+    document.getElementById('oilTension').value = state.oil.tension_interfacial_dinas_cm != null ? state.oil.tension_interfacial_dinas_cm : '';
+    document.getElementById('oilAcidez').value = state.oil.numero_acido_mg_koh_g != null ? state.oil.numero_acido_mg_koh_g : '';
+    document.getElementById('oilDensidad').value = state.oil.densidad_relativa != null ? state.oil.densidad_relativa : '';
+    document.getElementById('oilColorAstm').value = state.oil.color_astm || '';
+    document.getElementById('oilExamenVisual').value = state.oil.examen_visual || '';
+    document.getElementById('oilSectionDga').checked = state.oil.dga_realizado;
+    document.getElementById('oilBodyDga').hidden = !state.oil.dga_realizado;
+    OIL_DGA_GASES.forEach(function (g) {
+      var el = document.getElementById('oilDga_' + g.key);
+      if (el) el.value = state.oil.dga[g.key] != null ? state.oil.dga[g.key] : '';
+    });
+    document.getElementById('oilSectionPcb').checked = state.oil.pcb_realizado;
+    document.getElementById('oilBodyPcb').hidden = !state.oil.pcb_realizado;
+    OIL_PCB_AROCLORES.forEach(function (key) {
+      var el = document.getElementById('oilPcb_' + key);
+      if (el) el.value = state.oil.pcb[key] != null ? state.oil.pcb[key] : '';
+    });
+    refreshOil();
+  }
+}
+
+/** Sale del modo edición sin guardar — el borrador queda tal como estaba en
+ *  el servidor (el borrador local del navegador sí quedó sobrescrito con
+ *  las lecturas que se estaban editando, pero eso no afecta lo guardado). */
+function cancelEditDraft_() {
+  state.editingDraftTestId = null;
+  state.editingTestType = null;
+  renderDetail();
+  showView('detail');
 }
 
 // ---------------------------------------------------------------
@@ -1634,6 +1947,12 @@ function closeTestDetailModal_() {
 function renderTestDetailBody_(test) {
   var meta = '<div class="field-note">Técnico: ' + escapeHtml_(test.tested_by || '—') +
     ' &middot; Instrumento: ' + escapeHtml_(test.instrument_used || '—') + '</div>';
+  var estadoCert = test.estado_certificacion || 'Certificada';
+  meta += '<div class="field-note"><span class="pill ' + estadoCertificacionPillClass_(estadoCert) + '">' + escapeHtml_(estadoCert) + '</span>';
+  if (estadoCert !== 'Borrador' && test.revisado_por) {
+    meta += ' &middot; Revisado por: ' + escapeHtml_(test.revisado_por) + (test.revisado_at ? ' (' + fmtDate_(test.revisado_at) + ')' : '');
+  }
+  meta += '</div>';
   var body;
   if (test.test_type === 'TTR') body = renderTtrTestDetail_(test);
   else if (test.test_type === 'RESISTENCIA_DEVANADOS') body = renderWindingTestDetail_(test);
@@ -1786,11 +2105,14 @@ function tapVoltageFor(position) {
 
 function renderTtrFormContext() {
   var t = state.currentTransformer;
-  document.getElementById('ttrFormSubtitle').textContent = t.serial_number + ' · Relación de Transformación';
+  var editing = state.editingDraftTestId && state.editingTestType === 'TTR';
+  document.getElementById('ttrFormSubtitle').innerHTML = escapeHtml_(t.serial_number + ' · Relación de Transformación') +
+    (editing ? ' · <strong>Editando borrador existente</strong> · <a href="#" onclick="event.preventDefault(); cancelEditDraft_();">Cancelar edición</a>' : '');
   document.getElementById('ttrTenantChip').textContent = state.username + ' · ' + state.role;
   document.getElementById('ttrVectorGroupLabel').textContent = t.vector_group || 'N/A';
   document.getElementById('tapCountLabel').textContent = tapPositions().length;
   document.getElementById('sessionRolePill').textContent = state.role || '—';
+  document.getElementById('submitTtrBtn').textContent = editing ? 'Guardar cambios en el borrador' : 'Enviar prueba TTR';
 }
 
 function resetTtrStateFromTransformer() {
@@ -2072,22 +2394,30 @@ function refreshTtr() {
 function submitTtr() {
   var btn = document.getElementById('submitTtrBtn');
   var status = document.getElementById('ttrSubmitStatus');
+  var editingId = state.editingDraftTestId && state.editingTestType === 'TTR' ? state.editingDraftTestId : null;
   btn.disabled = true;
-  setStatus_(status, 'Enviando…', false);
+  setStatus_(status, editingId ? 'Guardando cambios…' : 'Enviando…', false);
 
   readFileAsBase64_(document.getElementById('ttrEvidence'))
     .then(function (evidence) {
       var body = buildTtrRequestBody();
       warnIfInstrumentExpired_(body.instrument_used);
       if (evidence) { body.file_base64 = evidence.base64; body.file_mime_type = evidence.mimeType; }
+      if (editingId) { body.id = editingId; return callApi('updateTestDraft', 'POST', body); }
       return callApi('submitTtrTest', 'POST', body);
     })
     .then(function (data) {
-      setStatus_(status, 'Prueba registrada · veredicto: ' + data.calculated_results.overallVerdict, true);
+      setStatus_(status, (editingId ? 'Borrador actualizado · veredicto preliminar: ' : 'Guardada como borrador · veredicto preliminar: ') + data.calculated_results.overallVerdict + ' · pendiente de certificación', true);
       clearDraft_('mya_draft_ttr_' + state.currentTransformerId);
+      if (editingId) { state.editingDraftTestId = null; state.editingTestType = null; }
       return callApi('listTests', 'GET', { transformer_id: state.currentTransformerId });
     })
-    .then(function (tests) { state.currentTests = tests || []; saveDraft_('mya_cache_tests_' + state.currentTransformerId, state.currentTests); renderDetail(); })
+    .then(function (tests) {
+      state.currentTests = tests || [];
+      saveDraft_('mya_cache_tests_' + state.currentTransformerId, state.currentTests);
+      renderDetail();
+      if (editingId) showView('detail');
+    })
     .catch(function (err) {
       // Las lecturas quedan intactas en state.ttr.readings y en el borrador local: el técnico puede reintentar sin volver a digitar.
       if (!err || (err.status !== 402 && err.status !== 403)) setStatus_(status, formatNetworkAwareError_(err || {}), false, true);
@@ -2101,8 +2431,11 @@ function submitTtr() {
 
 function renderWindingFormContext() {
   var t = state.currentTransformer;
-  document.getElementById('wrFormSubtitle').textContent = t.serial_number + ' · Desbalance entre fases';
+  var editing = state.editingDraftTestId && state.editingTestType === 'RESISTENCIA_DEVANADOS';
+  document.getElementById('wrFormSubtitle').innerHTML = escapeHtml_(t.serial_number + ' · Desbalance entre fases') +
+    (editing ? ' · <strong>Editando borrador existente</strong> · <a href="#" onclick="event.preventDefault(); cancelEditDraft_();">Cancelar edición</a>' : '');
   document.getElementById('wrTenantChip').textContent = state.username + ' · ' + state.role;
+  document.getElementById('submitWrBtn').textContent = editing ? 'Guardar cambios en el borrador' : 'Enviar prueba';
 }
 
 /** Los identificadores de fase de TTR (H1H2-X1X2) y de resistencia de devanados (H1-H2) difieren; se mapean explícitamente. */
@@ -2317,22 +2650,30 @@ function refreshWinding() {
 function submitWinding() {
   var btn = document.getElementById('submitWrBtn');
   var status = document.getElementById('wrSubmitStatus');
+  var editingId = state.editingDraftTestId && state.editingTestType === 'RESISTENCIA_DEVANADOS' ? state.editingDraftTestId : null;
   btn.disabled = true;
-  setStatus_(status, 'Enviando…', false);
+  setStatus_(status, editingId ? 'Guardando cambios…' : 'Enviando…', false);
 
   readFileAsBase64_(document.getElementById('wrEvidence'))
     .then(function (evidence) {
       var body = buildWindingRequestBody();
       warnIfInstrumentExpired_(body.instrument_used);
       if (evidence) { body.file_base64 = evidence.base64; body.file_mime_type = evidence.mimeType; }
+      if (editingId) { body.id = editingId; return callApi('updateTestDraft', 'POST', body); }
       return callApi('submitWindingResistanceTest', 'POST', body);
     })
     .then(function (data) {
-      setStatus_(status, 'Prueba registrada · veredicto: ' + data.calculated_results.overallVerdict, true);
+      setStatus_(status, (editingId ? 'Borrador actualizado · veredicto preliminar: ' : 'Guardada como borrador · veredicto preliminar: ') + data.calculated_results.overallVerdict + ' · pendiente de certificación', true);
       clearDraft_('mya_draft_wr_' + state.currentTransformerId);
+      if (editingId) { state.editingDraftTestId = null; state.editingTestType = null; }
       return callApi('listTests', 'GET', { transformer_id: state.currentTransformerId });
     })
-    .then(function (tests) { state.currentTests = tests || []; saveDraft_('mya_cache_tests_' + state.currentTransformerId, state.currentTests); renderDetail(); })
+    .then(function (tests) {
+      state.currentTests = tests || [];
+      saveDraft_('mya_cache_tests_' + state.currentTransformerId, state.currentTests);
+      renderDetail();
+      if (editingId) showView('detail');
+    })
     .catch(function (err) {
       // Las lecturas quedan intactas en state.wr.readings y en el borrador local: el técnico puede reintentar sin volver a digitar.
       if (!err || (err.status !== 402 && err.status !== 403)) setStatus_(status, formatNetworkAwareError_(err || {}), false, true);
@@ -2346,8 +2687,11 @@ function submitWinding() {
 
 function renderOilFormContext() {
   var t = state.currentTransformer;
-  document.getElementById('oilFormSubtitle').textContent = t.serial_number + ' · marca solo las secciones que apliquen a esta visita';
+  var editing = state.editingDraftTestId && state.editingTestType === 'ACEITE_DIELECTRICO';
+  document.getElementById('oilFormSubtitle').innerHTML = escapeHtml_(t.serial_number + ' · marca solo las secciones que apliquen a esta visita') +
+    (editing ? ' · <strong>Editando borrador existente</strong> · <a href="#" onclick="event.preventDefault(); cancelEditDraft_();">Cancelar edición</a>' : '');
   document.getElementById('oilTenantChip').textContent = state.username + ' · ' + state.role;
+  document.getElementById('submitOilBtn').textContent = editing ? 'Guardar cambios en el borrador' : 'Enviar prueba de aceite';
 }
 
 /** Genera los campos repetitivos de DGA (9 gases) y PCB (7 Aroclores) una sola vez —
@@ -2584,6 +2928,7 @@ function refreshOil() {
 function submitOil() {
   var btn = document.getElementById('submitOilBtn');
   var status = document.getElementById('oilSubmitStatus');
+  var editingId = state.editingDraftTestId && state.editingTestType === 'ACEITE_DIELECTRICO' ? state.editingDraftTestId : null;
 
   if (!state.oil.fisicoquimico_realizado && !state.oil.dga_realizado && !state.oil.pcb_realizado) {
     setStatus_(status, 'Activa al menos una sección (Fisicoquímico, DGA o PCB) antes de enviar', false, true);
@@ -2591,20 +2936,27 @@ function submitOil() {
   }
 
   btn.disabled = true;
-  setStatus_(status, 'Enviando…', false);
+  setStatus_(status, editingId ? 'Guardando cambios…' : 'Enviando…', false);
 
   readFileAsBase64_(document.getElementById('oilCertificate'))
     .then(function (evidence) {
       var body = buildOilRequestBody();
       if (evidence) { body.file_base64 = evidence.base64; body.file_mime_type = evidence.mimeType; }
+      if (editingId) { body.id = editingId; return callApi('updateTestDraft', 'POST', body); }
       return callApi('submitOilAnalysisTest', 'POST', body);
     })
     .then(function (data) {
-      setStatus_(status, 'Prueba registrada · dictamen: ' + data.calculated_results.overallVerdict, true);
+      setStatus_(status, (editingId ? 'Borrador actualizado · dictamen preliminar: ' : 'Guardada como borrador · dictamen preliminar: ') + data.calculated_results.overallVerdict + ' · pendiente de certificación', true);
       clearDraft_('mya_draft_oil_' + state.currentTransformerId);
+      if (editingId) { state.editingDraftTestId = null; state.editingTestType = null; }
       return callApi('listTests', 'GET', { transformer_id: state.currentTransformerId });
     })
-    .then(function (tests) { state.currentTests = tests || []; saveDraft_('mya_cache_tests_' + state.currentTransformerId, state.currentTests); renderDetail(); })
+    .then(function (tests) {
+      state.currentTests = tests || [];
+      saveDraft_('mya_cache_tests_' + state.currentTransformerId, state.currentTests);
+      renderDetail();
+      if (editingId) showView('detail');
+    })
     .catch(function (err) {
       // Las lecturas quedan intactas en state.oil y en el borrador local: se puede reintentar sin volver a digitar.
       if (!err || (err.status !== 402 && err.status !== 403)) setStatus_(status, formatNetworkAwareError_(err || {}), false, true);
@@ -2659,8 +3011,11 @@ function resetInsulationStateFromTransformer() {
 
 function renderInsulationFormContext() {
   var t = state.currentTransformer;
-  document.getElementById('insulationFormSubtitle').textContent = t.serial_number + ' · DAR e IP por combinación de devanado';
+  var editing = state.editingDraftTestId && state.editingTestType === 'AISLAMIENTO';
+  document.getElementById('insulationFormSubtitle').innerHTML = escapeHtml_(t.serial_number + ' · DAR e IP por combinación de devanado') +
+    (editing ? ' · <strong>Editando borrador existente</strong> · <a href="#" onclick="event.preventDefault(); cancelEditDraft_();">Cancelar edición</a>' : '');
   document.getElementById('insulationTenantChip').textContent = state.username + ' · ' + state.role;
+  document.getElementById('submitInsulationBtn').textContent = editing ? 'Guardar cambios en el borrador' : 'Enviar prueba';
 }
 
 function renderInsulationCombinationEntries() {
@@ -2748,22 +3103,30 @@ function refreshInsulation() {
 function submitInsulation() {
   var btn = document.getElementById('submitInsulationBtn');
   var status = document.getElementById('insulationSubmitStatus');
+  var editingId = state.editingDraftTestId && state.editingTestType === 'AISLAMIENTO' ? state.editingDraftTestId : null;
   btn.disabled = true;
-  setStatus_(status, 'Enviando…', false);
+  setStatus_(status, editingId ? 'Guardando cambios…' : 'Enviando…', false);
 
   readFileAsBase64_(document.getElementById('insulationEvidence'))
     .then(function (evidence) {
       var body = buildInsulationRequestBody();
       warnIfInstrumentExpired_(body.instrument_used);
       if (evidence) { body.file_base64 = evidence.base64; body.file_mime_type = evidence.mimeType; }
+      if (editingId) { body.id = editingId; return callApi('updateTestDraft', 'POST', body); }
       return callApi('submitInsulationTest', 'POST', body);
     })
     .then(function (data) {
-      setStatus_(status, 'Prueba registrada · veredicto: ' + data.calculated_results.overallVerdict, true);
+      setStatus_(status, (editingId ? 'Borrador actualizado · veredicto preliminar: ' : 'Guardada como borrador · veredicto preliminar: ') + data.calculated_results.overallVerdict + ' · pendiente de certificación', true);
       clearDraft_('mya_draft_insulation_' + state.currentTransformerId);
+      if (editingId) { state.editingDraftTestId = null; state.editingTestType = null; }
       return callApi('listTests', 'GET', { transformer_id: state.currentTransformerId });
     })
-    .then(function (tests) { state.currentTests = tests || []; saveDraft_('mya_cache_tests_' + state.currentTransformerId, state.currentTests); renderDetail(); })
+    .then(function (tests) {
+      state.currentTests = tests || [];
+      saveDraft_('mya_cache_tests_' + state.currentTransformerId, state.currentTests);
+      renderDetail();
+      if (editingId) showView('detail');
+    })
     .catch(function (err) {
       // Las lecturas quedan intactas en state.insulation y en el borrador local: se puede reintentar sin volver a digitar.
       if (!err || (err.status !== 402 && err.status !== 403)) setStatus_(status, formatNetworkAwareError_(err || {}), false, true);
