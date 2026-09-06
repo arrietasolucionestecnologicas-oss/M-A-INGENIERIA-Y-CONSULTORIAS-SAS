@@ -1661,12 +1661,15 @@ function renderYearlyBehaviorChart_() {
 
   var insulationTrend = computeYearlyInsulationTrend_(byYear, years);
   if (insulationTrend) {
+    var comboColors = { 'AT-BT': 'var(--accent)', 'AT-Tierra': 'var(--danger)', 'BT-Tierra': 'var(--warning)' };
+    var comboKeys = ['AT-BT', 'AT-Tierra', 'BT-Tierra'];
     html += '<div class="yearly-chart-block">' +
-      '<div class="yearly-chart-title">Resistencia de aislamiento — DAR e IP promedio por año</div>' +
-      buildLineChartSvg_(years, [
-        { label: 'DAR promedio', color: 'var(--accent)', values: insulationTrend.dar },
-        { label: 'IP promedio', color: 'var(--danger)', values: insulationTrend.ip }
-      ]) +
+      '<div class="yearly-chart-title">Resistencia de aislamiento — DAR por combinación de devanado</div>' +
+      buildLineChartSvg_(years, comboKeys.map(function (c) { return { label: c, color: comboColors[c], values: insulationTrend.dar[c] }; })) +
+      '</div>';
+    html += '<div class="yearly-chart-block">' +
+      '<div class="yearly-chart-title">Resistencia de aislamiento — IP por combinación de devanado</div>' +
+      buildLineChartSvg_(years, comboKeys.map(function (c) { return { label: c, color: comboColors[c], values: insulationTrend.ip[c] }; })) +
       '</div>';
   }
 
@@ -1689,32 +1692,38 @@ function average_(values) {
   return values.reduce(function (a, b) { return a + b; }, 0) / values.length;
 }
 
-/** Dos series por año (DAR e IP): el promedio, entre las combinaciones de
- *  devanado de cada prueba de Aislamiento certificada de ese año, del DAR/IP
- *  de esa prueba (a su vez promediado entre sus combinaciones AT-BT/
- *  AT-Tierra/BT-Tierra). */
+/** Series por combinación de devanado (AT-BT, AT-Tierra, BT-Tierra), NO
+ *  promediadas entre sí — promediarlas escondería cuál combinación en
+ *  particular se está degradando, que es justo el dato que interesa ver.
+ *  Un punto por año y por combinación: el promedio del DAR (y por separado
+ *  del IP) de esa combinación entre las pruebas de Aislamiento certificadas
+ *  de ese año (normalmente una sola prueba por año, pero promedia igual si
+ *  hubo más de una). */
 function computeYearlyInsulationTrend_(byYear, years) {
-  var darValues = {}, ipValues = {};
+  var combos = ['AT-BT', 'AT-Tierra', 'BT-Tierra'];
+  var dar = {}, ip = {};
+  combos.forEach(function (c) { dar[c] = {}; ip[c] = {}; });
   var any = false;
   years.forEach(function (y) {
-    var darsPerTest = [], ipsPerTest = [];
+    var darPerCombo = {}, ipPerCombo = {};
+    combos.forEach(function (c) { darPerCombo[c] = []; ipPerCombo[c] = []; });
     byYear[y].forEach(function (t) {
       if (t.test_type !== 'AISLAMIENTO') return;
       var calc = t.calculated_results;
       if (!calc || !calc.measurements) return;
-      var dars = [], ips = [];
-      Object.keys(calc.measurements).forEach(function (k) {
-        var m = calc.measurements[k];
-        if (typeof m.dar === 'number' && !isNaN(m.dar)) dars.push(m.dar);
-        if (typeof m.ip === 'number' && !isNaN(m.ip)) ips.push(m.ip);
+      combos.forEach(function (c) {
+        var m = calc.measurements[c];
+        if (!m) return;
+        if (typeof m.dar === 'number' && !isNaN(m.dar)) darPerCombo[c].push(m.dar);
+        if (typeof m.ip === 'number' && !isNaN(m.ip)) ipPerCombo[c].push(m.ip);
       });
-      if (dars.length) darsPerTest.push(average_(dars));
-      if (ips.length) ipsPerTest.push(average_(ips));
     });
-    if (darsPerTest.length) { darValues[y] = average_(darsPerTest); any = true; } else { darValues[y] = null; }
-    if (ipsPerTest.length) { ipValues[y] = average_(ipsPerTest); any = true; } else { ipValues[y] = null; }
+    combos.forEach(function (c) {
+      if (darPerCombo[c].length) { dar[c][y] = average_(darPerCombo[c]); any = true; } else { dar[c][y] = null; }
+      if (ipPerCombo[c].length) { ip[c][y] = average_(ipPerCombo[c]); any = true; } else { ip[c][y] = null; }
+    });
   });
-  return any ? { dar: darValues, ip: ipValues } : null;
+  return any ? { dar: dar, ip: ip } : null;
 }
 
 /** Dos series por año (rigidez dieléctrica y número de acidez): los dos
@@ -1747,7 +1756,12 @@ function computeYearlyOilTrend_(byYear, years) {
 function buildLineChartSvg_(years, lines) {
   var W = Math.max(340, years.length * 80);
   var H = 200;
-  var chartTop = 20, chartBottom = 34, chartLeft = 10, chartRight = 10;
+  // Margen izquierdo más ancho que antes: aquí van los números del eje Y —
+  // antes el valor de cada punto solo vivía en un <title> (tooltip al pasar
+  // el mouse), invisible en el celular de un técnico en campo (no hay hover
+  // en pantalla táctil). Ahora el valor queda escrito siempre, en el eje y
+  // junto a cada punto.
+  var chartTop = 24, chartBottom = 34, chartLeft = 40, chartRight = 14;
   var chartH = H - chartTop - chartBottom;
   var chartW = W - chartLeft - chartRight;
 
@@ -1758,35 +1772,68 @@ function buildLineChartSvg_(years, lines) {
   var maxVal = allValues.length ? Math.max.apply(null, allValues) : 1;
   var minVal = allValues.length ? Math.min(0, Math.min.apply(null, allValues)) : 0;
   if (maxVal === minVal) maxVal = minVal + 1;
+  // Un poco de aire arriba/abajo del rango real para que un punto en el
+  // máximo o el mínimo no quede pegado al borde ni tape su propia etiqueta.
+  var pad = (maxVal - minVal) * 0.12;
+  maxVal += pad;
+  minVal -= pad;
 
   function xFor(i) { return years.length > 1 ? chartLeft + (i / (years.length - 1)) * chartW : chartLeft + chartW / 2; }
   function yFor(v) { return chartTop + chartH - ((v - minVal) / (maxVal - minVal)) * chartH; }
 
-  var linesSvg = lines.map(function (line) {
+  var AXIS_TICKS = 4;
+  var axisSvg = '';
+  for (var tick = 0; tick <= AXIS_TICKS; tick++) {
+    var tickVal = minVal + (maxVal - minVal) * (tick / AXIS_TICKS);
+    var tickY = yFor(tickVal);
+    axisSvg += '<line x1="' + chartLeft + '" y1="' + tickY + '" x2="' + (chartLeft + chartW) + '" y2="' + tickY + '" stroke="var(--border)" stroke-width="1" stroke-dasharray="' + (tick === 0 ? '0' : '2,3') + '"/>' +
+      '<text x="' + (chartLeft - 6) + '" y="' + (tickY + 3.5) + '" text-anchor="end" font-size="10" fill="var(--text-faint)">' + tickVal.toFixed(2) + '</text>';
+  }
+
+  // Posición vertical de cada etiqueta de valor decidida por año, no por
+  // línea sola: cuando varias series quedan cerca en un año dado (ej. las 3
+  // combinaciones de Aislamiento convergiendo), se ordenan de arriba a abajo
+  // tal como se ven dibujadas y cada una recibe la siguiente posición de la
+  // secuencia — así nunca se superponen entre sí, sin importar el índice de
+  // línea ni cuántas líneas traiga el gráfico.
+  var LABEL_DY_SEQUENCE_ = [-9, 15, -26, 32, -43, 49];
+  var labelDyByYearIndex = years.map(function () { return {}; });
+  years.forEach(function (y, i) {
+    var present = [];
+    lines.forEach(function (line, lineIndex) {
+      if (line.values[y] != null) present.push({ lineIndex: lineIndex, yy: yFor(line.values[y]) });
+    });
+    present.sort(function (a, b) { return a.yy - b.yy; });
+    present.forEach(function (p, order) {
+      labelDyByYearIndex[i][p.lineIndex] = LABEL_DY_SEQUENCE_[order] != null ? LABEL_DY_SEQUENCE_[order] : (order % 2 === 0 ? -9 : 15);
+    });
+  });
+
+  var linesSvg = lines.map(function (line, lineIndex) {
     var points = [];
     var dots = '';
+    var valueLabels = '';
     years.forEach(function (y, i) {
       var v = line.values[y];
       if (v == null) return;
       var x = xFor(i), yy = yFor(v);
       points.push(x + ',' + yy);
       dots += '<circle cx="' + x + '" cy="' + yy + '" r="3.5" fill="' + line.color + '"><title>' + y + ': ' + v.toFixed(2) + '</title></circle>';
+      valueLabels += '<text x="' + x + '" y="' + (yy + labelDyByYearIndex[i][lineIndex]) + '" text-anchor="middle" font-size="11" font-weight="600" fill="' + line.color + '">' + v.toFixed(2) + '</text>';
     });
     var poly = points.length > 1 ? '<polyline points="' + points.join(' ') + '" fill="none" stroke="' + line.color + '" stroke-width="2"/>' : '';
-    return poly + dots;
+    return poly + dots + valueLabels;
   }).join('');
 
   var yearLabels = years.map(function (y, i) {
     return '<text x="' + xFor(i) + '" y="' + (H - 12) + '" text-anchor="middle" font-size="12" fill="var(--text)">' + y + '</text>';
   }).join('');
 
-  var baseline = '<line x1="' + chartLeft + '" y1="' + (chartTop + chartH) + '" x2="' + (chartLeft + chartW) + '" y2="' + (chartTop + chartH) + '" stroke="var(--border)" stroke-width="1"/>';
-
   var legend = '<div class="yearly-chart-legend">' + lines.map(function (line) {
     return '<span><i style="background:' + line.color + '"></i>' + escapeHtml_(line.label) + '</span>';
   }).join('') + '</div>';
 
-  return '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%; max-width:' + W + 'px; height:auto; display:block;">' + baseline + linesSvg + yearLabels + '</svg>' + legend;
+  return '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%; max-width:' + W + 'px; height:auto; display:block;">' + axisSvg + linesSvg + yearLabels + '</svg>' + legend;
 }
 
 /** Solo Supervisor/Administrador (el backend también lo exige). Genera el
