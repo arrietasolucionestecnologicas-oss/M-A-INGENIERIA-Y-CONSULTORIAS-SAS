@@ -57,10 +57,35 @@ migra — sigue en la cuenta de Arrieta Soluciones, y `CONTROL_ACCESO_URL` en
   propio código (`getSpreadsheet_()`/`getRootFolder_()`) la primera vez que
   se usaron contra la cuenta nueva — no se migró ni copió nada de la hoja
   vieja.
-- **GitHub Pages (frontend) NO se migró** — el repo se queda en la cuenta
-  personal del usuario por ahora; es una migración aparte, independiente,
-  que se hará al final del proyecto. Lo único que cambió aquí es a qué
-  backend apunta `API_WEBHOOK_URL`, no dónde vive el repo.
+- **GitHub Pages (frontend) NO se migró** — el repo se queda donde estaba
+  por ahora; es una migración aparte, independiente, que se hará al final
+  del proyecto. Lo único que cambió aquí es a qué backend apunta
+  `API_WEBHOOK_URL`, no dónde vive el repo. **Corrección (2026-09-06)**: el
+  repo real es `arrietasolucionestecnologicas-oss/M-A-INGENIERIA-Y-CONSULTORIAS-SAS`
+  (confirmado con `git remote -v`) — no es una cuenta personal separada,
+  vive en la misma organización de GitHub que otros proyectos de Arrieta
+  Soluciones (A.S.T., icc-music-app). El texto anterior de esta línea
+  ("cuenta personal del usuario") estaba desactualizado.
+- **Credenciales de esta máquina se pisan entre proyectos — mismo síntoma
+  en clasp y en git, mismo tipo de causa**: tanto el perfil "default" de
+  `clasp` como la credencial cacheada de `git` para `github.com` se
+  comparten entre TODOS los proyectos de este usuario en esta máquina, así
+  que trabajar en otro proyecto (A.S.T., JL Bedoya, ICC Music App, etc.)
+  puede dejar la cuenta equivocada activa para este repo, aunque nada haya
+  cambiado en el código.
+  - **clasp**: si `clasp push`/`clasp deploy`/`clasp deployments` falla con
+    `"The caller does not have permission"`, no asumas que el código está
+    mal — primero `clasp login` de nuevo con `myaingenieria6@gmail.com`
+    (la cuenta dedicada del cliente, dueña del script id de arriba). Pasó
+    dos veces en la misma semana (2026-09-05 y 2026-09-06) por trabajo en
+    otros proyectos entre medio.
+  - **git**: si `git push` a este repo devuelve `403` con un usuario de
+    GitHub que no es el correcto, ejecutar
+    `printf "protocol=https\nhost=github.com\n" | git credential reject`
+    y reintentar el `git push` — Git Credential Manager vuelve a pedir/
+    resolver la credencial correcta en vez de insistir con la cacheada.
+    Mismo arreglo ya documentado para el repo de icc-music-app, misma
+    organización de GitHub.
 - **Gotcha de despliegue al crear un proyecto nuevo en una cuenta nueva**:
   `clasp deploy` (API) puede crear el deployment y dejarlo respondiendo
   `403 Forbidden` a peticiones anónimas aunque el manifiesto ya tenga
@@ -768,13 +793,18 @@ devuelve `estado_certificacion`/`revisado_por`/`revisado_at` en ambos modos
 
 ### Pendiente de esta construcción
 
-- **Desplegar** (`clasp login` → `clasp push` → `clasp deploy` con el
-  deploymentId de siempre, ver "Infraestructura / cuentas" arriba) — sigue
-  sin hacerse a pedido explícito del usuario.
-- **Verificar en vivo** una vez desplegado: ciclo completo Borrador →
+**Desplegado (2026-09-06)**: `clasp push` + `clasp deploy` al deploymentId
+de siempre (backend, versión @27) y `git push` a `main` (frontend, commit
+`8c87e32`, publica solo a GitHub Pages). El flujo Borrador/Certificada/
+Rechazada y el panel de comportamiento anual ya están en producción.
+
+Pendiente real, todavía sin hacer:
+- **Verificar en vivo** el ciclo completo con datos reales: Borrador →
   editar → Certificar (PDF/informe combinado se genera solo ahí) y Borrador
   → Rechazar (queda registrada, nunca genera nada) para los 4 tipos de
-  prueba, y confirmar que un Técnico no ve los botones Certificar/Rechazar.
+  prueba, confirmar que un Técnico no ve los botones Certificar/Rechazar, y
+  que el panel de comportamiento anual muestra la tendencia real de un
+  equipo con historial de Aislamiento/Aceite certificado.
 - Limpiar cualquier dato de prueba creado durante esa verificación (no tocar
   el lote `DEMO -`, ver abajo).
 
