@@ -1685,8 +1685,10 @@ La barra lateral (`#mainnav` en `index.html`) y la hoja "Más" móvil
 7. **Panel General** — módulo completo (`view-general-dashboard`, contenido
    en `#generalDashboardViewBody`), ver sección dedicada arriba. Ya no es
    placeholder.
-8. **Administración** — Gestión de usuarios (`view-admin`, sin cambios en su
-   lógica).
+8. **Administración** — Gestión de usuarios (`view-admin`), ver sección
+   dedicada "Administración — Gestión de usuarios" más abajo (2026-09-06:
+   ya no es solo un formulario de creación, agregó listado + activar/
+   desactivar).
 
 No queda ningún módulo como placeholder puro — los 8 están completos.
 Calibraciones y Documentos e Informes son
@@ -1741,6 +1743,64 @@ solo-lectura para Técnico en esos módulos respectivamente). **Calibraciones
 también tiene rechazo real**: `checkCalibracionesWriteAccess_` rechaza a
 Técnico en crear/editar/eliminar (no en listar, que es Full para los 3
 roles), verificado con un token real (ver sección de Calibraciones arriba).
+
+## Administración — Gestión de usuarios
+
+**Extendido (2026-09-06), a pedido del cliente** ("que aparezca el listado
+de los activos, que se vea que está activo y qué rol"). Hasta ahora
+`view-admin` solo tenía el formulario de crear usuario (`createUser`); se
+agregó un panel "Usuarios existentes" debajo, con tabla (usuario, rol,
+estado) y un botón activar/desactivar por fila.
+
+**Esto NO vive en `Código.gs`** — los usuarios de M&A (usuario, rol,
+activo/inactivo) están en la hoja "Usuarios" de **Control de Acceso**, el
+IdP compartido que valida cada login (`CONTROL_ACCESO_URL`, ver
+"Arquitectura activa" y "Autenticación" arriba), un proyecto de Apps
+Script **separado, que no vive en este repo**. Antes de este cambio,
+Control de Acceso solo exponía `login`/`changePassword`/`createUser`/
+`validateToken` — no existía ninguna acción para listar ni para activar/
+desactivar. Se agregaron dos acciones nuevas ahí, **puramente aditivas**
+(no se tocó `login`/`createUser`/`changePassword`/`validateToken`
+existentes):
+
+- **`listUsers`** (body: `{token, appId}`) — requiere token de rol
+  `Administrador`, devuelve solo los usuarios cuya columna `AppsPermitidas`
+  incluye ese `appId` (nunca Salt/Hash). M&A la llama con
+  `appId: APP_ID` ('MYA_PRUEBAS').
+- **`setUserActive`** (body: `{token, appId, usuario, activo}`) — requiere
+  token de rol `Administrador`, y además **el usuario objetivo debe tener
+  ese mismo `appId` en su `AppsPermitidas`** — así el Administrador de una
+  app nunca puede activar/desactivar un usuario de otra app, aunque conozca
+  el nombre exacto.
+
+**Por qué esto es más delicado que cualquier otro cambio de este
+proyecto**: Control de Acceso es un IdP que el usuario (dueño de esta
+cuenta de Google, `arrietasolucionestecnologicas@gmail.com`) reutiliza
+para **varios clientes suyos distintos, no solo M&A** — al menos JL Bedoya
+Group confirmado en el propio comentario de cabecera del script ("IdP
+central JL Bedoya Group") y en su hoja "Usuarios" (filas de
+`director.operaciones`/`coordinador.servicio`/etc., ajenas a M&A). El
+Administrador de M&A creando/gestionando usuarios de M&A es independiente
+de que el dueño de la cuenta pueda suspender el servicio completo de un
+cliente entero (billing) desde `Config` — dos cosas separadas, no se tocó
+`Config` ni la lógica de suspensión para nada. Antes de escribir código
+real, se clonó el proyecto con `clasp` (`clasp -u ast pull`, cuenta
+`ast`, mismo perfil que [[reference_ast_infrastructure]]) para partir del
+código real desplegado, no de una copia vieja — confirmado que el
+deploymentId del clon coincide exactamente con el que usa
+`CONTROL_ACCESO_URL` (`AKfycby4K-qxW87hfd9Fy1wKHeyF8bic_Qo8clKfJ-ZuPg9zElNuc7XOe8qTgW8sUmJ9mnKjDA`)
+antes de desplegar nada.
+
+**Frontend** (`app.js`): `loadAdminUsersAndRender_()` llena la tabla al
+entrar a `view-admin` (también se refresca sola después de crear un
+usuario nuevo); `handleToggleUserActive_(usuario, nextActivo)` pide
+confirmación (`confirm()`) y llama `setUserActive`. Verificado en vivo
+(2026-09-06) que `login` normal sigue funcionando sin cambios tras el
+despliegue, y que `listUsers` rechaza correctamente con `no_autorizado` a
+un token real de rol Supervisor (no se pudo probar el camino positivo en
+vivo por no tener a mano una cuenta de rol Administrador durante la
+verificación — la guarda de rol es el mismo patrón exacto que
+`handleCreateUser`, que sí funciona en producción).
 
 ## Convenciones de frontend que hay que respetar
 

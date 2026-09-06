@@ -372,6 +372,7 @@ function showView(name) {
   if (name === 'commercial') { renderCommercialView_(); }
   if (name === 'general-dashboard') { renderGeneralDashboardView_(); }
   if (name === 'calibrations') { renderCalibrationsView_(); }
+  if (name === 'admin') { loadAdminUsersAndRender_(); }
 }
 
 function viewNeedsSite_(name) {
@@ -1344,10 +1345,62 @@ function renderAdminNavAndPanel() {
     '</form>' +
     '<div class="source-strip" style="display:flex; justify-content:space-between; padding:10px 18px; font-size:11.5px; color:var(--text-muted); background:var(--surface-alt);">' +
     '<span>El usuario nuevo deberá cambiar esta contraseña al entrar</span><span class="tag">Temporal</span></div>' +
+    '</div>' +
+    '<div class="panel" style="max-width:480px; margin-top:18px;">' +
+    '<div class="panel-head"><h2>Usuarios existentes</h2></div>' +
+    '<div style="overflow-x:auto;"><table>' +
+    '<thead><tr><th>Usuario</th><th>Rol</th><th>Estado</th><th></th></tr></thead>' +
+    '<tbody id="adminUsersRows"><tr><td colspan="4" class="empty-note">Cargando…</td></tr></tbody>' +
+    '</table></div>' +
     '</div></div>';
 
   document.querySelector('main').appendChild(section);
   document.getElementById('createUserForm').addEventListener('submit', handleCreateUserSubmit);
+  loadAdminUsersAndRender_();
+}
+
+/** Solo los usuarios de ESTA app (appId: APP_ID) — Control de Acceso es un
+ *  IdP compartido con otros clientes del usuario (JL Bedoya Group, etc.),
+ *  handleListUsers ya filtra server-side para que nunca aparezca nadie de
+ *  otro cliente aquí. */
+function loadAdminUsersAndRender_() {
+  var tbody = document.getElementById('adminUsersRows');
+  if (!tbody) return;
+  callAuthApi('listUsers', { token: state.token, appId: APP_ID })
+    .then(function (json) {
+      if (!json.ok) {
+        tbody.innerHTML = '<tr><td colspan="4" class="empty-note">' + escapeHtml_(mapAuthError_(json.error)) + '</td></tr>';
+        return;
+      }
+      if (!json.users.length) {
+        tbody.innerHTML = '<tr><td colspan="4" class="empty-note">Todavía no hay usuarios creados.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = json.users.map(function (u) {
+        var pillClass = u.activo ? 'success' : 'danger';
+        var estadoLabel = u.activo ? 'Activo' : 'Inactivo';
+        var toggleLabel = u.activo ? 'Desactivar' : 'Activar';
+        return '<tr>' +
+          '<td class="mono">' + escapeHtml_(u.usuario) + '</td>' +
+          '<td>' + escapeHtml_(u.rol) + '</td>' +
+          '<td><span class="pill ' + pillClass + '">' + estadoLabel + '</span></td>' +
+          '<td><button type="button" class="btn" onclick="handleToggleUserActive_(\'' + escapeHtml_(u.usuario) + '\', ' + !u.activo + ')">' + toggleLabel + '</button></td>' +
+          '</tr>';
+      }).join('');
+    })
+    .catch(function (err) {
+      tbody.innerHTML = '<tr><td colspan="4" class="empty-note">No se pudo cargar: ' + escapeHtml_(err.message) + '</td></tr>';
+    });
+}
+
+function handleToggleUserActive_(usuario, nextActivo) {
+  if (!confirm((nextActivo ? 'Activar' : 'Desactivar') + ' a "' + usuario + '"?')) return;
+  callAuthApi('setUserActive', { token: state.token, appId: APP_ID, usuario: usuario, activo: nextActivo })
+    .then(function (json) {
+      if (!json.ok) { alert(mapAuthError_(json.error)); return; }
+      loadAdminUsersAndRender_();
+    })
+    .catch(function (err) { alert('No se pudo cambiar el estado: ' + err.message); });
 }
 
 function removeAdminNavAndPanel() {
@@ -1470,6 +1523,7 @@ function handleCreateUserSubmit(e) {
       }
       setStatus_(status, 'Usuario "' + usuario + '" creado. Debe cambiar la contraseña al entrar.', true);
       document.getElementById('createUserForm').reset();
+      loadAdminUsersAndRender_();
     })
     .catch(function (err) { setStatus_(status, 'No se pudo crear el usuario: ' + err.message, false, true); })
     .then(function () { btn.disabled = false; });
