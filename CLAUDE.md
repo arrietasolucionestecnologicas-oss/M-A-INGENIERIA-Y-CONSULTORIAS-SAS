@@ -812,60 +812,124 @@ Pendiente real, todavía sin hacer:
 
 **Construido (2026-09-05), a pedido del cliente** ("necesito que el
 historial de servicios/pruebas muestre una gráfica de comportamiento, cómo
-está el transformador cada año"). Es **100% frontend** — no toca
-`Código.gs` ni el esquema de ninguna hoja, así que no depende del
-despliegue pendiente de arriba: se sirve en cuanto se publique
-`index.html`/`app.js`/`styles.css` a GitHub Pages (ver "Arquitectura activa").
-Vive en un panel nuevo "Comportamiento anual del equipo" en el detalle del
-transformador, justo arriba del historial de pruebas.
+está el transformador cada año"), **acotado el mismo día** ("el cliente
+solo quiere gráfica de aislamiento y aceite") tras una primera versión que
+incluía las 4 pruebas. Es **100% frontend** — no toca `Código.gs` ni el
+esquema de ninguna hoja, así que no depende de ningún despliegue de
+backend: se sirve en cuanto se publique `index.html`/`app.js`/`styles.css`
+a GitHub Pages (ver "Arquitectura activa"). Vive en un panel
+"Comportamiento anual del equipo" en el detalle del transformador, justo
+arriba del historial de pruebas.
 
-**Solo cuentan las pruebas Certificadas** (decidido explícitamente con el
-usuario) — un Borrador o una Rechazada todavía no es un resultado válido
-para la tendencia histórica del equipo, mismo criterio que
-`findLatestElectricalTestsByType_` en el backend. El agrupado es por año
-calendario de `created_at`. Todo se calcula en el cliente a partir de
-`state.currentTests`, ya cargado completo (con `calculated_results`) por
-`openTransformer` — no hace falta ninguna llamada nueva al backend.
+**Solo cuentan las pruebas Certificadas de Resistencia de aislamiento y
+Aceite dieléctrico** — un Borrador o una Rechazada todavía no es un
+resultado válido para la tendencia histórica del equipo, mismo criterio que
+`findLatestElectricalTestsByType_` en el backend; TTR y Resistencia de
+devanados no participan en absoluto (alcance acotado explícitamente por el
+cliente, no un olvido). El agrupado es por año calendario de `created_at`.
+Todo se calcula en el cliente a partir de `state.currentTests`, ya cargado
+completo (con `calculated_results`/`raw_readings`) por `openTransformer` —
+no hace falta ninguna llamada nueva al backend. Si el equipo no tiene
+ninguna prueba certificada de esos dos tipos, el panel muestra un mensaje
+en vez de una gráfica vacía.
 
-Se construyeron, también a pedido explícito, **sin ninguna librería de
-gráficas** (`buildStackedBarChartSvg_`/`buildLineChartSvg_` en `app.js`,
-SVG armado a mano) — mismo criterio que el resto de la app, que hasta ahora
-solo usaba tablas para sus KPIs (Comercial, Panel General).
+Construido, a pedido explícito, **sin ninguna librería de gráficas**
+(`buildLineChartSvg_` en `app.js`, SVG armado a mano) — mismo criterio que
+el resto de la app, que hasta ahora solo usaba tablas para sus KPIs
+(Comercial, Panel General).
 
 Cuatro gráficas, todas opcionales según haya datos:
-- **Veredictos por año**, barras apiladas, una barra por año, sumando las
-  cuatro pruebas juntas (TTR + Devanados + Aislamiento + Aceite). Reusa
-  directamente `verdictPillClass_(test.verdict)` para clasificar cada
-  prueba en aprobado/observado/rechazado/sin veredicto (el mismo mapeo de
-  colores que ya usan los pills del historial) — no se inventó una
-  clasificación nueva.
-- **TTR** — error % promedio por año: por cada prueba TTR certificada se
-  promedia el error % (valor absoluto) de todos sus TAP/fase, y luego se
-  promedia entre las pruebas de ese año.
-- **Resistencia de devanados** — desbalance % máximo promedio por año: por
-  cada prueba se toma el peor desbalance (el máximo entre todos los TAP del
-  primario y el secundario si vino), y se promedia entre las pruebas del
-  año.
-- **Resistencia de aislamiento** — DAR e IP promedio por año, dos líneas:
-  por cada prueba se promedia el DAR (y por separado el IP) entre sus
-  combinaciones de devanado, y luego se promedia entre las pruebas del año.
+- **Resistencia de aislamiento — DAR por combinación de devanado** y
+  **— IP por combinación de devanado**, dos gráficos separados de 3 líneas
+  cada uno (AT-BT / AT-Tierra / BT-Tierra). **Corregido (2026-09-06)**: la
+  primera versión promediaba las 3 combinaciones en una sola línea de DAR y
+  una de IP — el cliente señaló que eso escondía cuál combinación en
+  particular se está degradando, así que ahora se grafican por separado.
+  Por cada combinación y año: el promedio de su DAR (y por separado su IP)
+  entre las pruebas de Aislamiento certificadas de ese año.
+- **Aceite dieléctrico — rigidez dieléctrica promedio por año** y
+  **— número de acidez promedio por año**: los dos indicadores clásicos de
+  envejecimiento del aceite (la rigidez baja, la acidez sube con el
+  tiempo), leídos de `raw_readings` (no de `calculated_results`, que para
+  Aceite solo guarda el veredicto de cada sección, no los valores crudos) y
+  solo de pruebas con la sección Fisicoquímico activada — DGA/PCB no miden
+  ninguno de los dos.
 
-**Aceite dieléctrico no tiene línea de tendencia numérica propia** — a
-diferencia de los otros tres tipos, no tiene un único número continuo que
-represente sus tres secciones independientes (Fisicoquímico/DGA/PCB), así
-que solo participa en la gráfica de veredictos por año, igual que los
-otros tres.
+Un año sin dato para una serie no rompe nada: si ningún año tiene datos
+para un tipo, esa gráfica completa no se muestra; si algunos años sí tienen
+y otros no, esos años simplemente no dibujan punto ahí (nunca se interpola
+ni se fuerza a 0) — `buildLineChartSvg_` solo traza una línea entre puntos
+consecutivos que existen.
 
-Un año sin ninguna prueba certificada de un tipo dado no rompe la gráfica
-de ese tipo: si ningún año tiene datos para un tipo, esa gráfica completa
-no se muestra; si algunos años sí tienen y otros no, esos años simplemente
-no dibujan punto ahí (nunca se interpola ni se fuerza a 0) —
-`buildLineChartSvg_` solo traza una línea entre puntos consecutivos que
-existen. Verificado inyectando datos sintéticos en la consola del
-navegador (con pruebas Certificadas y una Borrador de control, esta última
-confirmada excluida): las 4 gráficas renderizaron sin errores de consola,
-con los años, colores y agrupados correctos, incluyendo el caso de una
-serie con un solo punto (sin línea, sin quebrarse).
+**Eje Y y etiquetas de valor (2026-09-06)** — corregido tras reporte del
+usuario: antes, el valor de cada punto solo vivía en un `<title>` (tooltip
+al pasar el mouse), invisible en un celular de campo (no hay hover en
+pantalla táctil) — el eje Y no tenía ninguna marca de escala. Ahora
+`buildLineChartSvg_` dibuja 4 líneas de referencia horizontales con su
+valor a la izquierda, y cada punto trae su número escrito permanentemente
+al lado (nunca solo en el tooltip). La posición vertical de cada etiqueta
+se decide **por año, no por línea**: las series presentes ese año se
+ordenan de arriba a abajo tal como quedan dibujadas y cada una recibe la
+siguiente posición de una secuencia de separación creciente
+(`LABEL_DY_SEQUENCE_`) — así nunca se superponen entre sí sin importar
+cuántas líneas traiga el gráfico ni cuál esté arriba en un año dado. Con
+valores muy cercanos entre las 3 combinaciones de Aislamiento en el mismo
+año, las etiquetas quedan legibles pero apretadas — límite conocido y
+aceptado, el `<title>` (tooltip) sigue disponible como lectura exacta de
+respaldo en desktop.
+
+Verificado en vivo (2026-09-06) con datos reales: se creó un equipo real
+(`DEMO-GRAFICA-01`, sitio `DEMO - Vista Previa Gráficas`) con una prueba de
+Aislamiento y una de Aceite certificadas vía llamadas directas a la API de
+producción (no simuladas en consola) — las 3 gráficas correspondientes
+aparecieron con el punto de 2026 en el detalle real del equipo. También
+verificado con datos sintéticos 2022-2026 (inyectados en consola, nunca
+guardados en el backend) para confirmar la tendencia multi-año y el
+prorrateo de etiquetas con 3 líneas cercanas.
+
+### Nombre del operador — trazabilidad cuando varios técnicos comparten una cuenta
+
+**Construido (2026-09-06), a pedido del cliente** ("que el que instale la
+app la primera vez en su celular meta su nombre, para saber quién está
+digitando si son varios técnicos"). Problema real que resuelve: `tested_by`
+en `PRUEBAS` siempre fue el **usuario de la cuenta** (`auth.username`) —
+si varias personas comparten una sola cuenta de Técnico (común en campo),
+todas sus pruebas quedan firmadas igual, sin poder distinguir quién digitó
+cada una.
+
+- **Columna nueva `operador_nombre`** al final de `HEADERS.PRUEBAS` (mismo
+  criterio de siempre: nunca insertar en medio). La guarda `persistTest_`
+  desde `params.operador_nombre` si viene, vacío si no — filas viejas
+  simplemente no lo tienen, se tratan como ausente, sin migración. No lo
+  toca `updateTestDraft_`: identifica quién **creó** la prueba, no quién la
+  edita después.
+- **Vive en `localStorage` del navegador (`mya_operator_name`), no en la
+  cuenta de login** — a propósito: es un dato del **celular/navegador**, no
+  de la sesión, así que sobrevive a cerrar sesión y volver a entrar, y cada
+  celular compartido por varios técnicos les pregunta el nombre por
+  separado la primera vez que cada uno lo usa (mismo dispositivo, distinto
+  navegador o perfil = se pregunta de nuevo; eso es lo esperado, no un
+  bug). `ensureOperatorName_()` se llama después de cualquier inicio de
+  sesión exitoso (login normal, cambio de contraseña obligatorio, sesión
+  restaurada desde `sessionStorage` al recargar la página) y solo muestra
+  el modal `#operatorNameModal` si `localStorage` todavía no tiene nada.
+- **Modal sin botón de cerrar ni cierre por click en el fondo** — a
+  propósito, no es opcional: el técnico debe escribir un nombre para poder
+  seguir usando la app. `handleOperatorNameSubmit_` guarda y cierra el
+  modal; no hay manera de posponerlo.
+- **`operador_nombre` viaja en el payload de los 4 tipos de prueba**
+  (`buildTtrRequestBody`/`buildWindingRequestBody`/`buildOilRequestBody`/
+  `buildInsulationRequestBody`, todas via `getOperatorName_()`) —
+  `listTests_` lo expone en ambos modos (`light` y completo).
+- **Se muestra junto al usuario de la cuenta, nunca lo reemplaza**
+  (decidido explícitamente con el usuario) — `formatTestedBy_(test)` en
+  `app.js` arma `"usuario.cuenta (Nombre Real)"` si `operador_nombre`
+  existe, o solo `"usuario.cuenta"` si no; se usa tanto en la columna
+  "Registrado por" del historial como en el modal de detalle de prueba.
+
+**Pendiente de desplegar** (a diferencia del panel de comportamiento
+anual, esto sí toca `Código.gs` — columna nueva en `PRUEBAS` y cambios en
+`persistTest_`/`listTests_` — necesita `clasp push` + `clasp deploy`).
 
 ## Documentos e Informes
 

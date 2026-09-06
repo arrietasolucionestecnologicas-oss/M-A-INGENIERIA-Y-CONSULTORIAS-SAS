@@ -552,6 +552,35 @@ function selectContextTransformer_(id) {
 // Login real contra Control de Acceso + flujo DebeCambiar
 // ---------------------------------------------------------------
 
+// ---------------------------------------------------------------
+// Nombre del operador — trazabilidad de quién digita cada prueba cuando
+// varios técnicos comparten una misma cuenta de Control de Acceso. Vive en
+// localStorage (por celular/navegador, no por sesión de login): una vez
+// diligenciado, sobrevive a cerrar sesión y volver a entrar. Viaja con cada
+// envío de prueba como operador_nombre, aparte de tested_by (que sigue
+// siendo el usuario de la cuenta) — se muestran juntos, nunca uno reemplaza
+// al otro (ver CLAUDE.md).
+// ---------------------------------------------------------------
+
+function getOperatorName_() {
+  try { return localStorage.getItem('mya_operator_name') || ''; } catch (e) { return ''; }
+}
+
+function ensureOperatorName_() {
+  if (getOperatorName_()) return;
+  document.getElementById('operatorNameModal').classList.add('open');
+  document.getElementById('operatorNameModalBackdrop').classList.add('open');
+}
+
+function handleOperatorNameSubmit_(e) {
+  e.preventDefault();
+  var name = document.getElementById('operatorNameInput').value.trim();
+  if (!name) return;
+  try { localStorage.setItem('mya_operator_name', name); } catch (err) { /* ignora si el navegador bloquea localStorage */ }
+  document.getElementById('operatorNameModal').classList.remove('open');
+  document.getElementById('operatorNameModalBackdrop').classList.remove('open');
+}
+
 function handleLoginSubmit(e) {
   e.preventDefault();
   var usuario = document.getElementById('loginUsuario').value.trim();
@@ -589,6 +618,7 @@ function handleLoginSubmit(e) {
       saveSession_();
       renderAdminNavAndPanel();
       renderRestrictedModuleNav_();
+      ensureOperatorName_();
       return loadSitesAndShow_();
     })
     .catch(function (err) {
@@ -1249,6 +1279,7 @@ function handleChangePasswordSubmit(e) {
       saveSession_();
       renderAdminNavAndPanel();
       renderRestrictedModuleNav_();
+      ensureOperatorName_();
       return loadSitesAndShow_();
     })
     .catch(function (err) {
@@ -1617,7 +1648,7 @@ function renderDetail() {
         '<td>' + fmtDate_(test.created_at) + '</td>' +
         '<td>' + escapeHtml_(test.test_type) + '</td>' +
         '<td>' + escapeHtml_(test.instrument_used || '—') + '</td>' +
-        '<td>' + escapeHtml_(test.tested_by || '—') + '</td>' +
+        '<td>' + escapeHtml_(formatTestedBy_(test)) + '</td>' +
         '<td><span class="pill ' + verdictPillClass_(test.verdict) + '">' + escapeHtml_(test.verdict) + '</span></td>' +
         '<td>' + certCell + '</td>' +
         '<td>' + (links.length ? links.join(' · ') : '—') + '</td>' +
@@ -1991,8 +2022,17 @@ function closeTestDetailModal_() {
   document.getElementById('testDetailModalBackdrop').classList.remove('open');
 }
 
+/** Combina la cuenta con la que se inició sesión (tested_by, siempre) con el
+ *  nombre real que la persona escribió en el modal de "¿Cómo te llamas?"
+ *  (operador_nombre, puede faltar en pruebas de antes de este campo) — nunca
+ *  uno reemplaza al otro, ver CLAUDE.md. */
+function formatTestedBy_(test) {
+  var base = test.tested_by || '—';
+  return test.operador_nombre ? base + ' (' + test.operador_nombre + ')' : base;
+}
+
 function renderTestDetailBody_(test) {
-  var meta = '<div class="field-note">Técnico: ' + escapeHtml_(test.tested_by || '—') +
+  var meta = '<div class="field-note">Técnico: ' + escapeHtml_(formatTestedBy_(test)) +
     ' &middot; Instrumento: ' + escapeHtml_(test.instrument_used || '—') + '</div>';
   var estadoCert = test.estado_certificacion || 'Certificada';
   meta += '<div class="field-note"><span class="pill ' + estadoCertificacionPillClass_(estadoCert) + '">' + escapeHtml_(estadoCert) + '</span>';
@@ -2422,6 +2462,7 @@ function buildTtrRequestBody() {
   return {
     transformer_id: state.currentTransformerId,
     instrument_used: document.getElementById('ttrInstrument').value,
+    operador_nombre: getOperatorName_(),
     readings: { testVoltageV: parseDecimal_(document.getElementById('ttrVoltage').value) || null, measurements: measurements }
   };
 }
@@ -2675,6 +2716,7 @@ function buildWindingRequestBody() {
   return {
     transformer_id: state.currentTransformerId,
     instrument_used: document.getElementById('wrInstrument').value,
+    operador_nombre: getOperatorName_(),
     readings: {
       measurements: taps.map(function (p) {
         var tap = state.wr.readings[p];
@@ -2950,7 +2992,7 @@ function buildOilRequestBody() {
     readings[key] = state.oil.pcb_realizado ? state.oil.pcb[key] : null;
   });
 
-  return { transformer_id: state.currentTransformerId, readings: readings };
+  return { transformer_id: state.currentTransformerId, operador_nombre: getOperatorName_(), readings: readings };
 }
 
 function refreshOil() {
@@ -3134,6 +3176,7 @@ function buildInsulationRequestBody() {
   return {
     transformer_id: state.currentTransformerId,
     instrument_used: document.getElementById('insulationInstrument').value,
+    operador_nombre: getOperatorName_(),
     readings: {
       windingTemperatureC: state.insulation.windingTemperatureC,
       measurements: state.insulation.combinations
@@ -4203,6 +4246,7 @@ document.addEventListener('DOMContentLoaded', function () {
   document.getElementById('createTransformerForm').addEventListener('submit', handleCreateTransformerSubmit);
   document.getElementById('editSiteForm').addEventListener('submit', handleEditSiteSubmit);
   document.getElementById('editTransformerForm').addEventListener('submit', handleEditTransformerSubmit);
+  document.getElementById('operatorNameForm').addEventListener('submit', handleOperatorNameSubmit_);
 
   document.querySelectorAll('.nav-item[data-view], .bottom-nav-item[data-view], .action-sheet-item[data-view]').forEach(function (el) {
     el.addEventListener('click', function () { showView(el.dataset.view); });
@@ -4236,6 +4280,7 @@ document.addEventListener('DOMContentLoaded', function () {
     document.getElementById('dashboardTenantLabel').textContent = state.username + ' · ' + state.role;
     renderAdminNavAndPanel();
     renderRestrictedModuleNav_();
+    ensureOperatorName_();
     loadSitesAndShow_();
   } else {
     showView('login');

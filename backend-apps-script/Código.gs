@@ -105,7 +105,7 @@ var HEADERS = {
     'id', 'transformer_id', 'test_type', 'raw_readings_json',
     'calculated_results_json', 'verdict', 'instrument_used', 'tested_by',
     'attachment_file_id', 'created_at', 'report_file_id',
-    'estado_certificacion', 'revisado_por', 'revisado_at'
+    'estado_certificacion', 'revisado_por', 'revisado_at', 'operador_nombre'
   ],
   /** Índice de documentos subidos a Drive (certificados automáticos + subida manual) —
    *  existe porque "Documentos e Informes" necesita listar/filtrar por cliente, tipo y
@@ -862,7 +862,8 @@ function persistTest_(transformer, testType, rawReadings, calculated, params, au
     report_file_id: '',
     estado_certificacion: 'Borrador',
     revisado_por: '',
-    revisado_at: ''
+    revisado_at: '',
+    operador_nombre: params.operador_nombre || ''
   });
 
   return { id: id, calculated_results: calculated, report_url: null, estado_certificacion: 'Borrador' };
@@ -1149,6 +1150,7 @@ function listTests_(params) {
       verdict: obj.verdict,
       instrument_used: obj.instrument_used,
       tested_by: obj.tested_by,
+      operador_nombre: obj.operador_nombre || null,
       attachment_url: obj.attachment_file_id ? driveFileUrl_(obj.attachment_file_id) : null,
       report_url: obj.report_file_id ? driveFileUrl_(obj.report_file_id) : null,
       created_at: obj.created_at,
