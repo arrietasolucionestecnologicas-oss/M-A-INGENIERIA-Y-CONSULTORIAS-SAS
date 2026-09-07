@@ -38,6 +38,8 @@
       <div class="status-line error" id="loginError" hidden></div>
     </form>
 
+    <p style="text-align:center; color:var(--text-muted); font-size:11.5px; margin:10px 0 0;">¿No tienes usuario todavía? Pídele a tu Administrador que te lo cree.</p>
+
     <p class="auth-foot">
       &copy; M&amp;A Ingeniería y Consultoría SAS
     </p>
@@ -451,11 +453,13 @@
 
         <div class="panel" id="yearlyBehaviorPanel">
           <div class="panel-head"><h2>Comportamiento anual del equipo</h2><span class="hint">Solo pruebas certificadas</span></div>
-          <div id="yearlyBehaviorBody" style="padding: 18px;"></div>
+          <p class="field-note" style="padding:0 18px 12px;">Muestra, año por año, cómo va cambiando el equipo según sus pruebas de Aislamiento y Aceite dieléctrico ya certificadas — útil para ver una tendencia (por ejemplo, si la rigidez del aceite va bajando o la resistencia de aislamiento va empeorando con el tiempo).</p>
+          <div id="yearlyBehaviorBody" style="padding: 0 18px 18px;"></div>
         </div>
 
         <div class="panel">
           <div class="panel-head"><h2>Historial de pruebas</h2></div>
+          <p class="field-note" style="padding:0 18px 12px;">Toda prueba que envíes queda primero como <strong>Borrador</strong>, esperando revisión. Un Supervisor o Administrador debe certificarla para que quede definitiva y se genere su informe — mientras siga en Borrador, la puedes editar o un Supervisor/Administrador puede rechazarla.</p>
           <div style="overflow-x: auto;">
             <table>
               <thead><tr><th>Fecha</th><th>Tipo</th><th>Instrumento</th><th>Registrado por</th><th>Veredicto</th><th>Certificación</th><th>Documentos</th></tr></thead>
@@ -524,6 +528,7 @@
                   <input id="ttrEvidence" type="file" accept="application/pdf,image/*">
                 </div>
               </div>
+              <p class="field-note">Al enviar, la prueba queda como <strong>Borrador</strong> pendiente de certificación — el informe se genera solo cuando un Supervisor o Administrador la certifique.</p>
               <div class="submit-row">
                 <button class="btn primary" id="submitTtrBtn" onclick="submitTtr()">Enviar prueba TTR</button>
                 <span class="status-line" id="ttrSubmitStatus" hidden></span>
@@ -616,6 +621,7 @@
                 <input id="wrEvidence" type="file" accept="application/pdf,image/*">
               </div>
             </div>
+            <p class="field-note">Al enviar, la prueba queda como <strong>Borrador</strong> pendiente de certificación — el informe se genera solo cuando un Supervisor o Administrador la certifique.</p>
             <div class="submit-row">
               <button class="btn primary" id="submitWrBtn" onclick="submitWinding()">Enviar prueba</button>
               <span class="status-line" id="wrSubmitStatus" hidden></span>
@@ -784,6 +790,7 @@
               </div>
             </div>
 
+            <p class="field-note">Al enviar, la prueba queda como <strong>Borrador</strong> pendiente de certificación — el informe se genera solo cuando un Supervisor o Administrador la certifique.</p>
             <div class="submit-row">
               <button class="btn primary" id="submitOilBtn" onclick="submitOil()">Enviar prueba de aceite</button>
               <span class="status-line" id="oilSubmitStatus" hidden></span>
@@ -846,6 +853,7 @@
                 <input id="insulationEvidence" type="file" accept="application/pdf,image/*">
               </div>
             </div>
+            <p class="field-note">Al enviar, la prueba queda como <strong>Borrador</strong> pendiente de certificación — el informe se genera solo cuando un Supervisor o Administrador la certifique.</p>
             <div class="submit-row">
               <button class="btn primary" id="submitInsulationBtn" onclick="submitInsulation()">Enviar prueba</button>
               <span class="status-line" id="insulationSubmitStatus" hidden></span>

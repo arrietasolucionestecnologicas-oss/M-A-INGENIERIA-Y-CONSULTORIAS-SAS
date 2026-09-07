@@ -1336,6 +1336,7 @@ function renderAdminNavAndPanel() {
     '<div class="view">' +
     '<div class="panel" style="max-width:480px;">' +
     '<div class="panel-head"><h2>Nuevo usuario</h2></div>' +
+    '<p class="field-note" style="padding:0 18px;">El usuario es lo que la persona escribe para iniciar sesión (sin espacios, ej. <span class="mono">juan.perez</span>). Elige <strong>Técnico</strong> para quien registra pruebas en campo, o <strong>Supervisor</strong> para quien además puede certificar o rechazar esas pruebas.</p>' +
     '<form id="createUserForm" style="padding:16px 18px; display:flex; flex-direction:column; gap:13px;">' +
     '<div class="field"><label>Usuario</label><input class="mono" id="newUserUsuario" placeholder="tecnico.nombre" required></div>' +
     '<div class="field"><label>Contraseña temporal</label><input type="password" id="newUserPassword" required minlength="8"></div>' +
@@ -1348,6 +1349,7 @@ function renderAdminNavAndPanel() {
     '</div>' +
     '<div class="panel" style="max-width:480px; margin-top:18px;">' +
     '<div class="panel-head"><h2>Usuarios existentes</h2></div>' +
+    '<p class="field-note" style="padding:0 18px 12px;">Un usuario <strong>Inactivo</strong> no puede iniciar sesión, aunque su contraseña siga siendo correcta — usa "Desactivar" en vez de crear uno nuevo cuando alguien deje de trabajar contigo, y "Activar" para devolverle el acceso.</p>' +
     '<div style="overflow-x:auto;"><table>' +
     '<thead><tr><th>Usuario</th><th>Rol</th><th>Estado</th><th></th></tr></thead>' +
     '<tbody id="adminUsersRows"><tr><td colspan="4" class="empty-note">Cargando…</td></tr></tbody>' +

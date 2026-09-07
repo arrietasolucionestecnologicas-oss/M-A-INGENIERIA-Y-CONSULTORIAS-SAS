@@ -2022,10 +2022,34 @@ No implementado todavía, evaluado pero no decidido con el usuario:
 - Migrar a offline real (service worker + IndexedDB) — hoy la resiliencia de
   red es "no perder lo digitado", no "funcionar sin señal".
 
-**Construido pero pendiente de desplegar**: flujo de certificación de
-pruebas en dos etapas (Borrador → Certificada/Rechazada, con edición de
-Borrador incluida) — ver sección dedicada "Flujo de certificación de
-pruebas" arriba antes de asumir que ya está en producción.
+**Desplegado y en producción** (confirmado, ya no es "pendiente"): flujo
+de certificación de pruebas en dos etapas (Borrador → Certificada/
+Rechazada, con edición de Borrador incluida), comportamiento anual del
+equipo, nombre del operador, y listado/activar-desactivar de usuarios en
+Administración — ver cada sección dedicada arriba para el detalle.
+
+**Textos de ayuda agregados en toda la app (2026-09-06)**, a pedido
+explícito del cliente ("que le vaya indicando qué debe hacer") — no
+cambian ningún comportamiento, solo agregan `<p class="field-note">` o
+`<span class="hint">` visibles en pantalla, sin depender de tooltips (que
+no funcionan en celular):
+- Antes del botón de envío de los 4 formularios de prueba: que quedará
+  como Borrador pendiente de certificación.
+- Encabezado de "Historial de pruebas": explica el flujo Borrador →
+  Certificar/Rechazar.
+- Encabezado de "Comportamiento anual del equipo": qué muestra y para qué
+  sirve.
+- Administración: qué significa el rol al crear un usuario, y qué implica
+  desactivar uno (no puede iniciar sesión, la contraseña sigue intacta).
+- Login: qué hacer si todavía no tienes usuario (pedirlo al Administrador).
+
+**Siguiente paso pedido por el usuario, todavía no hecho**: limpiar todos
+los datos de prueba/demo creados durante el desarrollo (incluido el
+equipo `DEMO-GRAFICA-01`/sitio `DEMO - Vista Previa Gráficas` de la
+verificación en vivo del panel de comportamiento anual — ver esa sección)
+antes de que el cliente real empiece a usar la app. Confirmar con el
+usuario qué datos son de verificación (borrables) y cuáles son el lote
+`DEMO -` que sí debe quedarse (ver más abajo) antes de borrar nada.
 
 No quedan módulos en diseño pendientes de construir ni piezas diferidas —
 Calibraciones (incluida la integración `instrument_used` con sus 3
