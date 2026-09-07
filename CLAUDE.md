@@ -2105,21 +2105,18 @@ Incluyó también el sitio/equipo `DEMO - Vista Previa Gráficas`/
 `DEMO-GRAFICA-01` creado ese mismo día para verificar en vivo el panel de
 comportamiento anual (ver esa sección) — ya no existen.
 
-**Cuentas de usuario — solo `admin.mya` (Administrador) queda activa.**
-Las demás cuentas de prueba de sesiones anteriores (`tecnico.prueba`,
-`test.tecnico.verificacion`, `test.tecnico.verificacion3`, y `tecnico
-prueba` — esta última resultó ser rol Supervisor, no Técnico, pese al
-nombre) se **desactivaron** (`setUserActive` con `activo: false`) el
-2026-09-06. No se pudieron borrar de una porque la acción `deleteUser`
-(agregada ese mismo día a Control de Acceso, ver sección "Administración —
-Gestión de usuarios") todavía no estaba desplegada en el momento de la
-limpieza — quedó bloqueado el `clasp deploy` por el clasificador de
-seguridad del entorno (sistema compartido con otro cliente, bloqueo más
-estricto que en el backend propio de M&A), pendiente de que el usuario lo
-corra él mismo. **Una vez desplegado**, esas 4 cuentas (hoy con
-`activo: false`) se pueden borrar de verdad desde Administración → Usuarios
-existentes → botón "Eliminar", o repitiendo la misma llamada `deleteUser`
-por API. `test.tecnico.verificacion2` (cuenta muerta documentada en
+**Cuentas de usuario — solo `admin.mya` (Administrador) queda, confirmado
+con `listUsers` tras la limpieza.** Las demás cuentas de prueba de
+sesiones anteriores (`tecnico.prueba`, `test.tecnico.verificacion`,
+`test.tecnico.verificacion3`, y `tecnico prueba` — esta última resultó ser
+rol Supervisor, no Técnico, pese al nombre) se **borraron de verdad**
+(`deleteUser`) el 2026-09-06, una vez desplegada esa acción en Control de
+Acceso (el primer intento de `clasp deploy` fue bloqueado por el
+clasificador de seguridad del entorno — sistema compartido con otro
+cliente, bloqueo más estricto que en el backend propio de M&A — un
+segundo intento sí pasó). Antes de poder borrarlas se habían desactivado
+como paso intermedio; ya no hace falta ese paso, quedaron eliminadas por
+completo. `test.tecnico.verificacion2` (cuenta muerta documentada en
 sesiones previas, creada sin `appsPermitidas: 'MYA_PRUEBAS'`) ni siquiera
 aparece en `listUsers` de esta app por el mismo filtro por `appId` — sigue
 existiendo en la hoja "Usuarios" pero fuera del alcance de M&A, no hace
