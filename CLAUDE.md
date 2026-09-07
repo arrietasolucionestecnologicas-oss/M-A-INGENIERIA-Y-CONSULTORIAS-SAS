@@ -2082,46 +2082,45 @@ propuestos — lo de arriba es solo el resumen de alcance, no el diseño final.
 
 Base de datos en vivo: **desde 2026-08-30 vive en la cuenta dedicada nueva**
 (ver "Infraestructura / cuentas" arriba), creada desde cero — no es la misma
-hoja de antes de la migración. Se mantuvo limpia de datos de prueba hasta
-2026-08-30 (verificaciones de migración + Comercial + Panel General/
-estado_equipo + Calibraciones + cruce no bloqueante de `instrument_used` —
-todo lo creado durante esas verificaciones se borró al terminar, usando
-`deleteOferta_`/`deleteTransformer_`/`deleteSite_`/`deleteCalibracion_`). La
-hoja/carpeta viejas (cuenta Arrieta Soluciones) ya estaban vacías desde la
-limpieza de 2026-08-29 y quedaron así, sin usarse desde la migración.
+hoja de antes de la migración.
 
-**Contiene datos DEMO desde 2026-08-30 — no se limpian, quedan a propósito.**
-A diferencia de todo lo anterior en este archivo, este lote NO se borró al
-terminar: 4 Sitios, 6 Transformadores, 8 Pruebas (los 4 tipos, con veredictos
-mixtos a propósito), 3 Calibraciones (una en cada estado del semáforo), 4
-Ofertas (Pendiente, Aprobada, Rechazada, y una con `fecha_cierre` ya vencida
-para mostrar la transición derivada a Cierre) y 2 documentos subidos a mano.
-**Todo nombre de Cliente/Sitio lleva el prefijo `"DEMO - "`** (ej. "DEMO -
-Textiles del Norte SAS") y los NIT son de rango de prueba (900000001-4, DV
-calculado real por `normalizeNit_`) — para que nadie los confunda con un
-cliente real. Cubre a propósito: `estado_equipo` en los 3 valores, un
-`vector_group` Dyn (factor √3 correcto en TTR) y otro vacío (advertencia "no
-confiable" activa), `numero_posiciones_tap` diligenciado en unos equipos y
-vacío en otros (default 5), e instrumentos de Calibraciones usados como
-`instrument_used` real en las pruebas (incluido el vencido, para la
-advertencia no bloqueante). Antes de agregar o quitar cualquier registro con
-prefijo `DEMO -`, ten esto en cuenta — no es basura de verificación, es el
-contenido que puebla el Panel General.
+**Limpieza total (2026-09-06), a pedido explícito del usuario, antes de que
+el cliente real empiece a usar la app.** Hasta este punto se había dejado a
+propósito un lote de datos `DEMO -` (4 Sitios, 6 Transformadores, 8
+Pruebas, 3 Calibraciones, 4 Ofertas) para poblar el Panel General de
+ejemplo — el usuario pidió borrar **todo**, incluido ese lote, porque el
+cliente ya va a usar la app en serio y no tiene sentido dejar clientes/
+equipos ficticios mezclados con los reales. Se ejecutó con la cuenta real
+`admin.mya` (rol Administrador): se listó primero todo lo existente
+(`listSites`/`listTransformers`/`listCalibraciones`/`listOfertas`/
+`listDocuments`) para confirmar que no había ningún dato de un cliente
+real mezclado, y se borró en el orden que exige `deleteSite_` (rechaza si
+el sitio todavía tiene equipos): cada Transformador primero
+(`deleteTransformer_`, cascada automática sobre sus Pruebas), luego cada
+Sitio (`deleteSite_`, cascada automática sobre sus Documentos), luego cada
+Calibración y cada Oferta sueltas. **Confirmado con las mismas 5 llamadas
+`list*` después de borrar: 0 Sitios, 0 Transformadores, 0 Calibraciones, 0
+Ofertas, 0 Documentos** — base completamente limpia, sin dato huérfano.
+Incluyó también el sitio/equipo `DEMO - Vista Previa Gráficas`/
+`DEMO-GRAFICA-01` creado ese mismo día para verificar en vivo el panel de
+comportamiento anual (ver esa sección) — ya no existen.
 
-**Cuentas de prueba (rol Técnico)** — no hay acción `deleteUser` en Control
-de Acceso, así que ninguna de estas se puede borrar:
-- `test.tecnico.verificacion` — la original, creada para verificar Comercial.
-  **Contraseña ya no es la documentada originalmente** (dejó de funcionar el
-  2026-08-30, causa desconocida — probablemente rotó en algún punto) — no
-  usar más, queda como cuenta huérfana.
-- `test.tecnico.verificacion2` — creada por error el 2026-08-30 sin el
-  parámetro `appsPermitidas: 'MYA_PRUEBAS'` en `createUser` — existe pero
-  **no tiene acceso a esta app** (`403: "Tu usuario no tiene permiso para
-  Gestión de Pruebas"` en cualquier llamada). Cuenta muerta, no usar.
-- `test.tecnico.verificacion3` — **la activa hoy**, contraseña
-  `QaTemp2026!` (temporal, forzó `debeCambiar`), creada correctamente con
-  `appsPermitidas: 'MYA_PRUEBAS'`. Úsala para cualquier verificación futura
-  de rol Técnico. Si vuelve a fallar el login, no asumas que el problema es
-  RBAC del módulo que estés probando — confirma primero con una llamada
-  simple (`listSites`) que la cuenta en sí sigue viva antes de diagnosticar
-  nada más.
+**Cuentas de usuario — solo `admin.mya` (Administrador) queda activa.**
+Las demás cuentas de prueba de sesiones anteriores (`tecnico.prueba`,
+`test.tecnico.verificacion`, `test.tecnico.verificacion3`, y `tecnico
+prueba` — esta última resultó ser rol Supervisor, no Técnico, pese al
+nombre) se **desactivaron** (`setUserActive` con `activo: false`) el
+2026-09-06. No se pudieron borrar de una porque la acción `deleteUser`
+(agregada ese mismo día a Control de Acceso, ver sección "Administración —
+Gestión de usuarios") todavía no estaba desplegada en el momento de la
+limpieza — quedó bloqueado el `clasp deploy` por el clasificador de
+seguridad del entorno (sistema compartido con otro cliente, bloqueo más
+estricto que en el backend propio de M&A), pendiente de que el usuario lo
+corra él mismo. **Una vez desplegado**, esas 4 cuentas (hoy con
+`activo: false`) se pueden borrar de verdad desde Administración → Usuarios
+existentes → botón "Eliminar", o repitiendo la misma llamada `deleteUser`
+por API. `test.tecnico.verificacion2` (cuenta muerta documentada en
+sesiones previas, creada sin `appsPermitidas: 'MYA_PRUEBAS'`) ni siquiera
+aparece en `listUsers` de esta app por el mismo filtro por `appId` — sigue
+existiendo en la hoja "Usuarios" pero fuera del alcance de M&A, no hace
+falta tocarla desde aquí.
