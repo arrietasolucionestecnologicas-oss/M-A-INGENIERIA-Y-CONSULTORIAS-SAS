@@ -1382,11 +1382,16 @@ function loadAdminUsersAndRender_() {
         var pillClass = u.activo ? 'success' : 'danger';
         var estadoLabel = u.activo ? 'Activo' : 'Inactivo';
         var toggleLabel = u.activo ? 'Desactivar' : 'Activar';
+        var isSelf = state.username && u.usuario.toLowerCase() === state.username.toLowerCase();
+        var actions = '<button type="button" class="btn" onclick="handleToggleUserActive_(\'' + escapeHtml_(u.usuario) + '\', ' + !u.activo + ')">' + toggleLabel + '</button>';
+        if (!isSelf) {
+          actions += ' <button type="button" class="btn" style="color:var(--danger);" onclick="handleDeleteUserAccount_(\'' + escapeHtml_(u.usuario) + '\')">Eliminar</button>';
+        }
         return '<tr>' +
           '<td class="mono">' + escapeHtml_(u.usuario) + '</td>' +
           '<td>' + escapeHtml_(u.rol) + '</td>' +
           '<td><span class="pill ' + pillClass + '">' + estadoLabel + '</span></td>' +
-          '<td><button type="button" class="btn" onclick="handleToggleUserActive_(\'' + escapeHtml_(u.usuario) + '\', ' + !u.activo + ')">' + toggleLabel + '</button></td>' +
+          '<td style="white-space:nowrap;">' + actions + '</td>' +
           '</tr>';
       }).join('');
     })
@@ -1403,6 +1408,18 @@ function handleToggleUserActive_(usuario, nextActivo) {
       loadAdminUsersAndRender_();
     })
     .catch(function (err) { alert('No se pudo cambiar el estado: ' + err.message); });
+}
+
+/** Irreversible — a diferencia de desactivar, esto borra la fila del
+ *  usuario por completo. No se puede deshacer. */
+function handleDeleteUserAccount_(usuario) {
+  if (!confirm('¿Eliminar el usuario "' + usuario + '" para siempre? Esta acción no se puede deshacer.')) return;
+  callAuthApi('deleteUser', { token: state.token, appId: APP_ID, usuario: usuario })
+    .then(function (json) {
+      if (!json.ok) { alert(mapAuthError_(json.error)); return; }
+      loadAdminUsersAndRender_();
+    })
+    .catch(function (err) { alert('No se pudo eliminar el usuario: ' + err.message); });
 }
 
 function removeAdminNavAndPanel() {

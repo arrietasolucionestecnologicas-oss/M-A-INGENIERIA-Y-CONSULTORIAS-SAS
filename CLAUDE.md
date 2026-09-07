@@ -1802,6 +1802,20 @@ vivo por no tener a mano una cuenta de rol Administrador durante la
 verificación — la guarda de rol es el mismo patrón exacto que
 `handleCreateUser`, que sí funciona en producción).
 
+**`deleteUser` agregado (2026-09-06)**, a pedido explícito del usuario
+durante la limpieza previa a que el cliente empiece a usar la app en
+serio — hasta entonces `setUserActive` (desactivar) era lo único
+disponible, y el usuario quería borrar de verdad las cuentas de prueba,
+no solo apagarlas. Mismo patrón de seguridad que `listUsers`/
+`setUserActive` (token de Administrador + mismo `appId` en
+`AppsPermitidas` del usuario objetivo), con una guarda extra: **nunca
+permite que un Administrador se borre a sí mismo** (`payload.sub ===
+body.usuario` → `no_autorizado`), para no quedarse sin ningún admin activo
+de esa app por accidente. Es irreversible — a diferencia de desactivar,
+borra la fila completa de la hoja "Usuarios". En el frontend, el botón
+"Eliminar" no se pinta para el usuario con el que se tiene la sesión
+activa (mismo criterio, a nivel de UI).
+
 ## Convenciones de frontend que hay que respetar
 
 - **Nunca uses `parseFloat()` directo sobre un input de usuario** — trunca en
