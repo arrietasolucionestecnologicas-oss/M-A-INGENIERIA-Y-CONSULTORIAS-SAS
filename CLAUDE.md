@@ -927,9 +927,24 @@ cada una.
   existe, o solo `"usuario.cuenta"` si no; se usa tanto en la columna
   "Registrado por" del historial como en el modal de detalle de prueba.
 
-**Pendiente de desplegar** (a diferencia del panel de comportamiento
-anual, esto sí toca `Código.gs` — columna nueva en `PRUEBAS` y cambios en
-`persistTest_`/`listTests_` — necesita `clasp push` + `clasp deploy`).
+**Desplegado y en producción** (a diferencia del panel de comportamiento
+anual, esto sí tocaba `Código.gs` — columna nueva en `PRUEBAS` y cambios en
+`persistTest_`/`listTests_` — ya recibió su `clasp push` + `clasp deploy`).
+
+**Diagnosticado (2026-09-06), no era un bug**: tras la limpieza total de
+datos (ver "Estado / pendientes conocidos"), el usuario reportó que
+Clientes/Calibraciones/Comercial/Documentos "no mostraban nada". Se
+verificó en vivo con `admin.mya` en una sesión nueva (`localStorage`
+limpio): el modal `#operatorNameModal` aparece justo después del login,
+**con el fondo oscurecido detrás** (mismo patrón visual que cualquier
+modal de la app) — eso es lo que parecía "pantalla vacía". Al completarlo,
+las 4 pantallas mencionadas mostraron su mensaje de vacío correcto sin
+ningún cambio de código: "No hay clientes/proyectos todavía...",
+"No hay instrumentos registrados todavía.", "Sin ofertas registradas
+todavía.", "No hay documentos que coincidan con el filtro." — los cuatro
+ya existían desde antes de este cambio. Si vuelve a reportarse "no
+muestra nada" justo después de iniciar sesión en un dispositivo nuevo,
+sospecha primero de este modal antes de asumir un bug de renderizado.
 
 ## Documentos e Informes
 
