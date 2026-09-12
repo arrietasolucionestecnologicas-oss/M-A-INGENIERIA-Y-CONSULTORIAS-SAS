@@ -900,6 +900,23 @@ function certifyTest_(params, auth) {
     var calculated = safeParseJson_(testObj.calculated_results_json);
     var rawReadings = safeParseJson_(testObj.raw_readings_json);
     var reportFileId = '';
+    var revisadoPor = auth.username || 'desconocido';
+    var revisadoAt = new Date().toISOString();
+
+    // Estado y revisor se escriben ANTES de generar cualquier informe —
+    // corregido (2026-09-12): con el orden anterior (generar primero,
+    // escribir después), findLatestElectricalTestsByType_ todavía veía esta
+    // misma fila como 'Borrador' en el momento de armar el informe eléctrico
+    // combinado (su filtro exige 'Certificada'), así que el combinado se
+    // regeneraba sin la prueba que se acababa de certificar si era la más
+    // reciente de su tipo — quedaba un paso atrás hasta la siguiente
+    // certificación. Con el estado ya escrito, tanto el combinado como el
+    // bloque de firmas (que necesita revisado_por/revisado_at reales) ven el
+    // dato correcto.
+    var sheet = getSheet_('PRUEBAS');
+    sheet.getRange(testObj._row, colIndex_('PRUEBAS', 'estado_certificacion')).setValue('Certificada');
+    sheet.getRange(testObj._row, colIndex_('PRUEBAS', 'revisado_por')).setValue(revisadoPor);
+    sheet.getRange(testObj._row, colIndex_('PRUEBAS', 'revisado_at')).setValue(revisadoAt);
 
     if (testObj.test_type === 'ACEITE_DIELECTRICO') {
       // Un informe por prueba — nunca debe impedir la certificación en sí:
@@ -908,6 +925,8 @@ function certifyTest_(params, auth) {
         var oilTestMeta = {
           created_at: testObj.created_at,
           tested_by: testObj.tested_by,
+          revisado_por: revisadoPor,
+          revisado_at: revisadoAt,
           instrument_used: testObj.instrument_used,
           attachment_url: testObj.attachment_file_id ? driveFileUrl_(testObj.attachment_file_id) : null
         };
@@ -934,10 +953,6 @@ function certifyTest_(params, auth) {
       }
     }
 
-    var sheet = getSheet_('PRUEBAS');
-    sheet.getRange(testObj._row, colIndex_('PRUEBAS', 'estado_certificacion')).setValue('Certificada');
-    sheet.getRange(testObj._row, colIndex_('PRUEBAS', 'revisado_por')).setValue(auth.username || 'desconocido');
-    sheet.getRange(testObj._row, colIndex_('PRUEBAS', 'revisado_at')).setValue(new Date().toISOString());
     if (reportFileId) sheet.getRange(testObj._row, colIndex_('PRUEBAS', 'report_file_id')).setValue(reportFileId);
 
     return jsonResponse_({ status: 200, message: 'Prueba certificada', data: { id: params.id, report_url: reportFileId ? driveFileUrl_(reportFileId) : null } });
@@ -1802,13 +1817,25 @@ function appendVerdictBanner_(body, label, verdict) {
 }
 
 /** "Área de control de calidad" — mismo nombre y ubicación (al final, junto
- *  a las firmas) que el protocolo de referencia dado por el usuario. */
-function appendSignatureSection_(body, testedBy) {
+ *  a las firmas) que el protocolo de referencia dado originalmente por el
+ *  usuario. Rediseñado (2026-09-12) a partir de dos referencias nuevas
+ *  (informe de laboratorio con roles Analizó/Revisó/Aprobó, y protocolo
+ *  industrial con varios roles de firma): en vez de una columna en blanco
+ *  para firmar a mano, se usan los dos roles reales que ya registra el
+ *  flujo de certificación — quién hizo la prueba y quién la certificó —,
+ *  con nombre y fecha ya diligenciados, porque el informe solo se genera
+ *  después de que ambos pasos ya ocurrieron de verdad. `probadoPor`/
+ *  `certificadoPor` son objetos `{ nombre, fecha }`; `fecha` acepta
+ *  cualquier formato que entienda `fmtDatePdf_`. */
+function appendSignatureSection_(body, probadoPor, certificadoPor) {
   body.appendParagraph('');
   appendSectionTitle_(body, 'Área de control de calidad');
   var table = body.appendTable([
-    ['PROBADO POR', 'REVISIÓN'],
-    ['\n\n_____________________________\n' + (testedBy || ''), '\n\n_____________________________\n']
+    ['PROBADO POR', 'CERTIFICADO POR'],
+    [
+      (probadoPor.nombre || '—') + '\n' + fmtDatePdf_(probadoPor.fecha),
+      (certificadoPor.nombre || '—') + '\n' + fmtDatePdf_(certificadoPor.fecha)
+    ]
   ]);
   table.setBorderColor(PDF_COLORS_.BORDER);
   for (var c = 0; c < 2; c++) {
@@ -2018,7 +2045,11 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
   var mostRecentType = present.reduce(function (a, b) {
     return toComparableDate_(latest[a].created_at) >= toComparableDate_(latest[b].created_at) ? a : b;
   });
-  appendSignatureSection_(body, latest[mostRecentType].tested_by);
+  var signedTest = latest[mostRecentType];
+  appendSignatureSection_(body,
+    { nombre: signedTest.tested_by, fecha: signedTest.created_at },
+    { nombre: signedTest.revisado_por, fecha: signedTest.revisado_at }
+  );
 
   var fileName = 'Informe_Electrico_' + transformer.serial_number + '_' + fmtTimestampForFilename_(new Date());
   var saved = finalizeReportPdf_(doc, folderId, fileName);
@@ -2105,13 +2136,27 @@ function generateOilTestReportPdf_(transformer, site, rawReadings, calculated, t
   }
 
   appendVerdictBanner_(body, 'Veredicto general', calculated.overallVerdict);
-  appendSignatureSection_(body, testMeta.tested_by);
+  appendSignatureSection_(body,
+    { nombre: testMeta.tested_by, fecha: testMeta.created_at },
+    { nombre: testMeta.revisado_por, fecha: testMeta.revisado_at }
+  );
   return finalizeReportPdf_(doc, folderId, 'Informe_Aceite_' + transformer.serial_number);
 }
 
 /** Exporta el Doc a PDF, lo guarda en la carpeta destino, y manda el Doc
- *  intermedio a la papelera — solo el PDF queda como archivo real. */
+ *  intermedio a la papelera — solo el PDF queda como archivo real.
+ *  Pie de página agregado (2026-09-12), a partir de referencias visuales
+ *  con pie de control documental — deliberadamente NO se copia un código
+ *  de formato tipo ISO/acreditación (M&A no tiene ninguna acreditación
+ *  propia; inventar uno sería fabricar una certificación que no existe).
+ *  En vez de eso, un pie honesto: quién generó el informe y cuándo.
+ *  DocumentApp no expone un campo dinámico de número de página en Apps
+ *  Script, así que no se intenta un falso "Página X de Y". */
 function finalizeReportPdf_(doc, folderId, fileName) {
+  var footer = doc.addFooter();
+  var footerPar = footer.appendParagraph('M&A Ingeniería y Consultoría SAS · Informe generado vía Gestión de Pruebas el ' + fmtDatePdf_(new Date().toISOString()));
+  footerPar.setAlignment(DocumentApp.HorizontalAlignment.CENTER);
+  footerPar.editAsText().setFontSize(7).setForegroundColor(PDF_COLORS_.TEXT_MUTED);
   doc.saveAndClose();
   var docFile = DriveApp.getFileById(doc.getId());
   var pdfBlob = docFile.getAs('application/pdf').setName(fileName + '.pdf');

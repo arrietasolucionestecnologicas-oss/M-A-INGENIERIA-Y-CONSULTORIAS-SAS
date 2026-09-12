@@ -1455,6 +1455,48 @@ texto plano):
 - Encabezados de las tablas de resultados (TTR/Devanados/Aislamiento/
   Fisicoquímico/DGA/PCB) pasaron a mayúsculas.
 
+### Segundo rediseño (2026-09-12) — firmas con roles reales, pie de página, y un bug de orden encontrado en el camino
+
+El usuario compartió dos referencias visuales nuevas (un informe de
+laboratorio de aceites acreditado, con bloque de firmas de 3 roles
+Analizó/Revisó/Aprobó; y un protocolo industrial de otro fabricante, con
+firmas de hasta 4 roles) pidiendo densidad de celdas similar. La mayor
+parte de esa densidad ya existía desde el rediseño de arriba (grilla de
+datos, tablas de resultados con columna de norma ASTM en Aceite) — lo que
+de verdad faltaba era el bloque de firmas y el pie de página.
+
+**`appendSignatureSection_` ya no deja una columna en blanco para firmar a
+mano** — antes era "PROBADO POR" (con el técnico) + "REVISIÓN" (vacía).
+Ahora son dos roles reales que el flujo de certificación ya registra:
+"PROBADO POR" (`tested_by` + `created_at`) y "CERTIFICADO POR"
+(`revisado_por` + `revisado_at`), ambos siempre con dato real porque el
+informe **solo se genera después de certificar** — no tiene sentido dejar
+un espacio en blanco para un paso que ya ocurrió. Se decidió explícitamente
+con el usuario no copiar el código de documento tipo ISO/acreditación de la
+referencia (`"Formato Base: ..."`, `"Código del Documento: ..."`) — M&A no
+tiene ninguna acreditación propia, así que inventar ese código habría sido
+fabricar una certificación falsa. En su lugar, pie de página honesto (nuevo,
+`doc.addFooter()` en `finalizeReportPdf_`, aplica a los 2 formatos): nombre
+de la empresa + fecha de generación. **No hay "Página X de Y"** — Apps
+Script no expone un campo dinámico de número de página en `DocumentApp`,
+así que no se fabrica una paginación falsa.
+
+**Bug real encontrado revisando el código para poder pasarle
+`revisado_por`/`revisado_at` al bloque de firmas**: `certifyTest_` generaba
+el informe (individual de Aceite, o el combinado eléctrico) **antes** de
+escribir `estado_certificacion: 'Certificada'` en la hoja. Como
+`findLatestElectricalTestsByType_` exige `estado_certificacion ===
+'Certificada'` para considerar una prueba, el informe combinado se armaba
+sin ver todavía la prueba que se acababa de certificar — si era la más
+reciente de su tipo, el combinado quedaba un paso atrás hasta la
+siguiente certificación de ese equipo. Corregido: los 3 `setValue` de
+`estado_certificacion`/`revisado_por`/`revisado_at` ahora van **antes** de
+generar cualquier informe, `reportFileId` se escribe al final igual que
+antes. Verificado en vivo (2026-09-12): equipo real de prueba, una
+certificación de TTR, el informe combinado se generó con esa misma prueba
+incluida en el mismo llamado que la certificó (antes del fix quedaba
+excluida). Dato de prueba borrado al terminar.
+
 ### Colores y cruce con Calibraciones — duplicados a propósito
 
 - **Colores del veredicto** (`PDF_COLORS_`/`verdictColor_`): un PDF no
@@ -2045,6 +2087,19 @@ archivo del repo): pedirlas al usuario directamente, no están guardadas aquí
 a propósito.
 
 ## Estado / pendientes conocidos
+
+**El cliente real ya está usando la app en producción (confirmado
+2026-09-12).** Tras la limpieza total del 2026-09-06, `listSites` ya
+devuelve nombres reales de clientes/edificios (ej. "LA ROCHELLE", "DIANA",
+"ACQUALINA", "PLAZA 55", entre otros) creados por el propio cliente —
+**esto ya no es una base vacía ni de práctica**. Cualquier verificación en
+vivo a partir de ahora debe crear su propio Sitio/Equipo de prueba con un
+nombre que se distinga claramente (ej. prefijo "PRUEBA -" o similar, mismo
+criterio que el lote `DEMO -` de antes) y **borrarlo al terminar** — nunca
+listar y asumir que una fila es de prueba solo porque el nombre no es
+obviamente corporativo. Antes de correr cualquier `delete*` en esta app,
+confirma explícitamente que el `id` de destino es el que tú mismo creaste
+para la verificación, no algo que ya estaba ahí.
 
 No implementado todavía, evaluado pero no decidido con el usuario:
 - `SweetAlert2` en vez de `alert()`/`confirm()` nativos.
