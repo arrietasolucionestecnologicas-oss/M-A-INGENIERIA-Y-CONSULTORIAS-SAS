@@ -996,6 +996,58 @@ existe `ensureDriveStructure_` (solo Administrador) para crearla a mano de
 una vez sin depender de esa primera subida, útil al desplegar en una cuenta
 nueva.
 
+### Compartir automático — "cualquiera con el enlace puede editar"
+
+**Agregado (2026-09-12), a pedido explícito del usuario** ("el cliente no
+debe necesitar entrar a Drive para nada... la idea es que todo se haga
+desde la app"). Los técnicos/supervisores se autentican con su propio
+login de la app (Control de Acceso), **nunca con una cuenta de Google** —
+sin este cambio, Drive les mostraba "solicitar acceso" al abrir cualquier
+enlace que la app les muestra (informe, adjunto, certificado), en vez de
+abrirlo directo.
+
+`shareForEditAnyone_(driveItem)` — envuelto en try/catch, nunca bloquea la
+creación real del archivo/carpeta si el share falla — se llama ahora en
+los 6 puntos donde el backend crea algo en Drive: los dos helpers de
+carpeta (`getOrCreateFolder_`/`getOrCreateFolderIn_`, cubren raíz,
+Calibraciones, carpeta de cliente y sus 3 subcarpetas) y los 4 puntos que
+crean archivos (`uploadLogoAsset_`, `finalizeReportPdf_` — todos los
+informes PDF —, `saveFileToDrive_`, `saveFileToDriveIn_` — adjuntos,
+certificados de Calibraciones, adjuntos de Ofertas). Acceso de
+**EDICIÓN, no solo lectura** — decidido explícitamente con el usuario: "si
+el [técnico] quiere modificar una fecha o un nombre antes de enviar debe
+poder editar". Esto es un cambio de postura de seguridad real, no
+cosmético: cualquiera que consiga un enlace de un informe podría
+modificarlo directo en Drive, sin pasar por la app — se implementó así a
+pedido explícito, con esa consecuencia entendida por el usuario.
+
+**`applyDriveSharingToAll_`** (solo Administrador, acción
+`applyDriveSharingToAll`) — lo de arriba solo cubre lo creado *desde* este
+cambio; esta acción recorre toda la carpeta raíz de forma recursiva
+(`walkAndShare_`) y aplica el mismo share a todo lo que ya existía antes.
+Se corrió una sola vez en vivo el 2026-09-12: 35 carpetas + 26 archivos.
+Si Drive tiene muchos más archivos en el futuro y la ejecución corta a los
+6 minutos (límite de Apps Script), se puede volver a llamar sin problema —
+compartir algo que ya está compartido no rompe nada, solo repite trabajo.
+
+### Limpieza de carpetas huérfanas — `cleanupDemoSiteFolders_`
+
+`deleteSite_`/`deleteTransformer_` **nunca** borran las carpetas/archivos
+reales de Drive (a propósito, ver arriba) — solo el índice en Sheets. Tras
+la limpieza total de datos del 2026-09-06 (y las verificaciones
+posteriores), las carpetas de Drive de esos Sitios quedaron huérfanas —
+y ya no hay fila en `SITIOS` que guarde su ID para borrarlas por ID.
+`cleanupDemoSiteFolders_` (solo Administrador, acción
+`cleanupDemoSiteFolders`) las busca por **nombre** bajo la carpeta raíz:
+cualquier carpeta que empiece con `"DEMO -"` o `"PRUEBA -"`, el mismo
+prefijo que este proyecto ya usa a propósito para marcar datos no reales.
+`params.execute` en `true` para borrar de verdad (a la papelera,
+recuperable 30 días — nunca borrado permanente); sin él, o en `false`,
+solo lista lo que borraría, sin tocar nada — pensado para revisar la lista
+antes de ejecutar. Corrida en vivo el 2026-09-12: 6 carpetas enviadas a la
+papelera (los 5 Sitios `DEMO -` del lote de ejemplo + el Sitio `PRUEBA -`
+usado para verificar el rediseño del PDF, ver esa sección).
+
 ### Índice de documentos (hoja `DOCUMENTOS`)
 
 Drive no permite listar/filtrar por cliente+tipo+fecha de forma barata sin

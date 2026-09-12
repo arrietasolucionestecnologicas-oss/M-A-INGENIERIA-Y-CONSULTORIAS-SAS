@@ -1598,6 +1598,26 @@ function verdictColor_(verdict) {
   return { bg: PDF_COLORS_.NEUTRAL_BG, text: PDF_COLORS_.TEXT_MUTED };
 }
 
+/** Comparte cualquier archivo/carpeta como "cualquiera con el enlace puede
+ *  editar" (2026-09-12, a pedido explícito del usuario: "el cliente no debe
+ *  necesitar entrar a Drive para nada... la idea es que todo se haga desde
+ *  la app"). Los técnicos/supervisores se autentican con su propio login de
+ *  la app (Control de Acceso), nunca con una cuenta de Google — sin este
+ *  share, Drive les pediría "solicitar acceso" al abrir cualquier enlace
+ *  que la app les muestre, en vez de abrirlo directo. Se eligió acceso de
+ *  EDICIÓN (no solo lectura) también a pedido explícito: el usuario quiere
+ *  poder corregir un dato (fecha, nombre) directo en el archivo antes de
+ *  enviarlo, sin pasar por la app. Envuelto en try/catch — nunca debe
+ *  bloquear la creación real del archivo/carpeta si el share falla por
+ *  algún motivo. */
+function shareForEditAnyone_(driveItem) {
+  try {
+    driveItem.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.EDIT);
+  } catch (e) {
+    // No relanzar — el archivo/carpeta ya existe, el share es best-effort.
+  }
+}
+
 /** Logo de M&A — subido una sola vez a la carpeta raíz vía uploadLogoAsset_
  *  (solo Administrador), ID persistido en Propiedades del script. Si nunca
  *  se subió, los informes se generan igual, solo sin logo — nunca debe
@@ -1621,6 +1641,7 @@ function uploadLogoAsset_(params, auth) {
   var decoded = Utilities.base64Decode(stripBase64Prefix_(params.file_base64));
   var blob = Utilities.newBlob(decoded, params.file_mime_type || 'image/png', 'logo-ma.png');
   var file = root.createFile(blob);
+  shareForEditAnyone_(file);
   PropertiesService.getScriptProperties().setProperty('LOGO_FILE_ID', file.getId());
   return jsonResponse_({ status: 200, message: 'Logo subido', data: { fileId: file.getId() } });
 }
@@ -2162,6 +2183,7 @@ function finalizeReportPdf_(doc, folderId, fileName) {
   var pdfBlob = docFile.getAs('application/pdf').setName(fileName + '.pdf');
   var folder = DriveApp.getFolderById(folderId);
   var pdfFile = folder.createFile(pdfBlob);
+  shareForEditAnyone_(pdfFile);
   docFile.setTrashed(true);
   return { fileId: pdfFile.getId(), url: pdfFile.getUrl() };
 }
@@ -2173,7 +2195,9 @@ function finalizeReportPdf_(doc, folderId, fileName) {
 function getOrCreateFolder_(name) {
   var folders = DriveApp.getFoldersByName(name);
   if (folders.hasNext()) return folders.next();
-  return DriveApp.createFolder(name);
+  var folder = DriveApp.createFolder(name);
+  shareForEditAnyone_(folder);
+  return folder;
 }
 
 /** Acepta tanto base64 puro como data URI ("data:image/png;base64,...."). */
@@ -2187,6 +2211,7 @@ function saveFileToDrive_(base64Data, fileNameNoExt, mimeType) {
   var decoded = Utilities.base64Decode(base64Data);
   var blob = Utilities.newBlob(decoded, mimeType || 'application/octet-stream', fileNameNoExt);
   var file = folder.createFile(blob);
+  shareForEditAnyone_(file);
   return { fileId: file.getId(), url: file.getUrl() };
 }
 
@@ -2219,7 +2244,9 @@ function driveFileUrl_(fileId) {
 function getOrCreateFolderIn_(parentFolder, name) {
   var folders = parentFolder.getFoldersByName(name);
   if (folders.hasNext()) return folders.next();
-  return parentFolder.createFolder(name);
+  var folder = parentFolder.createFolder(name);
+  shareForEditAnyone_(folder);
+  return folder;
 }
 
 /** Carpeta raíz del proyecto — se crea una sola vez; el ID queda en las
@@ -2312,7 +2339,82 @@ function saveFileToDriveIn_(folderId, base64Data, fileNameNoExt, mimeType) {
   var decoded = Utilities.base64Decode(base64Data);
   var blob = Utilities.newBlob(decoded, mimeType || 'application/octet-stream', fileNameNoExt);
   var file = folder.createFile(blob);
+  shareForEditAnyone_(file);
   return { fileId: file.getId(), url: file.getUrl() };
+}
+
+/**
+ * Aplica "cualquiera con el enlace puede editar" a TODO lo que ya existía
+ * en Drive antes de este cambio (2026-09-12) — shareForEditAnyone_ arriba
+ * solo cubre archivos/carpetas creados DESDE ahora. Recorre toda la
+ * carpeta raíz del proyecto de forma recursiva. Solo Administrador. Puede
+ * tardar si hay muchos archivos — Apps Script corta la ejecución a los 6
+ * minutos; si eso pasa, se puede volver a llamar sin problema (lo ya
+ * compartido no se rompe por compartirlo de nuevo, solo cuesta tiempo
+ * volver a recorrerlo).
+ */
+function applyDriveSharingToAll_(params, auth) {
+  if (auth.role !== 'Administrador') {
+    return jsonResponse_({ status: 403, message: 'Solo un Administrador puede aplicar permisos de Drive' });
+  }
+  var root = getRootFolder_();
+  var counts = { folders: 1, files: 0 };
+  shareForEditAnyone_(root);
+  walkAndShare_(root, counts);
+  return jsonResponse_({ status: 200, message: 'Permisos aplicados', data: counts });
+}
+
+function walkAndShare_(folder, counts) {
+  var files = folder.getFiles();
+  while (files.hasNext()) {
+    shareForEditAnyone_(files.next());
+    counts.files++;
+  }
+  var subfolders = folder.getFolders();
+  while (subfolders.hasNext()) {
+    var sub = subfolders.next();
+    shareForEditAnyone_(sub);
+    counts.folders++;
+    walkAndShare_(sub, counts);
+  }
+}
+
+/**
+ * Limpieza puntual (2026-09-12): deleteSite_/deleteTransformer_ nunca
+ * borran las carpetas/archivos reales de Drive (a propósito, ver
+ * comentario arriba de la estructura de carpetas), así que tras borrar
+ * todos los Sitios DEMO/de prueba (limpieza del 2026-09-06 y
+ * verificaciones posteriores) sus carpetas quedaron huérfanas en Drive —
+ * ya no hay fila en SITIOS que guarde el ID para borrarlas por ID, así que
+ * se buscan por NOMBRE bajo la carpeta raíz: cualquier carpeta que empiece
+ * con "DEMO -" o "PRUEBA -", el mismo prefijo que este proyecto ya usa a
+ * propósito para marcar datos no reales (ver "Estado / pendientes
+ * conocidos" en CLAUDE.md). Solo Administrador. Manda a la papelera
+ * (recuperable 30 días), nunca borra permanentemente.
+ * `params.execute` (booleano): sin él (o en false), solo LISTA lo que
+ * borraría, sin tocar nada — hay que pasarlo en true para borrar de
+ * verdad, a propósito, para poder revisar la lista antes de ejecutar.
+ */
+function cleanupDemoSiteFolders_(params, auth) {
+  if (auth.role !== 'Administrador') {
+    return jsonResponse_({ status: 403, message: 'Solo un Administrador puede limpiar carpetas de Drive' });
+  }
+  var root = getRootFolder_();
+  var folders = root.getFolders();
+  var matches = [];
+  while (folders.hasNext()) {
+    var folder = folders.next();
+    var name = folder.getName();
+    if (name.indexOf('DEMO -') === 0 || name.indexOf('PRUEBA -') === 0) {
+      matches.push(name);
+      if (params.execute === true) folder.setTrashed(true);
+    }
+  }
+  return jsonResponse_({
+    status: 200,
+    message: params.execute === true ? 'Carpetas enviadas a la papelera' : 'Vista previa — nada borrado todavía',
+    data: { executed: params.execute === true, folders: matches }
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -2833,6 +2935,8 @@ var POST_ACTIONS = {
   uploadDocument: uploadDocument_,
   deleteDocument: deleteDocument_,
   ensureDriveStructure: ensureDriveStructure_,
+  applyDriveSharingToAll: applyDriveSharingToAll_,
+  cleanupDemoSiteFolders: cleanupDemoSiteFolders_,
   createOferta: createOferta_,
   updateOferta: updateOferta_,
   addOfertaNota: addOfertaNota_,
