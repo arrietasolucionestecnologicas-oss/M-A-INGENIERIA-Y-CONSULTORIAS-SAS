@@ -35,8 +35,9 @@ compacto del PDF) necesitan que 2/3/4/5 ya existan primero.
    2026-09-13, **verificación en vivo pendiente** — ver detalle abajo).
 8. [x] **Devanados — tabla compacta, una fila por TAP** (implementado
    2026-09-13, **verificación en vivo pendiente** — ver detalle abajo).
-9. [ ] **Aislamiento — tabla que quepa en una página**, dos variantes
-   (Completo/Simple), tensión de prueba como línea de dato, no columna.
+9. [x] **Aislamiento — tabla que quepa en una página** (verificado
+   2026-09-13, **ya estaba implementado** desde el punto 5 — ver detalle
+   abajo).
 
 **Objetivo general**: que el informe eléctrico completo (TTR + Devanados +
 Aislamiento + firmas) quepa en una sola página para el caso normal
@@ -320,6 +321,31 @@ informe con primario+secundario trifásico, con solo secundario (para ver
 la fila "SECUNDARIO" del secundario sola), y con un transformador
 monofásico. Backend desplegado en producción (`clasp deploy` @44,
 2026-09-13); no hay cambios de frontend que pushear para este punto.
+
+### Punto 9 — Aislamiento: tabla que quepa en una página — ya estaba resuelto
+
+Antes de escribir código se revisó el estado actual (mismo criterio que
+los puntos 2/3): Aislamiento nunca tuvo desglose por fase como TTR/
+Devanados — siempre fue una fila por combinación (`AT-BT`/`AT-Tierra`/
+`BT-Tierra`, solo 3 filas), así que nunca necesitó "compactarse" en el
+sentido de los puntos 7/8. Lo que pedía el punto 9 ya había quedado
+resuelto exactamente así al implementar el punto 5 el mismo día:
+
+- **2 variantes de tabla**: `INSULATION_TABLE_HEADER_` = `COMBINACIÓN|
+  DAR|CALIFICACIÓN DAR|IP|CALIFICACIÓN IP` (Completo, 5 columnas) e
+  `INSULATION_SIMPLE_TABLE_HEADER_` = `COMBINACIÓN|RESISTENCIA` (Simple,
+  2 columnas) — coinciden literalmente con lo pedido en el punto 9.
+- **Tensión de prueba como línea de dato, no columna**: `MÉTODO`/
+  `TENSIÓN DE PRUEBA` ya viven en la grilla de "Datos de la prueba"
+  (`<<METODO_AISLAMIENTO>>`/`<<TENSION_PRUEBA_AISLAMIENTO>>`, ver punto
+  5), nunca como columna de la tabla de resultados.
+- **Letras pequeñas**: heredado del punto 7 (cambio de fuente
+  compartido en `appendResultsTable_`/`appendDataRowsToTable_`).
+
+No se tocó ningún archivo para este punto — solo se confirmó por lectura
+de código que ya cumplía el pedido. Con esto, **los 9 puntos de la lista
+quedan implementados**; falta únicamente la verificación en vivo
+conjunta (ver más abajo, sección "Verificación").
 
 ## Arquitectura activa (esta es la que corre en producción)
 
@@ -2781,6 +2807,35 @@ entorno, no un bug de la app.
 Credenciales de prueba (usuario Administrador real, no lo pongas en ningún
 archivo del repo): pedirlas al usuario directamente, no están guardadas aquí
 a propósito.
+
+**Verificación en vivo pendiente de los puntos 5-8 (2026-09-13)** — el
+usuario pidió explícitamente verificar todo junto al final en vez de
+punto por punto ("sigamos, al final verificamos todo"), así que quedó
+diferida. Todo el backend ya está desplegado en producción
+(`clasp deploy` @41-@44) y el frontend ya está en GitHub Pages para los
+puntos que lo tocaron (5 y 6; 7/8/9 son solo backend/plantilla). Falta,
+en este orden (regenerar plantillas primero, todo lo demás depende de
+eso):
+1. Regenerar las 2 plantillas (Eléctrico/Aceite) desde Administración —
+   **obligatorio**, cambiaron los bloques de TTR/Devanados/Aislamiento en
+   los puntos 5/7/8. **Avisar al usuario que debe reponer el watermark**
+   en ambas plantillas después (se pierde siempre que se regeneran).
+2. Aislamiento: una prueba con `metodo: 'simple'` y otra con
+   `'completo'` — confirmar tabla de 2 columnas vs. 5 columnas, y que
+   MÉTODO/TENSIÓN DE PRUEBA aparecen bien en la grilla de datos (punto 5).
+3. Repetir una lectura puntual con nota en los 3 módulos (TTR, Devanados
+   primario, Devanados secundario, Aislamiento) — confirmar que el PDF
+   marca la fila con `†` y que aparece el pie de nota debajo de la tabla
+   correspondiente (punto 6).
+4. TTR: un transformador trifásico con varios TAPs (tabla de 7 columnas)
+   y uno monofásico (tabla de 5 columnas) — confirmar ERROR%/ESTADO como
+   peor caso entre fases (punto 7).
+5. Devanados: primario+secundario juntos, solo secundario, y un
+   transformador monofásico — confirmar la fila "SECUNDARIO" del
+   secundario y las variantes de 4/6 columnas (punto 8).
+6. Con todo lo anterior en un solo informe (trifásico, ≤5 tomas, todo
+   probado): confirmar el objetivo general de la lista — que el informe
+   completo quepa en una sola página.
 
 **`clasp run <función>` como alternativa para probar código directamente en
 el proyecto de Apps Script sin pasar por el login de la app** (intentado
