@@ -1363,11 +1363,47 @@ function renderAdminNavAndPanel() {
     '<thead><tr><th>Usuario</th><th>Rol</th><th>Estado</th><th></th></tr></thead>' +
     '<tbody id="adminUsersRows"><tr><td colspan="4" class="empty-note">Cargando…</td></tr></tbody>' +
     '</table></div>' +
+    '</div>' +
+    '<div class="panel" style="max-width:480px; margin-top:18px;">' +
+    '<div class="panel-head"><h2>Plantillas de informes</h2></div>' +
+    '<p class="field-note" style="padding:0 18px 12px;">Genera (o regenera) las 2 plantillas de PDF (Eléctrico y Aceite) con la estructura y colores actuales. Después de generarlas, ábrelas desde Drive y agrégales el watermark del logo a mano (Insertar imagen → Detrás del texto → transparencia 85-92% → centrada) — eso no se puede hacer por código. Mientras no exista una plantilla, certificar informes de ese tipo falla.</p>' +
+    '<div style="padding:0 18px 18px;">' +
+    '<button class="btn primary" type="button" id="generateTemplatesBtn" onclick="handleGenerateReportTemplates_()">Generar plantillas de informes</button>' +
+    '<div id="generateTemplatesLinks" style="margin-top:10px;"></div>' +
+    '<span class="status-line" id="generateTemplatesStatus" hidden></span>' +
+    '</div>' +
     '</div></div>';
 
   document.querySelector('main').appendChild(section);
   document.getElementById('createUserForm').addEventListener('submit', handleCreateUserSubmit);
   loadAdminUsersAndRender_();
+}
+
+/** Corre crearPlantillasInformes_ una sola vez (o de nuevo, si hace falta
+ *  rehacer las plantillas) — solo Administrador. Las URLs devueltas son
+ *  para que el usuario abra cada documento y agregue el watermark a mano;
+ *  los fileId quedan guardados solos en Propiedades del script, no hace
+ *  falta copiarlos de vuelta. */
+function handleGenerateReportTemplates_() {
+  if (!confirm('¿Generar las plantillas de informes? Si ya existen, se reemplazan por unas nuevas (sin watermark) y hay que volver a agregárselo a mano.')) return;
+  var btn = document.getElementById('generateTemplatesBtn');
+  var status = document.getElementById('generateTemplatesStatus');
+  var links = document.getElementById('generateTemplatesLinks');
+  btn.disabled = true;
+  links.innerHTML = '';
+  setStatus_(status, 'Generando plantillas…', false);
+
+  callApi('generateReportTemplates', 'POST', {})
+    .then(function (data) {
+      setStatus_(status, 'Plantillas generadas. Ábrelas y agrégales el watermark del logo a mano.', true);
+      links.innerHTML =
+        '<a class="pill success" href="' + data.electricoUrl + '" target="_blank" rel="noopener">Abrir plantilla Eléctrico</a> ' +
+        '<a class="pill success" href="' + data.aceiteUrl + '" target="_blank" rel="noopener">Abrir plantilla Aceite</a>';
+    })
+    .catch(function (err) {
+      setStatus_(status, (err && err.message) || 'No se pudieron generar las plantillas.', false, true);
+    })
+    .then(function () { btn.disabled = false; });
 }
 
 /** Solo los usuarios de ESTA app (appId: APP_ID) — Control de Acceso es un
