@@ -25,16 +25,14 @@ compacto del PDF) necesitan que 2/3/4/5 ya existan primero.
 4. [x] **Devanados: solo primario, solo secundario, o ambos** (completado
    2026-09-13) — ver detalle abajo.
 5. [x] **Aislamiento: método Simple (solo resistencia) vs Completo
-   (DAR/IP)** (implementado 2026-09-13, **verificación en vivo pendiente**
-   — el usuario pidió verificar todo junto al final en vez de punto por
-   punto, ver detalle abajo).
-6. [x] **Repetir una lectura puntual con nota** (implementado 2026-09-13,
-   **verificación en vivo pendiente**, misma razón que el punto 5 — ver
+   (DAR/IP)** (implementado y **verificado en vivo** 2026-09-13 — ver
    detalle abajo).
-7. [x] **TTR — tabla compacta, una fila por TAP** (implementado
-   2026-09-13, **verificación en vivo pendiente** — ver detalle abajo).
-8. [x] **Devanados — tabla compacta, una fila por TAP** (implementado
-   2026-09-13, **verificación en vivo pendiente** — ver detalle abajo).
+6. [x] **Repetir una lectura puntual con nota** (implementado y
+   **verificado en vivo** 2026-09-13 — ver detalle abajo).
+7. [x] **TTR — tabla compacta, una fila por TAP** (implementado y
+   **verificado en vivo** 2026-09-13 — ver detalle abajo).
+8. [x] **Devanados — tabla compacta, una fila por TAP** (implementado y
+   **verificado en vivo** 2026-09-13 — ver detalle abajo).
 9. [x] **Aislamiento — tabla que quepa en una página** (verificado
    2026-09-13, **ya estaba implementado** desde el punto 5 — ver detalle
    abajo).
@@ -173,14 +171,11 @@ sin las lecturas adicionales de tiempo).
   de resistencia + selector de unidad por combinación, sin DAR/IP ni
   veredicto inventado (solo "Lecturas registradas").
 
-**Pendiente de verificación en vivo** (decisión explícita del usuario
-2026-09-13: verificar todos los puntos juntos al final, no uno por uno) —
-falta: regenerar ambas plantillas, reponer el watermark, y probar en la
-app real un caso `metodo: 'simple'` y uno `metodo: 'completo'` contra un
-transformador de prueba, generar el informe eléctrico y confirmar
-visualmente la tabla de 2 columnas (Simple) y la de DAR/IP (Completo).
-Backend desplegado en producción (`clasp push` + `clasp deploy` @41,
-2026-09-13); frontend pusheado a GitHub Pages, pendiente.
+**Verificado en vivo 2026-09-13** (ver "## Verificación" al final del
+archivo para el detalle completo y los PDFs de ejemplo) — Simple y
+Completo confirmados, cada uno con su tabla correcta. Backend desplegado
+en producción (`clasp push` + `clasp deploy` @41, 2026-09-13); frontend
+pusheado a GitHub Pages.
 
 ### Punto 6 — Repetir una lectura puntual con nota (TTR / Devanados / Aislamiento)
 
@@ -233,15 +228,11 @@ con un indicador hacia la nota.
   ya localizada (`body.insertParagraph(idx + 1, …)`), mismo criterio que
   el resto de tablas dinámicas de este informe.
 
-**Pendiente de verificación en vivo** (junto con el punto 5, decisión del
-usuario): probar que marcar "Repetí esta lectura" en un TAP de TTR, una
-fase de Devanados y una combinación de Aislamiento efectivamente guarda
-`valorAnterior`+`nota`, que el informe regenerado marca esa fila con `†`
-y muestra el pie de nota correcto debajo de la tabla correspondiente (3
-veces: TTR, Devanados —incluyendo el caso de nota en el secundario—, y
-Aislamiento en ambos métodos). Backend desplegado en producción
-(`clasp deploy` @42, 2026-09-13); frontend pusheado a GitHub Pages,
-pendiente.
+**Verificado en vivo 2026-09-13** (ver "## Verificación" al final del
+archivo) — marcador `†` y pie de nota confirmados en TTR, Devanados
+primario, Devanados secundario y Aislamiento. Backend desplegado en
+producción (`clasp deploy` @42, 2026-09-13); frontend pusheado a GitHub
+Pages.
 
 ### Punto 7 — TTR: tabla compacta, una fila por TAP
 
@@ -280,11 +271,10 @@ fase); esto es puramente cómo se arma la tabla del PDF.
   solo itera `calculated.taps`, que desde el punto 2 ya contiene únicamente
   los TAPs realmente probados.
 
-**Pendiente de verificación en vivo** (junto con 5/6): generar el informe
-eléctrico de un transformador trifásico con varios TAPs y confirmar la
-tabla de 7 columnas, y de uno monofásico para confirmar la de 5. Backend
-desplegado en producción (`clasp deploy` @43, 2026-09-13); no hay cambios
-de frontend que pushear para este punto.
+**Verificado en vivo 2026-09-13** (ver "## Verificación" al final del
+archivo) — tabla de 7 columnas (trifásico) y de 5 columnas (monofásico)
+confirmadas. Backend desplegado en producción (`clasp deploy` @43,
+2026-09-13); no hay cambios de frontend para este punto.
 
 ### Punto 8 — Devanados: tabla compacta, una fila por TAP
 
@@ -316,11 +306,11 @@ formulario no cambió.
 - Sin cambios de fuente adicionales — la reducción a 8pt ya quedó hecha
   para todas las tablas en el punto 7 (código compartido).
 
-**Pendiente de verificación en vivo** (junto con 5/6/7): generar el
-informe con primario+secundario trifásico, con solo secundario (para ver
-la fila "SECUNDARIO" del secundario sola), y con un transformador
-monofásico. Backend desplegado en producción (`clasp deploy` @44,
-2026-09-13); no hay cambios de frontend que pushear para este punto.
+**Verificado en vivo 2026-09-13** (ver "## Verificación" al final del
+archivo) — primario+secundario trifásico y monofásico confirmados, con
+la fila "SECUNDARIO" y las 4 variantes de columnas. Backend desplegado
+en producción (`clasp deploy` @44, 2026-09-13); no hay cambios de
+frontend para este punto.
 
 ### Punto 9 — Aislamiento: tabla que quepa en una página — ya estaba resuelto
 
@@ -2808,41 +2798,63 @@ Credenciales de prueba (usuario Administrador real, no lo pongas en ningún
 archivo del repo): pedirlas al usuario directamente, no están guardadas aquí
 a propósito.
 
-**Verificación en vivo pendiente de los puntos 5-8 (2026-09-13)** — el
-usuario pidió explícitamente verificar todo junto al final en vez de
-punto por punto ("sigamos, al final verificamos todo"), así que quedó
-diferida. Todo el backend ya está desplegado en producción
-(`clasp deploy` @41-@44) y el frontend ya está en GitHub Pages para los
-puntos que lo tocaron (5 y 6; 7/8/9 son solo backend/plantilla). Falta,
-en este orden (regenerar plantillas primero, todo lo demás depende de
-eso):
-1. [x] **Regeneradas 2026-09-13.** El usuario inició sesión él mismo en el
-   navegador embebido (nunca se tocó su contraseña); como el botón
-   dispara un `confirm()` nativo que el motor del navegador embebido
-   auto-rechaza (mismo problema ya documentado antes en esta sección), se
-   llamó `callApi('generateReportTemplates', 'POST', {})` directo desde
-   la consola — mismo bypass de solo-el-diálogo ya usado antes, no de
-   login. Nuevos archivos: Eléctrico
-   `1uMH0OR1A8AUZ0idXjafrj8ah8FgcmPENocBGpLUi5gs`, Aceite
-   `120niME2HGgBXdE5YtU9R_ejrWwvHtMNfvRtyCmu1nNM`. **Pendiente: el usuario
-   debe reponer el watermark en ambas** (se pierde siempre que se
-   regeneran) antes de certificar cualquier informe real.
-2. Aislamiento: una prueba con `metodo: 'simple'` y otra con
-   `'completo'` — confirmar tabla de 2 columnas vs. 5 columnas, y que
-   MÉTODO/TENSIÓN DE PRUEBA aparecen bien en la grilla de datos (punto 5).
-3. Repetir una lectura puntual con nota en los 3 módulos (TTR, Devanados
-   primario, Devanados secundario, Aislamiento) — confirmar que el PDF
-   marca la fila con `†` y que aparece el pie de nota debajo de la tabla
-   correspondiente (punto 6).
-4. TTR: un transformador trifásico con varios TAPs (tabla de 7 columnas)
-   y uno monofásico (tabla de 5 columnas) — confirmar ERROR%/ESTADO como
-   peor caso entre fases (punto 7).
-5. Devanados: primario+secundario juntos, solo secundario, y un
-   transformador monofásico — confirmar la fila "SECUNDARIO" del
-   secundario y las variantes de 4/6 columnas (punto 8).
-6. Con todo lo anterior en un solo informe (trifásico, ≤5 tomas, todo
-   probado): confirmar el objetivo general de la lista — que el informe
-   completo quepa en una sola página.
+**Verificación en vivo de los puntos 5-9 — COMPLETADA 2026-09-13.** El
+usuario inició sesión él mismo en el navegador embebido (nunca se tocó
+su contraseña); una vez logueado, se usó `javascript_tool` para llamar
+`callApi(...)` directo desde la consola de esa misma pestaña (mismo
+patrón ya usado en sesiones anteriores) para: regenerar plantillas,
+enviar pruebas de prueba, certificarlas y generar los informes
+combinados — sin tocar ningún campo de contraseña en ningún momento.
+
+1. [x] **Plantillas regeneradas.** El botón dispara un `confirm()`
+   nativo que el motor del navegador embebido auto-rechaza (mismo
+   problema ya documentado antes en esta sección); se llamó
+   `callApi('generateReportTemplates', 'POST', {})` directo. Nuevos
+   archivos: Eléctrico `1uMH0OR1A8AUZ0idXjafrj8ah8FgcmPENocBGpLUi5gs`,
+   Aceite `120niME2HGgBXdE5YtU9R_ejrWwvHtMNfvRtyCmu1nNM`. **Pendiente: el
+   usuario debe reponer el watermark en ambas** (se pierde siempre que se
+   regeneran) antes de certificar cualquier informe real de cliente —
+   los informes de prueba de abajo salieron sin watermark a propósito.
+2. [x] **Aislamiento** — probado sobre `DEMO-PLANTILLAS-V2` con
+   `metodo: 'completo'` (tabla 5 columnas, DAR/IP) y luego con
+   `'simple'` (tabla 2 columnas, veredicto "REGISTRADO"). MÉTODO/TENSIÓN
+   DE PRUEBA aparecen correctos en la grilla de datos en ambos casos
+   (punto 5, y confirma también el punto 9 — la tabla ya cabía en una
+   página desde antes).
+3. [x] **Repetir lectura con nota** — probado en TTR (TAP 2, fase V),
+   Devanados primario (TAP 3), Devanados secundario, y Aislamiento
+   (AT-Tierra): el PDF marca la fila con `†` y el pie de nota aparece
+   debajo de cada tabla con el texto correcto (punto 6).
+4. [x] **TTR compacto** — trifásico (`DEMO-PLANTILLAS-V2`, 3 TAPs, tabla
+   de 7 columnas U/V/W) y monofásico (`DEMO-MONOFASICO-01`, tabla de 5
+   columnas VALOR) verificados; ERROR%/ESTADO como peor caso entre fases
+   funciona (punto 7).
+5. [x] **Devanados compacto** — primario+secundario trifásico y
+   monofásico, ambos con la fila "SECUNDARIO" y las 4 variantes de
+   columnas (6/4 con TAP, 6/4 con DEVANADO) verificadas (punto 8).
+6. **Objetivo general (una sola página)**: el informe completo
+   (TTR+Devanados+Aislamiento+firmas, trifásico, 3 TAPs, todo probado)
+   quedó en **2 páginas de contenido + 1 de firmas** (antes del punto 7
+   habría sido bastante más largo, con una fila por fase en vez de por
+   TAP). No es literalmente "una sola página", pero la reducción es
+   grande y el salto de página forzado antes de firmas sigue siendo el
+   respaldo intencional documentado — no se seguirá optimizando esto a
+   menos que el usuario lo pida específicamente después de ver el
+   resultado real.
+
+PDFs de ejemplo generados durante esta verificación (quedan en Drive,
+sin watermark a propósito):
+[Eléctrico completo/DAR-IP](https://drive.google.com/file/d/1Oup2X1Cxk1loJzMWlLIF9l_OOCGyPHpd/view),
+[Eléctrico con Aislamiento Simple](https://drive.google.com/file/d/1rxNroddUyIpQui3L4BAfrZm0cE7SEpqK/view),
+[Eléctrico monofásico](https://drive.google.com/file/d/1FmQDh9QxW4f1Qg6fmdypiH7X7u_4eG7u/view).
+
+Nota operativa: durante esta verificación el backend estuvo ~5 minutos
+sin responder (incluso a lecturas simples como `listTransformers`) justo
+después de la primera regeneración del informe combinado — se resolvió
+solo, sin intervención; probablemente cold-start o cuota temporal de
+Drive/Docs tras varias operaciones seguidas de generación de documentos.
+Si vuelve a pasar, esperar un par de minutos y reintentar antes de
+asumir que algo se rompió.
 
 **`clasp run <función>` como alternativa para probar código directamente en
 el proyecto de Apps Script sin pasar por el login de la app** (intentado
