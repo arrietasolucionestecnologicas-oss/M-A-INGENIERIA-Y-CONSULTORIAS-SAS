@@ -1373,6 +1373,22 @@ Esta misma lógica está **duplicada intencionalmente** en `Código.gs`
 previa instantánea) — si cambias los umbrales o la prioridad, cámbialos en
 los dos lados.
 
+**Corregido (2026-09-12)**: los 4 campos de Fisicoquímico (rigidez, agua,
+acidez, tensión interfacial) eran individualmente obligatorios en cuanto
+se activaba la sección (`requireNumber_` lanzaba un error y el backend
+devolvía 422, bloqueando el guardado completo) — el usuario reportó que en
+campo a veces solo se hace un análisis parcial (p. ej. solo rigidez +
+acidez) y el sistema "debe solo mostrar lo que se hace", nunca bloquear
+por faltar un dato. `requireNumber_` se reemplazó por `optionalNumber_`
+(devuelve el valor o `undefined`, nunca lanza): cada umbral de la matriz
+de decisión solo se evalúa si su parámetro fue capturado, así que un
+análisis parcial igual puede detectar un problema real con los datos
+disponibles. El veredicto queda `'APROBADO (datos parciales)'` (en vez de
+`'APROBADO'` a secas) cuando no los 4 campos están presentes pero ninguno
+disparó una alerta — `verdictPillClass_`/`verdictColor_` (frontend y PDF)
+reconocen cualquier veredicto que empiece con `'APROBADO'` como éxito, no
+solo la cadena exacta.
+
 Regla de guardado: **una sección desactivada envía sus campos en `null`,
 nunca en `0`** (`buildOilRequestBody()` en `app.js`) — un 0 real en número
 ácido o en un Aroclor es un dato válido, no debe confundirse con "no
@@ -1625,21 +1641,16 @@ página, etc.).
   en las 4 páginas del eléctrico combinado, bloque de firmas completo y
   solo en la última página en ambos informes, logo alineado.
 
-**Pendiente, NO implementado todavía — pedido explícito, pero contradice
-decisiones ya tomadas con el usuario**: cambiar el flujo para que el PDF
-solo se genere con una acción explícita "Certificar/Generar Informe" que
-valide que **las 4 pruebas** (TTR + Devanados + Aislamiento + Aceite)
-estén completas antes de generar un ÚNICO documento consolidado.
-Esto choca con dos decisiones ya explícitas de este mismo proyecto: (1)
-Aceite dieléctrico se dejó **a propósito** como informe siempre separado,
-nunca fusionado con las 3 pruebas eléctricas ("un formato para pruebas
-eléctricas y otro para aceite"); (2) el flujo de certificación ya
-construido permite certificar TTR/Devanados/Aislamiento **de forma
-independiente entre sí** (un técnico puede hacer TTR hoy y Devanados la
-semana siguiente) — exigir las 4 completas de una bloquearía ese caso real
-que el flujo actual soporta a propósito. La app ya está en producción con
-técnicos usando el flujo actual. No se tocó nada de esto sin confirmación
-explícita del usuario.
+**Resuelto (2026-09-12), en una forma distinta a la pedida originalmente**:
+se le explicó al usuario el choque con las dos decisiones de arriba antes
+de tocar nada, y su respuesta fue una versión compatible con ambas: en vez
+de exigir las 4 pruebas completas, cada equipo define su propio alcance
+ofertado (TTR/Devanados/Aislamiento, cada uno opcional — ver la sección
+"Informe de Prueba Eléctrica" más abajo para el mecanismo completo,
+`certifyElectricalReport_`). Aceite sigue sin tocarse, como ya estaba
+decidido. Los técnicos siguen certificando cada prueba individual sin
+bloqueo — la única certificación nueva es la del trabajo completo,
+gateada por el alcance de ESE equipo, no por un número fijo de pruebas.
 
 ### Colores y cruce con Calibraciones — duplicados a propósito
 
@@ -1719,41 +1730,67 @@ con roles distintos, a propósito:
   "Informe eléctrico combinado (PDF)" junto al pill de Grupo, en el header
   del detalle del equipo — acceso rápido al último, no al historial.
 
-`persistTest_` — para TTR/Devanados/Aislamiento, después de guardar la
-fila en `PRUEBAS` (con `report_file_id` vacío: esta prueba individual no
-genera su propio PDF suelto, entra al combinado), llama a
-`regenerateElectricalCombinedReport_(transformer, site, folderId, testedBy)`
-dentro de su propio `try/catch` (nunca bloquea el guardado de la prueba,
-igual que el resto de la generación de informes):
+**Tercera corrección de arquitectura (2026-09-12), reemplaza el mecanismo
+de arriba por completo** — a pedido explícito del usuario, que reportó que
+la regeneración automática en cada certificación individual producía
+"documentos parciales sueltos" (un PDF con solo TTR hoy, otro con
+TTR+Devanados la semana siguiente, y así). Ya **no existe ningún disparo
+automático**: ni `persistTest_` ni `certifyTest_` llaman a
+`regenerateElectricalCombinedReport_`. En su lugar:
 
-1. `findLatestElectricalTestsByType_(transformerId)` — recorre `PRUEBAS`
-   una vez y se queda con la fila más reciente (`created_at` más alto) de
-   cada uno de los 3 tipos; un tipo nunca probado queda `null`. La prueba
-   recién guardada ya está en la hoja para este momento, así que sí entra
-   en la comparación.
-2. Se arma **un solo** Doc: `appendReportHeader_` (encabezado + datos del
-   cliente y equipo, una sola vez) → por cada tipo presente, en orden fijo
-   TTR → Devanados → Aislamiento,
-   `appendElectricalTypeSection_(body, type, latestTest)` — que es
-   `appendTestMetaSection_(body, testMeta, TEST_TYPE_DISPLAY_LABEL_[type])`
-   (el título lleva el tipo, ej. "Datos de la prueba — TTR", porque puede
-   haber hasta 3 en el mismo documento) + la tabla de resultados de ese
-   tipo (`appendTtrResultsTable_`/`appendWindingResultsTable_`/
-   `appendInsulationResultsTable_`, sin cambios) + su veredicto — → un solo
-   `appendSignatureSection_` al final, firmado por el técnico de la prueba
-   más reciente de las presentes.
-3. `finalizeReportPdf_` guarda el PDF nuevo con nombre timestamped
-   (`fmtTimestampForFilename_`, mismo cuidado de timezone que
-   `fmtDatePdf_` — `Utilities.formatDate` en `America/Bogota`, no
-   `toISOString()` que da UTC), se **sobrescribe** el caché
-   `TRANSFORMADORES.electrical_report_file_id` con el fileId nuevo
-   (`colIndex_('TRANSFORMADORES', 'electrical_report_file_id')`), y se
-   **agrega** (nunca se reemplaza) una fila nueva en `DOCUMENTOS`.
+- **Alcance ofertado por equipo** — 3 checkboxes nuevos en
+  `HEADERS.TRANSFORMADORES` (al final, misma regla de siempre):
+  `ttr_ofertado`/`resistencia_devanados_ofertado`/`aislamiento_ofertado`.
+  Mismo patrón de UX que las 3 secciones activables de Aceite
+  (`fisicoquimico_realizado`/etc.) — el técnico/supervisor marca en
+  "Nuevo equipo"/"Editar equipo" cuáles pruebas eléctricas se ofertaron
+  para ese trabajo específico. **Por qué checkboxes y no un vínculo con
+  Ofertas (Comercial)**: se revisó el esquema de `OFERTAS` y hoy no existe
+  ningún campo que ligue una oferta a un transformador específico ni al
+  tipo de prueba (`site_id` liga a Cliente/Proyecto completo, `tipo`/
+  `descripcion` son campos comerciales libres) — se le preguntó
+  explícitamente al usuario (`AskUserQuestion`) y eligió replicar el
+  patrón de Aceite en vez de extender Ofertas.
+  `normalizeOfertado_(v)` — a diferencia de `isTruthy_` (por defecto
+  `false`), acá el valor ausente es `true`: un equipo creado antes de que
+  este campo existiera se trata como "todas ofertadas" (el comportamiento
+  sin restricción que ya tenía en producción) — solo un `false` explícito
+  (el checkbox desmarcado en un equipo nuevo) saca una prueba del alcance.
+- **Certificación por prueba individual, sin cambios**: el técnico sigue
+  registrando/guardando cada prueba (TTR/Devanados/Aislamiento) sin
+  ningún bloqueo, y un Supervisor/Administrador la sigue moviendo de
+  Borrador a Certificada con `certifyTest_` — pero eso ya no genera
+  ningún PDF para estos 3 tipos (sí lo sigue haciendo para Aceite, sin
+  cambios ahí).
+- **`certifyElectricalReport_`** (acción nueva, `certifyElectricalReport`)
+  — UNA sola certificación por trabajo/equipo, no una por tipo de prueba.
+  Recibe `transformer_id`, lee el alcance ofertado
+  (`normalizeOfertado_` sobre los 3 checkboxes), y con
+  `findLatestElectricalTestsByType_` revisa si cada tipo ofertado ya tiene
+  una prueba Certificada. Si falta alguno → `400` con
+  `"Faltan por certificar: <lista>"` (labels de `TEST_TYPE_DISPLAY_LABEL_`)
+  y no genera nada. Si todos están completos →
+  `regenerateElectricalCombinedReport_(transformer, site, folderId,
+  auth.username, requiredTypes)` — el PDF trae **únicamente** las
+  secciones de `requiredTypes` (el alcance ofertado), aunque exista una
+  prueba Certificada de un tipo que no estaba ofertado (se ignora a
+  propósito, ver el filtro `includeTypes.indexOf(t) !== -1` dentro de
+  `regenerateElectricalCombinedReport_`).
+- Solo Supervisor/Administrador puede llamar esta acción (mismo RBAC que
+  `certifyTest_`). Frontend: botón "Certificar Pruebas Eléctricas" en el
+  detalle del equipo (oculto para Técnico, deshabilitado hasta que todas
+  las pruebas ofertadas estén certificadas — `renderDetail()` calcula esto
+  en el cliente con la misma lógica que el backend, solo para habilitar/
+  deshabilitar el botón; la validación real, la que importa, siempre
+  vuelve a correr en el backend).
 
-Si un transformador solo tiene TTR probado (Devanados/Aislamiento nunca
-enviados), el PDF combinado tiene una sola sección — no hay tablas vacías
-para los tipos ausentes, `present = order.filter(t => latest[t])` los
-excluye desde el armado.
+Sigue siendo cierto de las dos correcciones anteriores: **un solo
+documento** agrupa los tipos presentes (nunca uno separado por tipo), y
+**cada generación es un archivo nuevo con timestamp**, nunca un reemplazo
+— `DOCUMENTOS` (categoría `CERTIFICADOS`) sigue siendo la fuente de verdad
+del histórico completo, `electrical_report_file_id` en `TRANSFORMADORES`
+sigue siendo solo el caché del más reciente. Aceite dieléctrico sigue
+fuera de este mecanismo, sin cambios.
 
 - **TTR** (`appendTtrResultsTable_`): una fila por (TAP, fase) —
   `calculated.taps` recorrido con `Object.keys().map(Number).sort()` para
@@ -1766,15 +1803,17 @@ excluye desde el armado.
   AT-BT/AT-Tierra/BT-Tierra, pero el código no asume esas claves — igual
   de genérico que el propio `calculateInsulation_`).
 
-Verificado en vivo (2026-08-30): transformador de prueba con TTR →
-Devanados → Aislamiento enviados en secuencia — cada envío generó un PDF
-combinado nuevo (fileId distinto cada vez), acumulando filas en
-`DOCUMENTOS` en vez de reemplazar (2 envíos de TTR seguidos → 2 PDFs
-distintos, 2 filas). El pill del header siguió apuntando al más reciente
-después de cada envío. El PDF final (inspeccionado directamente, descargado
-vía un endpoint de debug temporal) contiene las secciones de los tipos
-probados con los datos más recientes de cada uno, un solo encabezado y una
-sola sección de firmas.
+**Paginación manual de tablas largas (2026-09-12)** — a pedido explícito
+del usuario, tras confirmar (ver la auditoría más abajo) que `DocumentApp`
+no repite encabezados de tabla ni evita partir una fila entre páginas.
+Las 3 tablas de arriba ahora pasan por `appendPaginatedResultsTable_(body,
+headerRow, dataRows)`: cada `TABLE_ROWS_PER_PAGE_` (24, estimado
+conservador — ver el comentario junto a la constante) filas de datos,
+fuerza un salto de página y abre una tabla nueva repitiendo la misma fila
+de encabezado. No es "page-break-inside: avoid" real (eso no existe en
+esta API), pero elimina el caso reportado de una fila huérfana sin saber
+a qué columna pertenece — a costa de, ocasionalmente, cortar una página
+antes de que esté físicamente llena.
 
 ### Informe de Análisis de Aceite Dieléctrico — plantilla distinta
 
@@ -2335,3 +2374,14 @@ sesiones previas, creada sin `appsPermitidas: 'MYA_PRUEBAS'`) ni siquiera
 aparece en `listUsers` de esta app por el mismo filtro por `appId` — sigue
 existiendo en la hoja "Usuarios" pero fuera del alcance de M&A, no hace
 falta tocarla desde aquí.
+
+**Pendiente de decisión con el usuario**: el equipo de demo
+`DEMO-COMPLETO-01` (sitio `8e7e24c1-cb8c-447c-be75-b8f5c01ceee9`,
+transformador `e567ddd5-c157-43cf-9cef-75a7411c66a0`), creado a pedido
+explícito del usuario para ver un informe completo con las 4 pruebas
+llenas (TTR + Devanados + Aislamiento + Aceite), sigue existiendo — se le
+agregaron pruebas extra (una segunda TTR, un segundo Aceite) durante la
+verificación en vivo de los fixes de PDF de esta misma sesión. Mismo
+riesgo que el resto de este archivo advierte: el cliente real ya está en
+producción, así que antes de borrar hay que confirmar con el usuario que
+este id específico es el de verificación, nunca asumir por el nombre.
