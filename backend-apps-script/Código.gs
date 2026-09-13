@@ -1889,43 +1889,23 @@ function appendDenseInfoGrid_(body, rows) {
   return table;
 }
 
-/** Filas de datos por "página de tabla" antes de forzar un salto e
- *  insertar el mismo encabezado de nuevo (2026-09-12). Estimado
- *  conservador, no medido pixel a pixel — DocumentApp no expone el alto
- *  real renderizado de una tabla: con las celdas de datos en 9pt (~11-12pt
- *  de alto por fila con el padding por defecto de una tabla de Documentos),
- *  24 filas ocupan aproximadamente 280-300pt, muy por debajo del área
- *  útil de una página Carta/A4 con márgenes de 36pt (~720pt), incluso
- *  restando el título de sección y el banner de veredicto que comparten la
- *  misma página. El usuario pidió explícitamente que esto "no necesita ser
- *  perfecto al 100%": el objetivo es eliminar la fila huérfana sin su
- *  encabezado, no calzar al pixel — preferible pasar de página de más a
- *  quedarse corto. */
-var TABLE_ROWS_PER_PAGE_ = 24;
-
 /**
- * Igual que appendResultsTable_, pero para tablas que pueden crecer mucho
- * (TTR con muchos TAPs, Resistencia de Devanados con varias fases).
- * DocumentApp no repite encabezados de tabla automáticamente al saltar de
- * página (verificado contra la referencia oficial — ver también el
- * comentario de appendSignatureSection_ sobre esta misma limitación), así
- * que cada TABLE_ROWS_PER_PAGE_ filas de datos se fuerza un salto de
- * página y se abre una tabla nueva repitiendo la misma fila de encabezado,
- * para que ninguna página de continuación quede con datos sueltos sin
- * saber a qué columna pertenecen. `headerRow` es un array de strings
- * (una sola fila); `dataRows` es un array de arrays (filas de datos, sin
- * el encabezado).
+ * Igual que appendResultsTable_ — existe como función separada (en vez de
+ * llamar appendResultsTable_ directo desde TTR/Devanados/Aislamiento) para
+ * que quede un único punto donde enganchar "esta es una tabla de
+ * resultados que puede crecer mucho y necesita encabezado repetido" (ver
+ * pinResultsTableHeaders_ más abajo, que la identifica por forma de la fila
+ * de encabezado después de guardar el documento).
+ *
+ * Reemplaza (2026-09-12), a pedido explícito del usuario, el truco anterior
+ * de forzar un salto de página manual cada N filas: eso era una
+ * aproximación con un tamaño de página estimado a ojo. La versión real usa
+ * `pinTableHeaderRows` de la Docs API avanzada (ver más abajo), que repite
+ * el encabezado exactamente donde Google Docs decida partir la tabla, sin
+ * que nosotros calculemos nada.
  */
 function appendPaginatedResultsTable_(body, headerRow, dataRows) {
-  if (dataRows.length === 0) {
-    appendResultsTable_(body, [headerRow]);
-    return;
-  }
-  for (var i = 0; i < dataRows.length; i += TABLE_ROWS_PER_PAGE_) {
-    if (i > 0) body.appendPageBreak();
-    var chunk = dataRows.slice(i, i + TABLE_ROWS_PER_PAGE_);
-    appendResultsTable_(body, [headerRow].concat(chunk));
-  }
+  appendResultsTable_(body, [headerRow].concat(dataRows));
 }
 
 /** Tabla de resultados con encabezado resaltado (fondo acento, texto
@@ -2417,6 +2397,7 @@ function finalizeReportPdf_(doc, folderId, fileName) {
   footerPar.setAlignment(DocumentApp.HorizontalAlignment.CENTER);
   footerPar.editAsText().setFontSize(7).setForegroundColor(PDF_COLORS_.TEXT_MUTED);
   doc.saveAndClose();
+  try { pinResultsTableHeaders_(doc.getId()); } catch (pinErr) { /* No relanzar — el PDF igual se genera sin encabezado repetido. */ }
   var docFile = DriveApp.getFileById(doc.getId());
   var pdfBlob = docFile.getAs('application/pdf').setName(fileName + '.pdf');
   var folder = DriveApp.getFolderById(folderId);
@@ -2424,6 +2405,86 @@ function finalizeReportPdf_(doc, folderId, fileName) {
   shareForEditAnyone_(pdfFile);
   docFile.setTrashed(true);
   return { fileId: pdfFile.getId(), url: pdfFile.getUrl() };
+}
+
+/** Texto plano de una celda de tabla, tal como viene del recurso `Document`
+ *  de la Docs API avanzada (no de DocumentApp) — recorre
+ *  `cell.content[].paragraph.elements[].textRun.content` concatenando.
+ *  Usado solo para identificar la fila de encabezado de cada tabla por su
+ *  contenido, nunca para mostrarlo. */
+function docsApiCellText_(cell) {
+  var text = '';
+  (cell.content || []).forEach(function (block) {
+    if (!block.paragraph) return;
+    (block.paragraph.elements || []).forEach(function (pe) {
+      if (pe.textRun) text += pe.textRun.content;
+    });
+  });
+  return text.trim();
+}
+
+/**
+ * Repite automáticamente la fila de encabezado de cada tabla de resultados
+ * larga (TTR, Resistencia de Devanados —primario y secundario—,
+ * Resistencia de Aislamiento) en cada página donde Google Docs decida
+ * partir la tabla (2026-09-12) — reemplaza el truco anterior de saltos de
+ * página manuales cada N filas.
+ *
+ * Usa `pinTableHeaderRows` de la Docs API avanzada (`Docs.Documents.
+ * batchUpdate`, servicio avanzado habilitado en appsscript.json), la única
+ * forma real de lograr esto: verificado contra la referencia oficial
+ * (developers.google.com/docs/api/reference/rest/v1/documents/request)
+ * que el request existe con exactamente estos dos campos —
+ * `tableStartLocation` (dónde empieza la tabla) y `pinnedHeaderRowsCount`
+ * (cuántas filas de encabezado pinear, acá siempre 1). DocumentApp no
+ * tiene ningún equivalente (ver también appendSignatureSection_) — por
+ * esto hace falta abrir el documento ya guardado con la Docs API para
+ * ubicar dónde empieza cada tabla (`startIndex`, un dato que solo expone
+ * este servicio, no DocumentApp).
+ *
+ * Se identifican las tablas candidatas por la FORMA de su fila de
+ * encabezado (cantidad de celdas + texto de la primera), no por posición,
+ * para no depender de que TTR/Devanados/Aislamiento aparezcan siempre en
+ * el mismo orden ni de si Devanados trae su tabla "Secundario" o no:
+ *   - 6 celdas, primera "TAP"           → TTR
+ *   - 5 celdas, primera "TAP"           → Devanados (primario)
+ *   - 4 celdas, primera "FASE"          → Devanados (secundario)
+ *   - 5 celdas, primera "COMBINACIÓN"   → Aislamiento
+ * Cualquier otra tabla del documento (grillas de datos, banner de
+ * veredicto, firmas) no calza ninguna de las 4 formas y se ignora.
+ *
+ * NO cubre "evitar que una fila se parta entre dos páginas" — verificado
+ * contra la misma referencia oficial que `TableRowStyle` (el objeto de
+ * estilo de fila que sí existe en la Docs API) solo tiene `minRowHeight` y
+ * `exactRowHeight`; no existe ningún campo `preventOverflow` ni equivalente
+ * en toda la API. Repetir el encabezado es lo único que la Docs API
+ * permite automatizar aquí.
+ */
+function pinResultsTableHeaders_(docId) {
+  var doc = Docs.Documents.get(docId);
+  var requests = [];
+  (doc.body.content || []).forEach(function (el) {
+    if (!el.table) return;
+    var headerRow = el.table.tableRows[0];
+    if (!headerRow) return;
+    var cellCount = headerRow.tableCells.length;
+    var firstCellText = docsApiCellText_(headerRow.tableCells[0]);
+    var isResultsHeader =
+      (cellCount === 6 && firstCellText === 'TAP') ||
+      (cellCount === 5 && firstCellText === 'TAP') ||
+      (cellCount === 4 && firstCellText === 'FASE') ||
+      (cellCount === 5 && firstCellText === 'COMBINACIÓN');
+    if (!isResultsHeader) return;
+    requests.push({
+      pinTableHeaderRows: {
+        tableStartLocation: { index: el.startIndex },
+        pinnedHeaderRowsCount: 1
+      }
+    });
+  });
+  if (requests.length > 0) {
+    Docs.Documents.batchUpdate({ requests: requests }, docId);
+  }
 }
 
 // ---------------------------------------------------------------------------

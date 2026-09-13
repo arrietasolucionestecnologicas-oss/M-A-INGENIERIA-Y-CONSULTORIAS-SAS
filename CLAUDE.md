@@ -1803,17 +1803,80 @@ fuera de este mecanismo, sin cambios.
   AT-BT/AT-Tierra/BT-Tierra, pero el código no asume esas claves — igual
   de genérico que el propio `calculateInsulation_`).
 
-**Paginación manual de tablas largas (2026-09-12)** — a pedido explícito
-del usuario, tras confirmar (ver la auditoría más abajo) que `DocumentApp`
-no repite encabezados de tabla ni evita partir una fila entre páginas.
-Las 3 tablas de arriba ahora pasan por `appendPaginatedResultsTable_(body,
-headerRow, dataRows)`: cada `TABLE_ROWS_PER_PAGE_` (24, estimado
-conservador — ver el comentario junto a la constante) filas de datos,
-fuerza un salto de página y abre una tabla nueva repitiendo la misma fila
-de encabezado. No es "page-break-inside: avoid" real (eso no existe en
-esta API), pero elimina el caso reportado de una fila huérfana sin saber
-a qué columna pertenece — a costa de, ocasionalmente, cortar una página
-antes de que esté físicamente llena.
+**Encabezado de tabla repetido — Docs API avanzada, no un truco manual
+(2026-09-12, reemplaza un intento anterior el mismo día)**. Primera
+versión: un salto de página manual cada `TABLE_ROWS_PER_PAGE_` (24) filas,
+estimado a ojo. El usuario pidió reemplazarlo por algo real: habilitar el
+servicio avanzado **Google Docs API** (`Docs`, ver
+`dependencies.enabledAdvancedServices` en `appsscript.json` — para un
+proyecto con el GCP project por defecto de Apps Script, esto solo alcanza
+con el manifiesto, no hace falta tocar la consola de Cloud; si el proyecto
+tuviera un GCP project custom sí haría falta un paso manual ahí, pero no
+es el caso conocido de este proyecto) y llamar
+`Docs.Documents.batchUpdate()` con el request `pinTableHeaderRows`.
+
+Verificado contra la referencia oficial
+(`developers.google.com/docs/api/reference/rest/v1/documents/request`)
+antes de escribir esto: `pinTableHeaderRows` existe de verdad, con
+`tableStartLocation` (dónde empieza la tabla) y `pinnedHeaderRowsCount`
+(cuántas filas de encabezado pinear, acá siempre 1) — Google Docs repite
+esa fila exactamente donde decida partir la tabla, sin que la app calcule
+nada. Mecanismo (`pinResultsTableHeaders_`, llamado desde
+`finalizeReportPdf_` justo después de `doc.saveAndClose()`, dentro de un
+`try/catch` que nunca bloquea la generación del PDF si falla):
+`Docs.Documents.get(docId)` para leer el documento YA guardado (DocumentApp
+no expone `startIndex`, un dato que solo trae este servicio) → recorre
+`body.content` buscando tablas cuya fila de encabezado calce por FORMA
+(cantidad de celdas + texto de la primera: 6+"TAP"=TTR,
+5+"TAP"=Devanados primario, 4+"FASE"=Devanados secundario,
+5+"COMBINACIÓN"=Aislamiento — así no depende de en qué orden aparecen ni
+de si Devanados trae su tabla "Secundario" o no) → arma un
+`pinTableHeaderRows` por cada una encontrada.
+
+`appendPaginatedResultsTable_` sigue existiendo (mismo nombre, mismos
+llamadores en TTR/Devanados/Aislamiento) pero ahora es solo un alias fino
+de `appendResultsTable_` con una sola tabla — ya no trocea nada ni fuerza
+saltos de página.
+
+**Confirmado que NO existe** (verificado dos veces contra la referencia
+oficial de `TableRowStyle`, incluyendo un intento explícito de encontrar
+algo como "preventOverflow"/"evitar desborde"): el objeto `TableRowStyle`
+de la Docs API **solo tiene `minRowHeight` y `exactRowHeight`** — ningún
+campo para evitar que una fila se parta entre dos páginas. El usuario
+pidió esto explícitamente (`updateTableRowStyle` con
+`tableRowStyle.preventOverflow = true`) pero ese campo no existe en
+ninguna parte de la API — no es un error de nombre ni una versión vieja,
+es un límite real de la plataforma, igual que la ausencia de
+"page-break-inside" ya documentada para `DocumentApp`. No se implementó
+porque no hay forma de implementarlo.
+
+**Pendiente de decisión del usuario, no implementado — marca de agua
+del logo**: pidió replicar la marca de agua centrada y transparente que
+usan en sus formatos físicos, con una receta de 4 pasos vía Docs API
+(`insertInlineImage` → convertir a imagen posicionada `BEHIND_TEXT` →
+`imageProperties.transparency` 0.85-0.92 → centrarla con offsets).
+Verificado contra la referencia oficial (lista completa de los 48 tipos
+de request de `batchUpdate`, más `ReplaceImageRequest`, más
+`DocumentStyle.background`) que **no existe ningún request que cree o
+convierta un objeto a "posicionado"/`BEHIND_TEXT`** — solo
+`deletePositionedObject` existe (borrar uno ya existente), y el fondo de
+página (`Background`) solo admite un color sólido, nunca una imagen. Un
+objeto posicionado únicamente puede crearse a mano en la UI de Google
+Docs (arrastrar la imagen → "Ajustar texto" → "Detrás del texto"), nunca
+por API — límite real, confirmado en 4 consultas distintas contra la
+documentación oficial, no una limitación de esta implementación.
+**Alternativa propuesta, no construida todavía**: crear UNA VEZ, a mano
+en la UI de Docs, un documento plantilla que solo tenga el logo ya
+posicionado/transparente/centrado (el usuario o quien tenga acceso a
+Docs, no Claude — este paso es inherentemente manual e interactivo), y
+que el generador arranque cada informe copiando ese archivo
+(`DriveApp.getFileById(templateId).makeCopy(...)`) en vez de
+`DocumentApp.create(...)`, abriendo la copia con `DocumentApp.openById(...)`
+y agregando el contenido dinámico igual que hoy — un objeto posicionado
+vive anclado a la página, no al flujo del cuerpo, así que agregar
+párrafos/tablas no debería tocarlo. Falta que el usuario decida si quiere
+seguir este camino y construya la plantilla antes de que se implemente el
+lado del código.
 
 ### Informe de Análisis de Aceite Dieléctrico — plantilla distinta
 
@@ -2268,6 +2331,18 @@ entorno, no un bug de la app.
 Credenciales de prueba (usuario Administrador real, no lo pongas en ningún
 archivo del repo): pedirlas al usuario directamente, no están guardadas aquí
 a propósito.
+
+**`clasp run <función>` como alternativa para probar código directamente en
+el proyecto de Apps Script sin pasar por el login de la app** (intentado
+2026-09-12 para probar `pinResultsTableHeaders_` sin necesitar la
+contraseña de `admin.mya`): falla con "Unable to run script function" —
+requiere la API de Apps Script habilitada para la cuenta
+(`script.google.com/home/usersettings`), un toggle interactivo que solo el
+dueño de la cuenta puede activar, aparte del scope de OAuth que ya tiene
+`clasp`. No se intentó activarlo (requiere login interactivo del usuario).
+Mientras esto no esté habilitado, cualquier verificación en vivo de una
+función real (no solo sintaxis) depende de que el usuario mismo la pruebe
+desde la app, o de pedirle este toggle si se quiere retomar `clasp run`.
 
 ## Estado / pendientes conocidos
 
