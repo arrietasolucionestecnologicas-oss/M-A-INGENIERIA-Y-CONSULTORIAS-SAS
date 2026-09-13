@@ -241,6 +241,9 @@ tr.rowlink:hover td { background: var(--surface-alt); }
 /* Azul corporativo exacto del manual con texto oscuro encima (mejor contraste medido que blanco: 4.36:1 vs 3.65:1). */
 .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .btn.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+.btn.success { background: var(--success); border-color: var(--success); color: #ffffff; }
+.btn.success:hover { background: var(--success-text); border-color: var(--success-text); }
+.checkbox-row label { display: flex; align-items: center; gap: 8px; font-weight: normal; }
 .btn:focus-visible, .nav-item:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* ---------- Microinteracciones: ripple táctil ---------- */

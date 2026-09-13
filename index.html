@@ -279,6 +279,13 @@
           <input class="mono" id="editTrfPosTapNominal" type="text" inputmode="numeric" pattern="[0-9]*" placeholder="posición central (por defecto)">
           <div class="field-note">Vacío = se asume la posición central (comportamiento de siempre). Diligéncialo solo si el fabricante marca el nominal en otra posición — cambiarlo aquí también regenera las posiciones de TAP.</div>
         </div>
+        <div class="field">
+          <label>Pruebas el&eacute;ctricas ofertadas para este trabajo</label>
+          <div class="checkbox-row"><label><input type="checkbox" id="editTrfTtrOfertado"> TTR</label></div>
+          <div class="checkbox-row"><label><input type="checkbox" id="editTrfDevanadosOfertado"> Resistencia de Devanados</label></div>
+          <div class="checkbox-row"><label><input type="checkbox" id="editTrfAislamientoOfertado"> Resistencia de Aislamiento</label></div>
+          <div class="field-note">Marca solo las que se ofertaron para este equipo — "Certificar Pruebas Eléctricas" solo estará disponible cuando todas las marcadas aquí estén certificadas.</div>
+        </div>
         <button class="btn primary" type="submit" style="width:100%;">Guardar cambios</button>
         <span class="status-line" id="editTransformerStatus" hidden></span>
       </form>
@@ -388,6 +395,15 @@
                 <input id="newTrfPlatePhoto" type="file" accept="image/*" capture="environment">
               </div>
             </div>
+            <div class="form-field-block" style="border-bottom:none; padding-bottom:0;">
+              <span class="nav-label" style="padding:0; color:var(--text-faint);">Pruebas eléctricas ofertadas para este trabajo</span>
+            </div>
+            <div class="form-field-block">
+              <div class="field checkbox-row"><label><input type="checkbox" id="newTrfTtrOfertado"> TTR</label></div>
+              <div class="field checkbox-row"><label><input type="checkbox" id="newTrfDevanadosOfertado"> Resistencia de Devanados</label></div>
+              <div class="field checkbox-row"><label><input type="checkbox" id="newTrfAislamientoOfertado"> Resistencia de Aislamiento</label></div>
+            </div>
+            <div class="field-note" style="padding:0 18px 8px;">Marca solo las pruebas que se ofertaron para este equipo — igual que en Aceite, se puede ajustar después desde "Editar equipo". "Certificar Pruebas Eléctricas" solo quedará disponible cuando todas las marcadas aquí estén certificadas.</div>
             <div class="submit-row">
               <button class="btn primary" type="submit" id="createTransformerBtn">Crear equipo</button>
             </div>
@@ -439,8 +455,10 @@
             <button class="btn" onclick="showView('oil-form')">Aceite dieléctrico</button>
             <button class="btn" onclick="showView('winding-form')">Resistencia de devanados</button>
             <button class="btn primary" onclick="showView('ttr-form')">Registrar lectura TTR</button>
+            <button class="btn success" id="certifyElectricalBtn" onclick="handleCertifyElectricalReport_()" hidden>Certificar Pruebas Eléctricas</button>
           </div>
         </div>
+        <div class="status-line" id="certifyElectricalStatus" hidden style="margin:-8px 0 14px;"></div>
 
         <div class="panel">
           <div class="spec-grid" id="detailSpecGrid"></div>

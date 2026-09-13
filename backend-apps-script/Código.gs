@@ -93,13 +93,19 @@ var HEADERS = {
      la celda de encabezado ya escrita en Sheets sigue diciendo "status"
      salvo que crezca el arreglo (ensureAllSheets_ solo reescribe el
      encabezado completo cuando el número de columnas aumenta). */
+  /* ttr_ofertado/resistencia_devanados_ofertado/aislamiento_ofertado
+     (2026-09-12) — alcance de pruebas eléctricas ofertado para ESTE equipo,
+     igual que las 3 secciones activables de Aceite: el técnico marca cuáles
+     van. Van al final por la misma regla de "nunca insertar entre
+     columnas existentes" de la nota de arriba. Ver normalizeOfertado_. */
   TRANSFORMADORES: [
     'id', 'site_id', 'serial_number', 'manufacturer', 'manufacture_year',
     'phase_type', 'vector_group', 'rated_power_kva', 'hv_nominal_voltage', 'lv_nominal_voltage',
     'tap_config_json', 'is_special_design', 'custom_tap_ratio_matrix_json',
     'estado_equipo', 'plate_photo_file_id', 'created_at', 'updated_at',
     'cooling_type', 'impedance_percent', 'insulation_type',
-    'numero_posiciones_tap', 'electrical_report_file_id', 'posicion_tap_nominal'
+    'numero_posiciones_tap', 'electrical_report_file_id', 'posicion_tap_nominal',
+    'ttr_ofertado', 'resistencia_devanados_ofertado', 'aislamiento_ofertado'
   ],
   PRUEBAS: [
     'id', 'transformer_id', 'test_type', 'raw_readings_json',
@@ -426,6 +432,19 @@ function isTruthy_(v) {
   return s === 'TRUE' || s === '1' || s === 'SI' || s === 'YES';
 }
 
+/** Alcance de pruebas eléctricas ofertadas por transformador (2026-09-12) —
+ *  a diferencia de isTruthy_ (por defecto false), acá lo por-defecto-ausente
+ *  es TRUE: un equipo creado antes de que este campo existiera se trata
+ *  como "todas ofertadas" — el mismo comportamiento sin restricción que ya
+ *  tenía en producción, nunca debe quedar bloqueado retroactivamente. Solo
+ *  un false explícito (el técnico desmarcó el checkbox en un equipo nuevo)
+ *  saca una prueba del alcance. */
+function normalizeOfertado_(v) {
+  if (typeof v === 'boolean') return v;
+  var s = String(v).trim().toUpperCase();
+  return s !== 'FALSE' && s !== '0' && s !== 'NO';
+}
+
 function safeParseJson_(s) {
   if (!s) return null;
   try { return JSON.parse(s); } catch (e) { return null; }
@@ -584,6 +603,9 @@ function transformerRowToJson_(row) {
     numero_posiciones_tap: row.numero_posiciones_tap || null,
     posicion_tap_nominal: row.posicion_tap_nominal || null,
     electrical_report_url: row.electrical_report_file_id ? driveFileUrl_(row.electrical_report_file_id) : null,
+    ttr_ofertado: normalizeOfertado_(row.ttr_ofertado),
+    resistencia_devanados_ofertado: normalizeOfertado_(row.resistencia_devanados_ofertado),
+    aislamiento_ofertado: normalizeOfertado_(row.aislamiento_ofertado),
     created_at: row.created_at,
     updated_at: row.updated_at
   };
@@ -640,7 +662,10 @@ function createTransformer_(params) {
       impedance_percent: params.impedance_percent || '',
       insulation_type: params.insulation_type || '',
       numero_posiciones_tap: params.numero_posiciones_tap || '',
-      posicion_tap_nominal: params.posicion_tap_nominal || ''
+      posicion_tap_nominal: params.posicion_tap_nominal || '',
+      ttr_ofertado: !!params.ttr_ofertado,
+      resistencia_devanados_ofertado: !!params.resistencia_devanados_ofertado,
+      aislamiento_ofertado: !!params.aislamiento_ofertado
     });
 
     return jsonResponse_({ status: 201, message: 'Transformador creado', data: { id: id } });
@@ -677,6 +702,9 @@ function updateTransformer_(params) {
     if (params.tap_config !== undefined) updates.tap_config_json = JSON.stringify(params.tap_config);
     if (params.custom_tap_ratio_matrix !== undefined) updates.custom_tap_ratio_matrix_json = JSON.stringify(params.custom_tap_ratio_matrix);
     if (params.is_special_design !== undefined) updates.is_special_design = !!params.is_special_design;
+    if (params.ttr_ofertado !== undefined) updates.ttr_ofertado = !!params.ttr_ofertado;
+    if (params.resistencia_devanados_ofertado !== undefined) updates.resistencia_devanados_ofertado = !!params.resistencia_devanados_ofertado;
+    if (params.aislamiento_ofertado !== undefined) updates.aislamiento_ofertado = !!params.aislamiento_ofertado;
 
     if (params.file_base64) {
       var saved = saveFileToDrive_(
@@ -872,12 +900,20 @@ function persistTest_(transformer, testType, rawReadings, calculated, params, au
 /**
  * Solo Supervisor o Administrador (nunca el mismo Técnico que registró la
  * prueba, por diseño — es una revisión de un segundo par de ojos). Mueve
- * una prueba de 'Borrador' a 'Certificada' y, **solo en este momento**,
- * genera el PDF: para Aceite dieléctrico, su propio informe; para
- * TTR/Devanados/Aislamiento, regenera el informe eléctrico combinado del
- * equipo (que por diseño de findLatestElectricalTestsByType_ ya solo
- * considera pruebas Certificadas — ver ahí). Certificar una prueba ya
+ * una prueba de 'Borrador' a 'Certificada'. Certificar una prueba ya
  * certificada o ya rechazada no está permitido.
+ *
+ * Para Aceite dieléctrico, certificar SÍ genera de una vez su propio
+ * informe (un análisis de muestra puntual, un informe por envío, ver
+ * generateOilTestReportPdf_ — esto no cambió).
+ *
+ * Para TTR/Devanados/Aislamiento, certificar una prueba individual NO
+ * genera ningún PDF (cambio 2026-09-12, a pedido explícito del usuario):
+ * el informe eléctrico consolidado de un equipo solo se genera con la
+ * acción separada "Certificar Pruebas Eléctricas" (ver
+ * certifyElectricalReport_ más abajo), que exige que TODAS las pruebas
+ * ofertadas para ese equipo estén Certificada antes de generar un único
+ * PDF con esas secciones — nunca uno parcial por cada prueba suelta.
  */
 function certifyTest_(params, auth) {
   return withLock_(function () {
@@ -945,17 +981,74 @@ function certifyTest_(params, auth) {
       } catch (reportErr) {
         // No relanzar.
       }
-    } else if (testObj.test_type === 'TTR' || testObj.test_type === 'RESISTENCIA_DEVANADOS' || testObj.test_type === 'AISLAMIENTO') {
-      try {
-        regenerateElectricalCombinedReport_(transformer, site, folders.certificadosFolderId, testObj.tested_by);
-      } catch (combinedErr) {
-        // No relanzar.
-      }
     }
+    // TTR/RESISTENCIA_DEVANADOS/AISLAMIENTO: certificar la prueba individual
+    // ya no genera ningún PDF aquí — ver certifyElectricalReport_.
 
     if (reportFileId) sheet.getRange(testObj._row, colIndex_('PRUEBAS', 'report_file_id')).setValue(reportFileId);
 
     return jsonResponse_({ status: 200, message: 'Prueba certificada', data: { id: params.id, report_url: reportFileId ? driveFileUrl_(reportFileId) : null } });
+  });
+}
+
+/**
+ * "Certificar Pruebas Eléctricas" — UNA sola certificación por trabajo
+ * (transformador), no una por cada tipo de prueba (2026-09-12, a pedido
+ * explícito del usuario). Fuente de verdad del alcance: los 3 checkboxes
+ * ofertado del transformador (ttr_ofertado/resistencia_devanados_ofertado/
+ * aislamiento_ofertado, ver normalizeOfertado_) — el mismo patrón que ya
+ * usa Aceite para sus 3 secciones activables.
+ *
+ * Solo queda disponible cuando TODAS las pruebas ofertadas para este
+ * equipo ya están Certificada (findLatestElectricalTestsByType_ ya
+ * filtra por eso). Si falta alguna, no genera nada y devuelve 400 con el
+ * detalle de qué falta. Si todas están completas, genera UN SOLO PDF
+ * consolidado con únicamente esas secciones (regenerateElectricalCombinedReport_
+ * ahora recibe el alcance explícito, no infiere "lo que exista").
+ *
+ * Los técnicos siguen registrando/guardando cada prueba individual sin
+ * ningún bloqueo, en cualquier momento — esto no cambia; esta acción es
+ * puramente la certificación consolidada del trabajo completo.
+ */
+function certifyElectricalReport_(params, auth) {
+  return withLock_(function () {
+    if (auth.role === 'Tecnico') {
+      return jsonResponse_({ status: 403, message: 'Solo un Supervisor o Administrador puede certificar Pruebas Eléctricas' });
+    }
+    if (!params.transformer_id) return jsonResponse_({ status: 400, message: 'transformer_id es obligatorio' });
+    var transformer = findTransformerRow_(params.transformer_id);
+    if (!transformer) return jsonResponse_({ status: 404, message: 'Transformador no encontrado' });
+    var site = findSiteRow_(transformer.site_id);
+    if (!site) return jsonResponse_({ status: 404, message: 'Cliente/Proyecto no encontrado' });
+
+    var scope = {
+      TTR: normalizeOfertado_(transformer.ttr_ofertado),
+      RESISTENCIA_DEVANADOS: normalizeOfertado_(transformer.resistencia_devanados_ofertado),
+      AISLAMIENTO: normalizeOfertado_(transformer.aislamiento_ofertado)
+    };
+    var requiredTypes = Object.keys(scope).filter(function (t) { return scope[t]; });
+    if (requiredTypes.length === 0) {
+      return jsonResponse_({ status: 400, message: 'Este equipo no tiene ninguna prueba eléctrica marcada como ofertada — revisa el alcance en "Editar equipo".' });
+    }
+
+    var latest = findLatestElectricalTestsByType_(transformer.id);
+    var missing = requiredTypes.filter(function (t) { return !latest[t]; });
+    if (missing.length > 0) {
+      var missingLabels = missing.map(function (t) { return TEST_TYPE_DISPLAY_LABEL_[t]; });
+      return jsonResponse_({
+        status: 400,
+        message: 'Faltan por certificar: ' + missingLabels.join(', ') + '. Certifica esas pruebas individuales primero.',
+        data: { missing: missing }
+      });
+    }
+
+    var folders = ensureSiteFolders_(site);
+    var report = regenerateElectricalCombinedReport_(transformer, site, folders.certificadosFolderId, auth.username, requiredTypes);
+    if (!report) {
+      return jsonResponse_({ status: 500, message: 'No se pudo generar el informe — inténtalo de nuevo.' });
+    }
+
+    return jsonResponse_({ status: 200, message: 'Pruebas Eléctricas certificadas', data: { report_url: driveFileUrl_(report.fileId) } });
   });
 }
 
@@ -1425,12 +1518,11 @@ var OIL_PCB_LIMITE_PPM = 50; // Res. 222 de 2011, MinAmbiente
 
 var OIL_PCB_AROCLORES = ['aroclor_1016', 'aroclor_1221', 'aroclor_1232', 'aroclor_1242', 'aroclor_1248', 'aroclor_1254', 'aroclor_1260'];
 
-/** Exige que el valor sea numérico; usado solo para campos de una sección que SÍ está activa. */
-function requireNumber_(value, label) {
-  if (typeof value !== 'number' || isNaN(value)) {
-    throw new Error(label + ' es obligatorio y debe ser numérico si activaste esta sección');
-  }
-  return value;
+/** Devuelve el valor si es numérico, o undefined — nunca bloquea: un análisis
+ *  fisicoquímico parcial (solo algunos de los 4 parámetros) es un caso real de
+ *  campo, no un error de captura. */
+function optionalNumber_(value) {
+  return (typeof value === 'number' && !isNaN(value)) ? value : undefined;
 }
 
 /**
@@ -1449,30 +1541,42 @@ function calculateOilAnalysis_(readings) {
   }
 
   if (readings.fisicoquimico_realizado) {
-    var rigidez = requireNumber_(readings.rigidez_dielectrica_kv, 'Rigidez dieléctrica');
-    var agua = requireNumber_(readings.agua_ppm, 'Agua (ppm)');
-    var acidez = requireNumber_(readings.numero_acido_mg_koh_g, 'Número ácido');
-    var tension = requireNumber_(readings.tension_interfacial_dinas_cm, 'Tensión interfacial');
+    var rigidez = optionalNumber_(readings.rigidez_dielectrica_kv);
+    var agua = optionalNumber_(readings.agua_ppm);
+    var acidez = optionalNumber_(readings.numero_acido_mg_koh_g);
+    var tension = optionalNumber_(readings.tension_interfacial_dinas_cm);
+    var anyFqValue = rigidez !== undefined || agua !== undefined || acidez !== undefined || tension !== undefined;
 
-    var fqVerdict, fqSeverity;
-    if (acidez >= OIL_ACIDEZ_MAX_MG_KOH_G || tension <= OIL_TENSION_INTERFACIAL_MIN_MN_M) {
-      fqVerdict = 'REQUIERE REGENERACIÓN / CAMBIO'; fqSeverity = 3;
-    } else if (rigidez <= OIL_RIGIDEZ_MIN_KV || agua >= OIL_HUMEDAD_MAX_PPM) {
-      fqVerdict = 'REQUIERE TERMOVACÍO'; fqSeverity = 2;
-    } else {
-      fqVerdict = 'APROBADO'; fqSeverity = 1;
-    }
-
-    sections.fisicoquimico = {
-      verdict: fqVerdict,
-      thresholds: {
-        acidezMaxMgKohG: OIL_ACIDEZ_MAX_MG_KOH_G,
-        tensionInterfacialMinDinasCm: OIL_TENSION_INTERFACIAL_MIN_MN_M,
-        rigidezMinKv: OIL_RIGIDEZ_MIN_KV,
-        aguaMaxPpm: OIL_HUMEDAD_MAX_PPM
+    if (anyFqValue) {
+      // Cada umbral solo se evalúa si su parámetro fue capturado — un análisis
+      // parcial (p. ej. solo rigidez + acidez, sin agua ni tensión) igual debe
+      // poder detectar un problema real con los datos que sí hay, en vez de
+      // quedar bloqueado esperando los 4 parámetros completos.
+      var isComplete = rigidez !== undefined && agua !== undefined && acidez !== undefined && tension !== undefined;
+      var fqVerdict, fqSeverity;
+      if ((acidez !== undefined && acidez >= OIL_ACIDEZ_MAX_MG_KOH_G) || (tension !== undefined && tension <= OIL_TENSION_INTERFACIAL_MIN_MN_M)) {
+        fqVerdict = 'REQUIERE REGENERACIÓN / CAMBIO'; fqSeverity = 3;
+      } else if ((rigidez !== undefined && rigidez <= OIL_RIGIDEZ_MIN_KV) || (agua !== undefined && agua >= OIL_HUMEDAD_MAX_PPM)) {
+        fqVerdict = 'REQUIERE TERMOVACÍO'; fqSeverity = 2;
+      } else {
+        fqVerdict = isComplete ? 'APROBADO' : 'APROBADO (datos parciales)';
+        fqSeverity = 1;
       }
-    };
-    considerVerdict(fqVerdict, fqSeverity);
+
+      sections.fisicoquimico = {
+        verdict: fqVerdict,
+        complete: isComplete,
+        thresholds: {
+          acidezMaxMgKohG: OIL_ACIDEZ_MAX_MG_KOH_G,
+          tensionInterfacialMinDinasCm: OIL_TENSION_INTERFACIAL_MIN_MN_M,
+          rigidezMinKv: OIL_RIGIDEZ_MIN_KV,
+          aguaMaxPpm: OIL_HUMEDAD_MAX_PPM
+        }
+      };
+      considerVerdict(fqVerdict, fqSeverity);
+    } else {
+      sections.fisicoquimico = { verdict: 'Sin datos', complete: false };
+    }
   }
 
   if (readings.dga_realizado) {
@@ -1592,7 +1696,7 @@ var TEST_TYPE_PROTOCOL_TITLE_ = {
  *  propio) y cualquier valor no reconocido caen en neutro. */
 function verdictColor_(verdict) {
   var v = String(verdict || '');
-  if (v === 'APROBADO' || v === 'No contaminado') return { bg: PDF_COLORS_.SUCCESS_BG, text: PDF_COLORS_.SUCCESS };
+  if (v.indexOf('APROBADO') === 0 || v === 'No contaminado') return { bg: PDF_COLORS_.SUCCESS_BG, text: PDF_COLORS_.SUCCESS };
   if (v === 'RECHAZADO' || v.indexOf('REQUIERE REGENERACIÓN') === 0 || v.indexOf('Contaminado') === 0) return { bg: PDF_COLORS_.DANGER_BG, text: PDF_COLORS_.DANGER };
   if (v === 'OBSERVADO' || v.indexOf('REQUIERE TERMOVACÍO') === 0) return { bg: PDF_COLORS_.WARNING_BG, text: PDF_COLORS_.WARNING };
   return { bg: PDF_COLORS_.NEUTRAL_BG, text: PDF_COLORS_.TEXT_MUTED };
@@ -1783,6 +1887,45 @@ function appendDenseInfoGrid_(body, rows) {
     }
   }
   return table;
+}
+
+/** Filas de datos por "página de tabla" antes de forzar un salto e
+ *  insertar el mismo encabezado de nuevo (2026-09-12). Estimado
+ *  conservador, no medido pixel a pixel — DocumentApp no expone el alto
+ *  real renderizado de una tabla: con las celdas de datos en 9pt (~11-12pt
+ *  de alto por fila con el padding por defecto de una tabla de Documentos),
+ *  24 filas ocupan aproximadamente 280-300pt, muy por debajo del área
+ *  útil de una página Carta/A4 con márgenes de 36pt (~720pt), incluso
+ *  restando el título de sección y el banner de veredicto que comparten la
+ *  misma página. El usuario pidió explícitamente que esto "no necesita ser
+ *  perfecto al 100%": el objetivo es eliminar la fila huérfana sin su
+ *  encabezado, no calzar al pixel — preferible pasar de página de más a
+ *  quedarse corto. */
+var TABLE_ROWS_PER_PAGE_ = 24;
+
+/**
+ * Igual que appendResultsTable_, pero para tablas que pueden crecer mucho
+ * (TTR con muchos TAPs, Resistencia de Devanados con varias fases).
+ * DocumentApp no repite encabezados de tabla automáticamente al saltar de
+ * página (verificado contra la referencia oficial — ver también el
+ * comentario de appendSignatureSection_ sobre esta misma limitación), así
+ * que cada TABLE_ROWS_PER_PAGE_ filas de datos se fuerza un salto de
+ * página y se abre una tabla nueva repitiendo la misma fila de encabezado,
+ * para que ninguna página de continuación quede con datos sueltos sin
+ * saber a qué columna pertenecen. `headerRow` es un array de strings
+ * (una sola fila); `dataRows` es un array de arrays (filas de datos, sin
+ * el encabezado).
+ */
+function appendPaginatedResultsTable_(body, headerRow, dataRows) {
+  if (dataRows.length === 0) {
+    appendResultsTable_(body, [headerRow]);
+    return;
+  }
+  for (var i = 0; i < dataRows.length; i += TABLE_ROWS_PER_PAGE_) {
+    if (i > 0) body.appendPageBreak();
+    var chunk = dataRows.slice(i, i + TABLE_ROWS_PER_PAGE_);
+    appendResultsTable_(body, [headerRow].concat(chunk));
+  }
 }
 
 /** Tabla de resultados con encabezado resaltado (fondo acento, texto
@@ -1979,7 +2122,8 @@ function appendTtrTheoreticalWarning_(body, calculated) {
 function appendTtrResultsTable_(body, calculated) {
   appendSectionTitle_(body, 'Resultados — TTR (Relación de Transformación)');
   appendTtrTheoreticalWarning_(body, calculated);
-  var rows = [['TAP', 'FASE', 'RELACIÓN MEDIDA', 'RELACIÓN TEÓRICA', 'ERROR %', 'ESTADO']];
+  var header = ['TAP', 'FASE', 'RELACIÓN MEDIDA', 'RELACIÓN TEÓRICA', 'ERROR %', 'ESTADO'];
+  var rows = [];
   var theoAvailable = calculated.theoreticalAvailable !== false;
   Object.keys(calculated.taps).map(Number).sort(function (a, b) { return a - b; }).forEach(function (tapNum) {
     var tap = calculated.taps[String(tapNum)];
@@ -1995,30 +2139,32 @@ function appendTtrResultsTable_(body, calculated) {
       ]);
     });
   });
-  appendResultsTable_(body, rows);
+  appendPaginatedResultsTable_(body, header, rows);
   appendVerdictBanner_(body, 'Veredicto', calculated.overallVerdict);
 }
 
 function appendWindingResultsTable_(body, calculated) {
   appendSectionTitle_(body, 'Resultados — Resistencia de Devanados');
-  var rows = [['TAP', 'FASE', 'RESISTENCIA (Ω)', 'DESVIACIÓN %', 'ESTADO']];
+  var header = ['TAP', 'FASE', 'RESISTENCIA (Ω)', 'DESVIACIÓN %', 'ESTADO'];
+  var rows = [];
   calculated.taps.forEach(function (tap) {
     Object.keys(tap.phases).forEach(function (phaseKey) {
       var p = tap.phases[phaseKey];
       rows.push([String(tap.tapPosition), phaseKey, p.resistanceOhm.toFixed(4), p.deviationFromAvgPercent.toFixed(2) + ' %', p.status]);
     });
   });
-  appendResultsTable_(body, rows);
+  appendPaginatedResultsTable_(body, header, rows);
 
   if (calculated.secondary) {
     var secTitle = body.appendParagraph('SECUNDARIO');
     secTitle.editAsText().setBold(true).setFontSize(10);
-    var secRows = [['FASE', 'RESISTENCIA (Ω)', 'DESVIACIÓN %', 'ESTADO']];
+    var secHeader = ['FASE', 'RESISTENCIA (Ω)', 'DESVIACIÓN %', 'ESTADO'];
+    var secRows = [];
     Object.keys(calculated.secondary.phases).forEach(function (phaseKey) {
       var p = calculated.secondary.phases[phaseKey];
       secRows.push([phaseKey, p.resistanceOhm.toFixed(4), p.deviationFromAvgPercent.toFixed(2) + ' %', p.status]);
     });
-    appendResultsTable_(body, secRows);
+    appendPaginatedResultsTable_(body, secHeader, secRows);
   }
 
   appendVerdictBanner_(body, 'Veredicto', calculated.overallVerdict);
@@ -2026,12 +2172,13 @@ function appendWindingResultsTable_(body, calculated) {
 
 function appendInsulationResultsTable_(body, calculated) {
   appendSectionTitle_(body, 'Resultados — Resistencia de Aislamiento (DAR/IP)');
-  var rows = [['COMBINACIÓN', 'DAR', 'CALIFICACIÓN DAR', 'IP', 'CALIFICACIÓN IP']];
+  var header = ['COMBINACIÓN', 'DAR', 'CALIFICACIÓN DAR', 'IP', 'CALIFICACIÓN IP'];
+  var rows = [];
   Object.keys(calculated.measurements).forEach(function (key) {
     var m = calculated.measurements[key];
     rows.push([key, m.dar.toFixed(2), m.darRating, m.ip.toFixed(2), m.ipRating]);
   });
-  appendResultsTable_(body, rows);
+  appendPaginatedResultsTable_(body, header, rows);
   appendVerdictBanner_(body, 'Veredicto', calculated.overallVerdict);
 }
 
@@ -2106,27 +2253,27 @@ function appendElectricalTypeSection_(body, testType, testRow) {
 }
 
 /**
- * Un PDF combinado (TTR/Devanados/Aislamiento en un solo documento) por
- * cada envío de una prueba eléctrica — decisión del usuario (2026-08-30)
- * tras ver que la primera versión (un PDF por CADA prueba individual, sin
- * agrupar) no coincidía con cómo se maneja un protocolo de pruebas en la
- * práctica. Corregido de nuevo el mismo día: la primera implementación de
- * "un solo documento" reemplazaba el PDF anterior en cada envío (borraba
- * el archivo viejo de Drive y su fila en DOCUMENTOS) — el usuario pidió
- * explícitamente **no perder histórico**: cada envío que dispara una
- * regeneración debe quedar como su propio PDF con timestamp, sin borrar
- * ni sobrescribir los anteriores. Si un tipo nunca se probó, su sección
- * simplemente no aparece en el PDF de ese envío.
+ * Un solo PDF consolidado (TTR/Devanados/Aislamiento, solo los tipos que
+ * fueron ofertados para este equipo) — SOLO se genera desde la acción
+ * explícita "Certificar Pruebas Eléctricas" (certifyElectricalReport_),
+ * nunca automáticamente al certificar una prueba individual.
+ *
+ * Rediseñado (2026-09-12), a pedido explícito del usuario: la versión
+ * anterior regeneraba este combinado automáticamente CADA VEZ que se
+ * certificaba una prueba individual (TTR sola, Devanados sola, etc.),
+ * produciendo "documentos parciales sueltos" — un PDF con solo TTR hoy,
+ * otro con TTR+Devanados la semana siguiente, y así. Ahora hay UNA sola
+ * certificación por trabajo de Pruebas Eléctricas: se genera únicamente
+ * cuando TODAS las pruebas ofertadas para ese equipo (`includeTypes`, ver
+ * certifyElectricalReport_) ya están Certificada, y el PDF trae
+ * únicamente esas secciones — si Devanados no fue ofertado para este
+ * trabajo, su sección no aparece aunque exista una prueba de Devanados
+ * certificada (pudo haberse hecho por otra razón, fuera de este alcance).
  *
  * Aceite dieléctrico NO entra aquí — sigue con un informe por envío
  * (generateOilTestReportPdf_): es un análisis de una muestra puntual con
  * su propio laboratorio acreditado, conceptualmente distinto a una
- * medición eléctrica repetible del mismo equipo.
- *
- * Se llama desde persistTest_ cada vez que se guarda un TTR/Devanados/
- * Aislamiento — la fila de PRUEBAS de esa prueba ya está guardada para
- * ese momento, así que `findLatestElectricalTestsByType_` sí la ve como
- * candidata a "más reciente".
+ * medición eléctrica repetible del mismo equipo, y esa decisión no cambia.
  *
  * Fuente de verdad del histórico completo: las filas de DOCUMENTOS
  * (categoría CERTIFICADOS, nombre con timestamp) — ya se listan sin
@@ -2137,10 +2284,10 @@ function appendElectricalTypeSection_(body, testType, testRow) {
  * como caché del más reciente para el pill de acceso rápido en el header
  * del equipo — nunca se lee como fuente de histórico.
  */
-function regenerateElectricalCombinedReport_(transformer, site, folderId, uploadedBy) {
+function regenerateElectricalCombinedReport_(transformer, site, folderId, uploadedBy, includeTypes) {
   var latest = findLatestElectricalTestsByType_(transformer.id);
   var order = ['TTR', 'RESISTENCIA_DEVANADOS', 'AISLAMIENTO'];
-  var present = order.filter(function (t) { return latest[t]; });
+  var present = order.filter(function (t) { return includeTypes.indexOf(t) !== -1 && latest[t]; });
   if (present.length === 0) return null;
 
   var doc = DocumentApp.create('tmp_informe_electrico_' + Date.now());
@@ -3021,6 +3168,7 @@ var POST_ACTIONS = {
   submitInsulationTest: submitInsulationTest_,
   submitOilAnalysisTest: submitOilAnalysisTest_,
   certifyTest: certifyTest_,
+  certifyElectricalReport: certifyElectricalReport_,
   rejectTest: rejectTest_,
   updateTestDraft: updateTestDraft_,
   uploadDocument: uploadDocument_,

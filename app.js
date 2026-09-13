@@ -1015,6 +1015,9 @@ function handleCreateTransformerSubmit(e) {
         numero_posiciones_tap: tapPositionsCount,
         posicion_tap_nominal: posTapNominal,
         is_special_design: false,
+        ttr_ofertado: document.getElementById('newTrfTtrOfertado').checked,
+        resistencia_devanados_ofertado: document.getElementById('newTrfDevanadosOfertado').checked,
+        aislamiento_ofertado: document.getElementById('newTrfAislamientoOfertado').checked,
         tap_config: {
           nominalVoltage: nominalForTaps,
           stepPercentage: 2.5,
@@ -1128,6 +1131,9 @@ function openEditTransformerModal_() {
   document.getElementById('editTrfYear').value = t.manufacture_year || '';
   document.getElementById('editTrfTapPositions').value = t.numero_posiciones_tap || '';
   document.getElementById('editTrfPosTapNominal').value = t.posicion_tap_nominal || '';
+  document.getElementById('editTrfTtrOfertado').checked = t.ttr_ofertado !== false;
+  document.getElementById('editTrfDevanadosOfertado').checked = t.resistencia_devanados_ofertado !== false;
+  document.getElementById('editTrfAislamientoOfertado').checked = t.aislamiento_ofertado !== false;
   setStatus_(document.getElementById('editTransformerStatus'), '', false);
   document.getElementById('editTransformerModal').classList.add('open');
   document.getElementById('editTransformerModalBackdrop').classList.add('open');
@@ -1162,7 +1168,10 @@ function handleEditTransformerSubmit(e) {
     cooling_type: document.getElementById('editTrfCooling').value || null,
     impedance_percent: isNaN(impedance) ? null : impedance,
     insulation_type: document.getElementById('editTrfInsulation').value.trim() || null,
-    manufacture_year: year || null
+    manufacture_year: year || null,
+    ttr_ofertado: document.getElementById('editTrfTtrOfertado').checked,
+    resistencia_devanados_ofertado: document.getElementById('editTrfDevanadosOfertado').checked,
+    aislamiento_ofertado: document.getElementById('editTrfAislamientoOfertado').checked
   };
 
   // El número de posiciones de TAP y la posición del TAP nominal solo se
@@ -1677,7 +1686,42 @@ function renderDetail() {
   if (t.electrical_report_url) {
     badges.push('<a class="pill success" href="' + t.electrical_report_url + '" target="_blank" rel="noopener">Informe eléctrico combinado (PDF)</a>');
   }
+
+  // Alcance de Pruebas Eléctricas ofertadas para este equipo (2026-09-12) —
+  // mismo criterio que Aceite: se muestra qué está marcado y si ya tiene una
+  // prueba Certificada de ese tipo, para que el Supervisor sepa de un
+  // vistazo qué falta antes de poder usar "Certificar Pruebas Eléctricas".
+  var electricalLabels_ = { TTR: 'TTR', RESISTENCIA_DEVANADOS: 'Devanados', AISLAMIENTO: 'Aislamiento' };
+  var electricalScope = {
+    TTR: t.ttr_ofertado !== false,
+    RESISTENCIA_DEVANADOS: t.resistencia_devanados_ofertado !== false,
+    AISLAMIENTO: t.aislamiento_ofertado !== false
+  };
+  var electricalCertified = { TTR: false, RESISTENCIA_DEVANADOS: false, AISLAMIENTO: false };
+  state.currentTests.forEach(function (test) {
+    if (test.test_type in electricalCertified && (test.estado_certificacion || 'Certificada') === 'Certificada') {
+      electricalCertified[test.test_type] = true;
+    }
+  });
+  var requiredElectricalTypes = Object.keys(electricalScope).filter(function (k) { return electricalScope[k]; });
+  requiredElectricalTypes.forEach(function (type) {
+    var done = electricalCertified[type];
+    badges.push('<span class="pill ' + (done ? 'success' : 'neutral') + '">' + electricalLabels_[type] + (done ? ' ✓' : ' pendiente') + '</span>');
+  });
+
   document.getElementById('detailBadges').innerHTML = badges.join('');
+
+  var certifyBtn = document.getElementById('certifyElectricalBtn');
+  if (state.role === 'Tecnico') {
+    certifyBtn.hidden = true;
+  } else {
+    certifyBtn.hidden = false;
+    var allElectricalDone = requiredElectricalTypes.length > 0 && requiredElectricalTypes.every(function (k) { return electricalCertified[k]; });
+    certifyBtn.disabled = !allElectricalDone;
+    certifyBtn.title = requiredElectricalTypes.length === 0
+      ? 'Este equipo no tiene pruebas eléctricas marcadas como ofertadas — revisa "Editar equipo"'
+      : (allElectricalDone ? 'Genera el informe eléctrico consolidado con las pruebas ofertadas' : 'Faltan pruebas ofertadas por certificar');
+  }
 
   var cfg = t.tap_config || {};
   document.getElementById('detailSpecGrid').innerHTML = [
@@ -1954,6 +1998,37 @@ function handleCertifyTest_(testId) {
       renderDetail();
     })
     .catch(function (err) { alert(err.message || 'No se pudo certificar la prueba.'); });
+}
+
+/** "Certificar Pruebas Eléctricas" — UNA sola certificación por trabajo, no
+ *  una por cada tipo de prueba (2026-09-12). El backend valida que todas
+ *  las pruebas ofertadas para este equipo (ttr_ofertado/
+ *  resistencia_devanados_ofertado/aislamiento_ofertado) estén Certificada
+ *  antes de generar el PDF consolidado; si falta alguna, devuelve 400 con
+ *  el detalle — se muestra tal cual, no se reintenta ni se adivina. */
+function handleCertifyElectricalReport_() {
+  if (!confirm('¿Certificar Pruebas Eléctricas de este equipo? Se generará un único informe consolidado con las pruebas ofertadas.')) return;
+  var status = document.getElementById('certifyElectricalStatus');
+  var btn = document.getElementById('certifyElectricalBtn');
+  btn.disabled = true;
+  setStatus_(status, 'Generando informe…', false);
+
+  callApi('certifyElectricalReport', 'POST', { transformer_id: state.currentTransformerId })
+    .then(function () {
+      return callApi('getTransformer', 'GET', { id: state.currentTransformerId });
+    })
+    .then(function (transformer) {
+      state.currentTransformer = transformer;
+      saveDraft_('mya_cache_transformer_' + state.currentTransformerId, state.currentTransformer);
+      renderDetail();
+      setStatus_(status, 'Pruebas Eléctricas certificadas — informe generado.', true);
+      showToast_('Informe eléctrico consolidado generado', 'success');
+    })
+    .catch(function (err) {
+      btn.disabled = false;
+      if (err && (err.status === 402 || err.status === 403)) return;
+      setStatus_(status, (err && err.message) || 'No se pudo certificar Pruebas Eléctricas.', false, true);
+    });
 }
 
 /** Rechazo terminal: el registro permanece (nunca se borra), pero nunca
