@@ -2354,11 +2354,14 @@ function appendDataRowsToTable_(table, rows) {
     var row = table.appendTableRow();
     rowValues.forEach(function (val) {
       var cell = row.appendTableCell(String(val));
-      // `appendTableRow()` hereda el formato de la fila de encabezado (texto
-      // blanco en negrita sobre fondo acento) — sin esto, las filas de datos
-      // quedan con texto blanco sobre fondo blanco, invisible. Hay que fijar
-      // los 3 explícitamente, nunca asumir que "sin tocarlo" da el default.
-      cell.setBackgroundColor('#ffffff');
+      // `appendTableRow()` hereda el formato de TEXTO de la fila de
+      // encabezado (blanco, negrita) — sin fijarlo, las filas de datos
+      // quedan con texto blanco invisible sobre fondo sin color. Fijar SOLO
+      // el texto, nunca el fondo: un `setBackgroundColor` explícito aquí
+      // (probado y descartado el mismo día) pinta blanco OPACO, tapando la
+      // marca de agua de la plantilla en esa zona de la página — el fondo
+      // sin fijar es transparente y deja verla, igual que el resto de la
+      // página.
       cell.editAsText().setFontSize(9).setBold(false).setForegroundColor(PDF_COLORS_.TEXT);
     });
   });

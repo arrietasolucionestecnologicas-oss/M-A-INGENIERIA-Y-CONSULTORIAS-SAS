@@ -1470,21 +1470,31 @@ explícitamente en vez de ignorarse:
   (`appendDataRowsToTable_`, `table.appendTableRow()` de DocumentApp sobre
   una tabla que ya existe).
 
-  **Bug real encontrado y corregido el mismo día, verificando el primer
-  informe generado en vivo**: las filas nuevas salían con texto BLANCO
-  sobre fondo blanco — invisibles, aunque los datos sí estaban ahí (se
-  notaba en el PDF real, no en pdftotext, que no distingue color). Causa:
-  `table.appendTableRow()` hereda el formato de la fila anterior — y la
-  única fila que existía antes de insertar datos era el ENCABEZADO (texto
-  blanco en negrita sobre fondo acento, ver `appendResultsTable_`). Sin
-  fijar explícitamente color de texto y fondo en cada celda nueva,
-  quedaban con fondo blanco (sin heredar el acento, porque el fondo no se
-  hereda igual) pero texto blanco heredado — invisibles. `appendDataRowsToTable_`
-  ahora fija `setBackgroundColor('#ffffff')` y
-  `setForegroundColor(PDF_COLORS_.TEXT)` explícitamente en cada celda, sin
-  asumir ningún default. Lección: cualquier `appendTableRow()`/
-  `appendTableCell()` sobre una tabla que ya tiene contenido con estilo
-  propio debe fijar SU estilo explícito, nunca confiar en heredar "nada".
+  **Dos bugs reales encontrados y corregidos el mismo día, verificando los
+  primeros informes generados en vivo — el segundo lo introdujo el primer
+  arreglo:**
+  1. Las filas nuevas salían con texto BLANCO sobre fondo sin color —
+     invisibles, aunque los datos sí estaban ahí (se notaba en el PDF real,
+     no en `pdftotext`, que no distingue color). Causa:
+     `table.appendTableRow()` hereda el formato de TEXTO de la fila
+     anterior — y la única fila que existía antes de insertar datos era el
+     ENCABEZADO (texto blanco en negrita, ver `appendResultsTable_`).
+  2. El primer arreglo fijó `cell.setBackgroundColor('#ffffff')` además del
+     texto, "por si acaso" el fondo también se heredaba — no hacía falta
+     (el fondo nunca fue el problema) y esto tapó la marca de agua con un
+     blanco opaco en toda celda de datos insertada, dejando la tabla como
+     un hueco en blanco en medio de la marca de agua (reportado por el
+     usuario en el siguiente informe generado).
+
+  `appendDataRowsToTable_` ahora fija **solo** `setForegroundColor(PDF_COLORS_.TEXT)`
+  en cada celda — nunca toca el fondo, así queda transparente y la marca de
+  agua se ve igual ahí que en el resto de la página. Lección doble: (a)
+  cualquier `appendTableRow()`/`appendTableCell()` sobre una tabla con
+  estilo propio debe fijar explícitamente lo que SÍ importa (acá, solo el
+  texto) — nunca asumir que "sin tocarlo" da el default; pero (b) fijar
+  "por si acaso" una propiedad que no era parte del bug original es su
+  propio riesgo, no una precaución gratis — cada `set*` explícito debe
+  tener una razón concreta detrás, no solo "para estar seguros".
 - **Secciones enteras que pueden no estar presentes** (alcance ofertado del
   eléctrico, las 3 secciones independientes de Aceite, el aviso de
   "teórico no disponible" de TTR, la tabla "Secundario" de Devanados, el
