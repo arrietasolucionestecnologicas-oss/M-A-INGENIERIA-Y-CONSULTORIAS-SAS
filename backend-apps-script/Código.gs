@@ -1963,11 +1963,11 @@ function appendResultsTable_(body, rows) {
   var header = table.getRow(0);
   for (var c = 0; c < header.getNumCells(); c++) {
     header.getCell(c).setBackgroundColor(PDF_COLORS_.ACCENT);
-    header.getCell(c).editAsText().setBold(true).setFontSize(9).setForegroundColor('#ffffff');
+    header.getCell(c).editAsText().setBold(true).setFontSize(8).setForegroundColor('#ffffff');
   }
   for (var r = 1; r < table.getNumRows(); r++) {
     for (var c2 = 0; c2 < table.getRow(r).getNumCells(); c2++) {
-      table.getRow(r).getCell(c2).editAsText().setFontSize(9);
+      table.getRow(r).getCell(c2).editAsText().setFontSize(8);
     }
   }
   return table;
@@ -2141,7 +2141,15 @@ var TEST_TYPE_DISPLAY_LABEL_ = {
  *  reales. Mismo criterio de "identificar por forma" que ya usa
  *  pinResultsTableHeaders_ vía la Docs API — acá se usa directo con
  *  DocumentApp porque el documento ya está abierto para edición. */
-var TTR_TABLE_HEADER_ = ['TAP', 'FASE', 'RELACIÓN MEDIDA', 'RELACIÓN TEÓRICA', 'ERROR %', 'ESTADO'];
+/** Punto 7 (2026-09-13) — formato compacto: una fila por TAP en vez de una
+ *  fila por TAP+fase. Dos variantes (mismo criterio que Aislamiento
+ *  Simple/Completo en el punto 5) porque monofásico tiene 1 sola fase —
+ *  la cantidad de columnas de valor cambia, no solo el contenido. */
+var TTR_COMPACT_TRIFASICO_HEADER_ = ['TAP', 'U', 'V', 'W', 'TEÓRICA', 'ERROR %', 'ESTADO'];
+var TTR_COMPACT_MONOFASICO_HEADER_ = ['TAP', 'VALOR', 'TEÓRICA', 'ERROR %', 'ESTADO'];
+/** Orden fijo U/V/W — coincide con getPhaseKeys() en app.js (H1H2-X1X2 /
+ *  H2H3-X2X3 / H3H1-X3X1, siempre en ese orden para trifásico). */
+var TTR_PHASE_ORDER_ = ['H1H2-X1X2', 'H2H3-X2X3', 'H3H1-X3X1'];
 var WINDING_TABLE_HEADER_ = ['TAP', 'FASE', 'RESISTENCIA (Ω)', 'DESVIACIÓN %', 'ESTADO'];
 var WINDING_SECONDARY_TABLE_HEADER_ = ['FASE', 'RESISTENCIA (Ω)', 'DESVIACIÓN %', 'ESTADO'];
 var INSULATION_TABLE_HEADER_ = ['COMBINACIÓN', 'DAR', 'CALIFICACIÓN DAR', 'IP', 'CALIFICACIÓN IP'];
@@ -2155,22 +2163,42 @@ var INSULATION_SIMPLE_TABLE_HEADER_ = ['COMBINACIÓN', 'RESISTENCIA'];
  *  como tal: antes armaban tabla completa desde cero, ahora el informe
  *  real solo necesita las FILAS para insertarlas en la tabla que ya trae
  *  la plantilla copiada, ver appendDataRowsToTable_). */
-function computeTtrRows_(calculated) {
+/** Punto 7 (2026-09-13): una fila por TAP (antes: una fila por TAP+fase).
+ *  ERROR%/ESTADO = peor caso entre las fases de ese TAP (el peor error
+ *  absoluto, y RECHAZADO si cualquier fase lo está) — un TAP con una fase
+ *  mala no puede leerse como aprobado solo porque las otras 2 sí. TEÓRICA
+ *  se muestra una sola vez porque la fórmula estándar (grupo de conexión)
+ *  da el mismo valor teórico para las 3 fases de un TAP; se toma el de la
+ *  primera fase disponible. El marcador "†" de lectura repetida (punto 6)
+ *  se corre de la celda FASE (ya no existe) a la celda TAP. */
+function computeTtrCompactRows_(calculated) {
   var theoAvailable = calculated.theoreticalAvailable !== false;
   var rows = [];
   Object.keys(calculated.taps).map(Number).sort(function (a, b) { return a - b; }).forEach(function (tapNum) {
     var tap = calculated.taps[String(tapNum)];
-    Object.keys(tap.phases).forEach(function (phaseKey) {
-      var p = tap.phases[phaseKey];
-      rows.push([
-        String(tapNum),
-        phaseKey + (p.nota ? ' †' : ''),
-        p.measuredRatio != null ? p.measuredRatio.toFixed(4) : '—',
-        theoAvailable && p.appliedTheoreticalRatio != null ? p.appliedTheoreticalRatio.toFixed(4) : '—',
-        theoAvailable && p.errorPercent != null ? p.errorPercent.toFixed(2) + ' %' : '—',
-        theoAvailable ? p.status : 'PENDIENTE'
-      ]);
+    var phaseKeys = Object.keys(tap.phases);
+    var orderedKeys = phaseKeys.length > 1 ? TTR_PHASE_ORDER_.filter(function (k) { return tap.phases[k]; }) : phaseKeys;
+
+    var teorica = null, worstErrorPercent = null, worstStatus = 'APROBADO', anyNota = false;
+    orderedKeys.forEach(function (k) {
+      var p = tap.phases[k];
+      if (p.nota) anyNota = true;
+      if (teorica === null && theoAvailable && p.appliedTheoreticalRatio != null) teorica = p.appliedTheoreticalRatio;
+      if (theoAvailable && p.errorPercent != null && (worstErrorPercent === null || Math.abs(p.errorPercent) > Math.abs(worstErrorPercent))) {
+        worstErrorPercent = p.errorPercent;
+      }
+      if (theoAvailable && p.status === 'RECHAZADO') worstStatus = 'RECHAZADO';
     });
+
+    var row = [String(tapNum) + (anyNota ? ' †' : '')];
+    orderedKeys.forEach(function (k) {
+      var p = tap.phases[k];
+      row.push(p.measuredRatio != null ? p.measuredRatio.toFixed(4) : '—');
+    });
+    row.push(teorica != null ? teorica.toFixed(4) : '—');
+    row.push(worstErrorPercent != null ? worstErrorPercent.toFixed(2) + ' %' : '—');
+    row.push(theoAvailable ? worstStatus : 'PENDIENTE');
+    rows.push(row);
   });
   return rows;
 }
@@ -2338,7 +2366,7 @@ function fmtTimestampForFilename_(date) {
 //
 // 1. TABLAS DE FILAS VARIABLES (TTR, Devanados primario/secundario,
 //    Aislamiento): la plantilla solo trae la fila de encabezado
-//    (TTR_TABLE_HEADER_ etc.) — el informe real localiza esa tabla por su
+//    (TTR_COMPACT_TRIFASICO_HEADER_ etc.) — el informe real localiza esa tabla por su
 //    forma (findResultsTableByHeader_) y le agrega las filas reales
 //    (appendDataRowsToTable_), igual que antes pero sobre una tabla que ya
 //    existe en vez de crearla desde cero.
@@ -2496,7 +2524,7 @@ function appendDataRowsToTable_(table, rows) {
       // marca de agua de la plantilla en esa zona de la página — el fondo
       // sin fijar es transparente y deja verla, igual que el resto de la
       // página.
-      cell.editAsText().setFontSize(9).setBold(false).setForegroundColor(PDF_COLORS_.TEXT);
+      cell.editAsText().setFontSize(8).setBold(false).setForegroundColor(PDF_COLORS_.TEXT);
     });
   });
 }
@@ -2541,7 +2569,12 @@ function buildElectricalTemplateDoc_() {
   appendBlockStart_(body, 'TTR_TEORICO');
   appendPlaceholderWarningBanner_(body, '<<AVISO_TEORICO_TTR>>');
   appendBlockEnd_(body, 'TTR_TEORICO');
-  appendResultsTable_(body, [TTR_TABLE_HEADER_]);
+  appendBlockStart_(body, 'TTR_TRIFASICO');
+  appendResultsTable_(body, [TTR_COMPACT_TRIFASICO_HEADER_]);
+  appendBlockEnd_(body, 'TTR_TRIFASICO');
+  appendBlockStart_(body, 'TTR_MONOFASICO');
+  appendResultsTable_(body, [TTR_COMPACT_MONOFASICO_HEADER_]);
+  appendBlockEnd_(body, 'TTR_MONOFASICO');
   appendVerdictBanner_(body, 'Veredicto', '<<VEREDICTO_TTR>>');
   body.appendParagraph('');
   appendBlockEnd_(body, 'TTR');
@@ -2754,7 +2787,7 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
   body.replaceText('<<ANO_FABRICACION>>', transformer.manufacture_year ? String(transformer.manufacture_year) : '—');
 
   var typeConfig = {
-    TTR: { blockName: 'TTR', headerCellCount: 6, headerFirstCell: 'TAP', computeRows: computeTtrRows_, collectNotes: collectTtrNotes_ },
+    TTR: { blockName: 'TTR', headerCellCount: 7, headerFirstCell: 'TAP', computeRows: computeTtrCompactRows_, collectNotes: collectTtrNotes_ },
     RESISTENCIA_DEVANADOS: { blockName: 'DEVANADOS', headerCellCount: 5, headerFirstCell: 'TAP', computeRows: computeWindingRows_, collectNotes: collectWindingNotes_ },
     AISLAMIENTO: { blockName: 'AISLAMIENTO', headerCellCount: 5, headerFirstCell: 'COMBINACIÓN', computeRows: computeInsulationRows_, collectNotes: collectInsulationNotes_ }
   };
@@ -2776,6 +2809,18 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
       }
       resolveTemplateBlock_(body, 'TTR_TEORICO', !!warningText);
       if (warningText) body.replaceText('<<AVISO_TEORICO_TTR>>', warningText);
+
+      // Punto 7 (2026-09-13): tabla compacta con 2 variantes — monofásico
+      // tiene 1 sola columna de valor en vez de U/V/W, así que es otro
+      // bloque de plantilla (mismo criterio que Aislamiento Simple/Completo).
+      var esMonofasico = transformer.phase_type === 'MONOFASICO';
+      resolveTemplateBlock_(body, 'TTR_TRIFASICO', isPresent && !esMonofasico);
+      resolveTemplateBlock_(body, 'TTR_MONOFASICO', isPresent && esMonofasico);
+      if (isPresent) {
+        cfg = esMonofasico
+          ? { blockName: 'TTR', headerCellCount: 5, headerFirstCell: 'TAP', computeRows: computeTtrCompactRows_, collectNotes: collectTtrNotes_ }
+          : { blockName: 'TTR', headerCellCount: 7, headerFirstCell: 'TAP', computeRows: computeTtrCompactRows_, collectNotes: collectTtrNotes_ };
+      }
     }
 
     if (type === 'RESISTENCIA_DEVANADOS') {
@@ -3025,11 +3070,17 @@ function pinResultsTableHeaders_(docId) {
     if (!headerRow) return;
     var cellCount = headerRow.tableCells.length;
     var firstCellText = docsApiCellText_(headerRow.tableCells[0]);
+    // Punto 7 (2026-09-13): TTR compacto agrega la forma de 7 columnas
+    // (trifásico); la de 5 columnas con 'TAP' ahora cubre TANTO TTR
+    // monofásico como Devanados primario (ambigüedad sin problema: ambas
+    // deben pinearse igual). Punto 5 había dejado sin pinear la variante
+    // Simple de Aislamiento (2 columnas) — se agrega aquí de una vez.
     var isResultsHeader =
-      (cellCount === 6 && firstCellText === 'TAP') ||
+      (cellCount === 7 && firstCellText === 'TAP') ||
       (cellCount === 5 && firstCellText === 'TAP') ||
       (cellCount === 4 && firstCellText === 'FASE') ||
-      (cellCount === 5 && firstCellText === 'COMBINACIÓN');
+      (cellCount === 5 && firstCellText === 'COMBINACIÓN') ||
+      (cellCount === 2 && firstCellText === 'COMBINACIÓN');
     if (!isResultsHeader) return;
     requests.push({
       pinTableHeaderRows: {

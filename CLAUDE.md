@@ -31,7 +31,8 @@ compacto del PDF) necesitan que 2/3/4/5 ya existan primero.
 6. [x] **Repetir una lectura puntual con nota** (implementado 2026-09-13,
    **verificación en vivo pendiente**, misma razón que el punto 5 — ver
    detalle abajo).
-7. [ ] **TTR — tabla compacta, una fila por TAP** (TAP\|U\|V\|W\|TEÓRICA\|ERROR %\|ESTADO).
+7. [x] **TTR — tabla compacta, una fila por TAP** (implementado
+   2026-09-13, **verificación en vivo pendiente** — ver detalle abajo).
 8. [ ] **Devanados — tabla compacta, una fila por TAP** (mismo criterio
    que el punto 7).
 9. [ ] **Aislamiento — tabla que quepa en una página**, dos variantes
@@ -240,6 +241,49 @@ veces: TTR, Devanados —incluyendo el caso de nota en el secundario—, y
 Aislamiento en ambos métodos). Backend desplegado en producción
 (`clasp deploy` @42, 2026-09-13); frontend pusheado a GitHub Pages,
 pendiente.
+
+### Punto 7 — TTR: tabla compacta, una fila por TAP
+
+Solo backend/plantilla — el formulario de TTR no cambió (ya captura por
+fase); esto es puramente cómo se arma la tabla del PDF.
+
+- **`computeTtrCompactRows_`** (`Código.gs`, reemplaza a `computeTtrRows_`):
+  una fila por TAP en vez de una por TAP+fase. ERROR%/ESTADO = peor caso
+  entre las fases de ese TAP (mayor error absoluto; RECHAZADO si cualquier
+  fase lo está — un TAP no puede leerse "aprobado" solo porque 2 de 3
+  fases salieron bien). TEÓRICA se imprime una sola vez: la fórmula
+  estándar (grupo de conexión) da el mismo valor para las 3 fases de un
+  TAP, así que no se pierde información mostrando una sola columna. El
+  marcador `†` de lectura repetida (punto 6) se corre de la celda FASE
+  (ya no existe en este formato) a la celda TAP.
+- **2 variantes de encabezado** (`TTR_COMPACT_TRIFASICO_HEADER_` = 7
+  columnas TAP\|U\|V\|W\|TEÓRICA\|ERROR %\|ESTADO,
+  `TTR_COMPACT_MONOFASICO_HEADER_` = 5 columnas TAP\|VALOR\|TEÓRICA\|
+  ERROR %\|ESTADO) — monofásico no tiene 3 fases que mostrar, así que es
+  otro bloque de plantilla removible (`TTR_TRIFASICO`/`TTR_MONOFASICO`,
+  mismo criterio que `AISLAMIENTO_SIMPLE`/`AISLAMIENTO_COMPLETO` del punto
+  5), resuelto en `regenerateElectricalCombinedReport_` por
+  `transformer.phase_type === 'MONOFASICO'`.
+- **`pinResultsTableHeaders_`**: la lista de formas de tabla "resultado"
+  que se pinean contra salto de página se actualizó para la forma nueva
+  de 7 columnas, y de paso se agregó la de 2 columnas de Aislamiento
+  Simple que había quedado sin pinear desde el punto 5 (gap encontrado al
+  revisar esta función, no reportado por el usuario).
+- **Letras más chicas** (a pedido explícito del usuario — "los protocolos
+  reales usan letras súper pequeñas"): encabezado y filas de datos de
+  TODAS las tablas de resultados (TTR/Devanados/Aislamiento) bajan de 9pt
+  a 8pt en `appendResultsTable_`/`appendDataRowsToTable_` — cambio
+  compartido, beneficia a Devanados/Aislamiento aunque sus puntos (8/9)
+  todavía no se compactan.
+- **TAPs parciales**: ya funcionaba sin cambios — `computeTtrCompactRows_`
+  solo itera `calculated.taps`, que desde el punto 2 ya contiene únicamente
+  los TAPs realmente probados.
+
+**Pendiente de verificación en vivo** (junto con 5/6): generar el informe
+eléctrico de un transformador trifásico con varios TAPs y confirmar la
+tabla de 7 columnas, y de uno monofásico para confirmar la de 5. Backend
+desplegado en producción (`clasp deploy` @43, 2026-09-13); no hay cambios
+de frontend que pushear para este punto.
 
 ## Arquitectura activa (esta es la que corre en producción)
 
