@@ -2354,7 +2354,12 @@ function appendDataRowsToTable_(table, rows) {
     var row = table.appendTableRow();
     rowValues.forEach(function (val) {
       var cell = row.appendTableCell(String(val));
-      cell.editAsText().setFontSize(9);
+      // `appendTableRow()` hereda el formato de la fila de encabezado (texto
+      // blanco en negrita sobre fondo acento) — sin esto, las filas de datos
+      // quedan con texto blanco sobre fondo blanco, invisible. Hay que fijar
+      // los 3 explícitamente, nunca asumir que "sin tocarlo" da el default.
+      cell.setBackgroundColor('#ffffff');
+      cell.editAsText().setFontSize(9).setBold(false).setForegroundColor(PDF_COLORS_.TEXT);
     });
   });
 }

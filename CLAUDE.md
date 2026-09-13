@@ -1469,6 +1469,22 @@ explícitamente en vez de ignorarse:
   5+"COMBINACIÓN"=Aislamiento) y le agrega las filas reales
   (`appendDataRowsToTable_`, `table.appendTableRow()` de DocumentApp sobre
   una tabla que ya existe).
+
+  **Bug real encontrado y corregido el mismo día, verificando el primer
+  informe generado en vivo**: las filas nuevas salían con texto BLANCO
+  sobre fondo blanco — invisibles, aunque los datos sí estaban ahí (se
+  notaba en el PDF real, no en pdftotext, que no distingue color). Causa:
+  `table.appendTableRow()` hereda el formato de la fila anterior — y la
+  única fila que existía antes de insertar datos era el ENCABEZADO (texto
+  blanco en negrita sobre fondo acento, ver `appendResultsTable_`). Sin
+  fijar explícitamente color de texto y fondo en cada celda nueva,
+  quedaban con fondo blanco (sin heredar el acento, porque el fondo no se
+  hereda igual) pero texto blanco heredado — invisibles. `appendDataRowsToTable_`
+  ahora fija `setBackgroundColor('#ffffff')` y
+  `setForegroundColor(PDF_COLORS_.TEXT)` explícitamente en cada celda, sin
+  asumir ningún default. Lección: cualquier `appendTableRow()`/
+  `appendTableCell()` sobre una tabla que ya tiene contenido con estilo
+  propio debe fijar SU estilo explícito, nunca confiar en heredar "nada".
 - **Secciones enteras que pueden no estar presentes** (alcance ofertado del
   eléctrico, las 3 secciones independientes de Aceite, el aviso de
   "teórico no disponible" de TTR, la tabla "Secundario" de Devanados, el
@@ -2558,16 +2574,26 @@ riesgo que el resto de este archivo advierte: el cliente real ya está en
 producción, así que antes de borrar hay que confirmar con el usuario que
 este id específico es el de verificación, nunca asumir por el nombre.
 
-**Pendiente urgente, acción del usuario (2026-09-13) — sin esto, certificar
-CUALQUIER informe (Eléctrico o Aceite) falla**: el cambio de arquitectura
-de plantillas (ver "Informes PDF de pruebas" arriba) dejó el sistema sin
-ninguna plantilla generada todavía. El usuario debe: (1) entrar a
-Administración → "Plantillas de informes" → clic en "Generar plantillas de
-informes"; (2) abrir cada una de las 2 URLs devueltas y agregarle el
-watermark del logo a mano (Insertar imagen → Ajustar texto: Detrás del
-texto → Opciones de imagen → Transparencia 85-92% → centrarla). Hasta que
-esto se haga, `getElectricalTemplateFileId_`/`getOilTemplateFileId_`
-devuelven `null` y `regenerateElectricalCombinedReport_`/
-`generateOilTestReportPdf_` lanzan un error explícito en vez de generar
-un PDF — Claude no puede hacer este paso (ni `clasp run` ni la contraseña
-de `admin.mya` están disponibles, ver "Verificación").
+**Resuelto (2026-09-13)** — el usuario generó las 2 plantillas desde
+Administración y les agregó el watermark a mano. Verificado en vivo de
+punta a punta: equipo de demo `DEMO-PLANTILLAS-V2` (sitio "DEMO -
+Verificación Plantillas V2", con las 3 pruebas eléctricas ofertadas
+marcadas + TTR con 9 TAPs para forzar que la tabla pase de página) — TTR,
+Resistencia de Devanados (con Secundario) y Resistencia de Aislamiento
+certificadas, "Certificar Pruebas Eléctricas" ejecutado con éxito, y una
+prueba de Aceite (Fisicoquímico parcial + PCB, DGA sin marcar) certificada
+por separado. Ambos PDF descargados e inspeccionados visualmente
+(pantallazos reales, no solo `pdftotext`): encabezado de página y
+watermark repetidos en las 4/3 páginas, encabezado de la tabla TTR
+repetido correctamente en la página 2 (`pinTableHeaderRows` funcionando),
+bloque de "Área de Control de Calidad" completo en su propia página final
+con la firma real de Michael Peña, sección DGA correctamente ausente del
+informe de Aceite (nunca se marcó), y el fix de "APROBADO (datos
+parciales)" de la semana pasada confirmado en el PDF real. En el camino se
+encontró y corrigió un bug real (ver la nota junto a
+`appendDataRowsToTable_` más arriba): texto blanco invisible en las filas
+de datos insertadas.
+
+Sigue pendiente, no urgente: decidir si se conserva o se borra el equipo
+de demo `DEMO-PLANTILLAS-V2` (mismo criterio de siempre — confirmar con el
+usuario antes de tocarlo, el cliente real ya está en producción).
