@@ -2150,8 +2150,21 @@ var TTR_COMPACT_MONOFASICO_HEADER_ = ['TAP', 'VALOR', 'TEÓRICA', 'ERROR %', 'ES
 /** Orden fijo U/V/W — coincide con getPhaseKeys() en app.js (H1H2-X1X2 /
  *  H2H3-X2X3 / H3H1-X3X1, siempre en ese orden para trifásico). */
 var TTR_PHASE_ORDER_ = ['H1H2-X1X2', 'H2H3-X2X3', 'H3H1-X3X1'];
-var WINDING_TABLE_HEADER_ = ['TAP', 'FASE', 'RESISTENCIA (Ω)', 'DESVIACIÓN %', 'ESTADO'];
-var WINDING_SECONDARY_TABLE_HEADER_ = ['FASE', 'RESISTENCIA (Ω)', 'DESVIACIÓN %', 'ESTADO'];
+/** Punto 8 (2026-09-13) — mismo criterio que el punto 7 (TTR): una fila
+ *  por TAP (primario) o una sola fila (secundario, no tiene TAP) en vez
+ *  de una fila por fase. El secundario usa 'DEVANADO' como primera
+ *  columna (valor fijo "SECUNDARIO") en el mismo lugar donde el primario
+ *  usa 'TAP', para poder ubicar la tabla por forma igual que el resto y
+ *  para tener dónde poner el marcador "†" de lectura repetida (punto 6) —
+ *  antes esa columna era FASE y no sobrevive en el formato compacto. */
+var WINDING_COMPACT_TRIFASICO_HEADER_ = ['TAP', 'U', 'V', 'W', 'DESVIACIÓN %', 'ESTADO'];
+var WINDING_COMPACT_MONOFASICO_HEADER_ = ['TAP', 'VALOR', 'DESVIACIÓN %', 'ESTADO'];
+var WINDING_SECONDARY_COMPACT_TRIFASICO_HEADER_ = ['DEVANADO', 'U', 'V', 'W', 'DESVIACIÓN %', 'ESTADO'];
+var WINDING_SECONDARY_COMPACT_MONOFASICO_HEADER_ = ['DEVANADO', 'VALOR', 'DESVIACIÓN %', 'ESTADO'];
+/** Orden fijo U/V/W del primario (H1-H2/H2-H3/H3-H1, claves ya mapeadas
+ *  por TTR_TO_WR_PHASE_MAP en app.js) y del secundario (X1-X2/X2-X3/X3-X1). */
+var WINDING_PHASE_ORDER_ = ['H1-H2', 'H2-H3', 'H3-H1'];
+var WINDING_SECONDARY_PHASE_ORDER_ = ['X1-X2', 'X2-X3', 'X3-X1'];
 var INSULATION_TABLE_HEADER_ = ['COMBINACIÓN', 'DAR', 'CALIFICACIÓN DAR', 'IP', 'CALIFICACIÓN IP'];
 /** Punto 5 (2026-09-13) — modo Simple: solo un valor de resistencia por
  *  combinación, sin DAR/IP. */
@@ -2219,23 +2232,47 @@ function collectTtrNotes_(calculated) {
   return notes;
 }
 
-function computeWindingRows_(calculated) {
+/** Punto 8 (2026-09-13): una fila por TAP. DESVIACIÓN%/ESTADO = peor caso
+ *  entre las fases de ese TAP, mismo criterio que TTR (punto 7). */
+function computeWindingCompactRows_(calculated) {
   var rows = [];
   calculated.taps.forEach(function (tap) {
-    Object.keys(tap.phases).forEach(function (phaseKey) {
-      var p = tap.phases[phaseKey];
-      rows.push([String(tap.tapPosition), phaseKey + (p.nota ? ' †' : ''), p.resistanceOhm.toFixed(4), p.deviationFromAvgPercent.toFixed(2) + ' %', p.status]);
+    var phaseKeys = Object.keys(tap.phases);
+    var orderedKeys = phaseKeys.length > 1 ? WINDING_PHASE_ORDER_.filter(function (k) { return tap.phases[k]; }) : phaseKeys;
+    var worstDeviation = null, worstStatus = 'APROBADO', anyNota = false;
+    orderedKeys.forEach(function (k) {
+      var p = tap.phases[k];
+      if (p.nota) anyNota = true;
+      if (worstDeviation === null || Math.abs(p.deviationFromAvgPercent) > Math.abs(worstDeviation)) worstDeviation = p.deviationFromAvgPercent;
+      if (p.status === 'RECHAZADO') worstStatus = 'RECHAZADO';
     });
+    var row = [String(tap.tapPosition) + (anyNota ? ' †' : '')];
+    orderedKeys.forEach(function (k) { row.push(tap.phases[k].resistanceOhm.toFixed(4)); });
+    row.push(worstDeviation.toFixed(2) + ' %');
+    row.push(worstStatus);
+    rows.push(row);
   });
   return rows;
 }
-function computeWindingSecondaryRows_(calculated) {
-  var rows = [];
-  Object.keys(calculated.secondary.phases).forEach(function (phaseKey) {
-    var p = calculated.secondary.phases[phaseKey];
-    rows.push([phaseKey + (p.nota ? ' †' : ''), p.resistanceOhm.toFixed(4), p.deviationFromAvgPercent.toFixed(2) + ' %', p.status]);
+
+/** Punto 8: el secundario no tiene TAP — es una sola medición, así que la
+ *  tabla compacta queda en 1 sola fila con "SECUNDARIO" (+ "†" si hubo
+ *  lectura repetida) en la columna DEVANADO. */
+function computeWindingSecondaryCompactRows_(calculated) {
+  var phaseKeys = Object.keys(calculated.secondary.phases);
+  var orderedKeys = phaseKeys.length > 1 ? WINDING_SECONDARY_PHASE_ORDER_.filter(function (k) { return calculated.secondary.phases[k]; }) : phaseKeys;
+  var worstDeviation = null, worstStatus = 'APROBADO', anyNota = false;
+  orderedKeys.forEach(function (k) {
+    var p = calculated.secondary.phases[k];
+    if (p.nota) anyNota = true;
+    if (worstDeviation === null || Math.abs(p.deviationFromAvgPercent) > Math.abs(worstDeviation)) worstDeviation = p.deviationFromAvgPercent;
+    if (p.status === 'RECHAZADO') worstStatus = 'RECHAZADO';
   });
-  return rows;
+  var row = ['SECUNDARIO' + (anyNota ? ' †' : '')];
+  orderedKeys.forEach(function (k) { row.push(calculated.secondary.phases[k].resistanceOhm.toFixed(4)); });
+  row.push(worstDeviation.toFixed(2) + ' %');
+  row.push(worstStatus);
+  return [row];
 }
 function collectWindingNotes_(calculated) {
   var notes = [];
@@ -2583,12 +2620,22 @@ function buildElectricalTemplateDoc_() {
   appendTestMetaSection_(body, templateTestMeta_('DEVANADOS'), 'Resistencia de Devanados');
   appendBlockStart_(body, 'DEVANADOS_PRIMARIO');
   appendSectionTitle_(body, 'Resultados — Resistencia de Devanados');
-  appendResultsTable_(body, [WINDING_TABLE_HEADER_]);
+  appendBlockStart_(body, 'DEVANADOS_PRIMARIO_TRIFASICO');
+  appendResultsTable_(body, [WINDING_COMPACT_TRIFASICO_HEADER_]);
+  appendBlockEnd_(body, 'DEVANADOS_PRIMARIO_TRIFASICO');
+  appendBlockStart_(body, 'DEVANADOS_PRIMARIO_MONOFASICO');
+  appendResultsTable_(body, [WINDING_COMPACT_MONOFASICO_HEADER_]);
+  appendBlockEnd_(body, 'DEVANADOS_PRIMARIO_MONOFASICO');
   appendBlockEnd_(body, 'DEVANADOS_PRIMARIO');
   appendBlockStart_(body, 'DEVANADOS_SECUNDARIO');
   var secTitle = body.appendParagraph('SECUNDARIO');
   secTitle.editAsText().setBold(true).setFontSize(10);
-  appendResultsTable_(body, [WINDING_SECONDARY_TABLE_HEADER_]);
+  appendBlockStart_(body, 'DEVANADOS_SECUNDARIO_TRIFASICO');
+  appendResultsTable_(body, [WINDING_SECONDARY_COMPACT_TRIFASICO_HEADER_]);
+  appendBlockEnd_(body, 'DEVANADOS_SECUNDARIO_TRIFASICO');
+  appendBlockStart_(body, 'DEVANADOS_SECUNDARIO_MONOFASICO');
+  appendResultsTable_(body, [WINDING_SECONDARY_COMPACT_MONOFASICO_HEADER_]);
+  appendBlockEnd_(body, 'DEVANADOS_SECUNDARIO_MONOFASICO');
   appendBlockEnd_(body, 'DEVANADOS_SECUNDARIO');
   appendVerdictBanner_(body, 'Veredicto', '<<VEREDICTO_DEVANADOS>>');
   body.appendParagraph('');
@@ -2788,7 +2835,7 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
 
   var typeConfig = {
     TTR: { blockName: 'TTR', headerCellCount: 7, headerFirstCell: 'TAP', computeRows: computeTtrCompactRows_, collectNotes: collectTtrNotes_ },
-    RESISTENCIA_DEVANADOS: { blockName: 'DEVANADOS', headerCellCount: 5, headerFirstCell: 'TAP', computeRows: computeWindingRows_, collectNotes: collectWindingNotes_ },
+    RESISTENCIA_DEVANADOS: { blockName: 'DEVANADOS', headerCellCount: 6, headerFirstCell: 'TAP', computeRows: computeWindingCompactRows_, collectNotes: collectWindingNotes_ },
     AISLAMIENTO: { blockName: 'AISLAMIENTO', headerCellCount: 5, headerFirstCell: 'COMBINACIÓN', computeRows: computeInsulationRows_, collectNotes: collectInsulationNotes_ }
   };
 
@@ -2826,8 +2873,23 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
     if (type === 'RESISTENCIA_DEVANADOS') {
       // Punto 4 (2026-09-13): primario y secundario ahora son cada uno
       // opcional — se prueba solo primario, solo secundario, o ambos.
-      resolveTemplateBlock_(body, 'DEVANADOS_PRIMARIO', isPresent && !!(calc.taps && calc.taps.length > 0));
-      resolveTemplateBlock_(body, 'DEVANADOS_SECUNDARIO', isPresent && !!calc.secondary);
+      var primarioPresent = isPresent && !!(calc.taps && calc.taps.length > 0);
+      var secundarioPresent = isPresent && !!calc.secondary;
+      // Punto 8 (2026-09-13): tabla compacta con 2 variantes, igual
+      // criterio que TTR (punto 7) — monofásico tiene 1 sola columna de
+      // valor en vez de U/V/W, tanto en el primario como en el secundario.
+      var esMonofasicoDevanados = transformer.phase_type === 'MONOFASICO';
+      resolveTemplateBlock_(body, 'DEVANADOS_PRIMARIO_TRIFASICO', primarioPresent && !esMonofasicoDevanados);
+      resolveTemplateBlock_(body, 'DEVANADOS_PRIMARIO_MONOFASICO', primarioPresent && esMonofasicoDevanados);
+      resolveTemplateBlock_(body, 'DEVANADOS_SECUNDARIO_TRIFASICO', secundarioPresent && !esMonofasicoDevanados);
+      resolveTemplateBlock_(body, 'DEVANADOS_SECUNDARIO_MONOFASICO', secundarioPresent && esMonofasicoDevanados);
+      resolveTemplateBlock_(body, 'DEVANADOS_PRIMARIO', primarioPresent);
+      resolveTemplateBlock_(body, 'DEVANADOS_SECUNDARIO', secundarioPresent);
+      if (isPresent) {
+        cfg = esMonofasicoDevanados
+          ? { blockName: 'DEVANADOS', headerCellCount: 4, headerFirstCell: 'TAP', computeRows: computeWindingCompactRows_, collectNotes: collectWindingNotes_ }
+          : { blockName: 'DEVANADOS', headerCellCount: 6, headerFirstCell: 'TAP', computeRows: computeWindingCompactRows_, collectNotes: collectWindingNotes_ };
+      }
     }
 
     if (type === 'AISLAMIENTO') {
@@ -2867,9 +2929,10 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
     }
 
     if (type === 'RESISTENCIA_DEVANADOS' && calc.secondary) {
-      var secTable = findResultsTableByHeader_(body, 4, 'FASE');
+      var secHeaderCellCount = esMonofasicoDevanados ? 4 : 6;
+      var secTable = findResultsTableByHeader_(body, secHeaderCellCount, 'DEVANADO');
       if (secTable) {
-        appendDataRowsToTable_(secTable, computeWindingSecondaryRows_(calc));
+        appendDataRowsToTable_(secTable, computeWindingSecondaryCompactRows_(calc));
         appendRepeatedNoteFootnote_(body, secTable, collectWindingSecondaryNotes_(calc));
       }
     }
@@ -3070,15 +3133,20 @@ function pinResultsTableHeaders_(docId) {
     if (!headerRow) return;
     var cellCount = headerRow.tableCells.length;
     var firstCellText = docsApiCellText_(headerRow.tableCells[0]);
-    // Punto 7 (2026-09-13): TTR compacto agrega la forma de 7 columnas
-    // (trifásico); la de 5 columnas con 'TAP' ahora cubre TANTO TTR
-    // monofásico como Devanados primario (ambigüedad sin problema: ambas
-    // deben pinearse igual). Punto 5 había dejado sin pinear la variante
-    // Simple de Aislamiento (2 columnas) — se agrega aquí de una vez.
+    // Punto 7 (2026-09-13): TTR compacto agrega las formas de 7 columnas
+    // (trifásico) y 5 columnas (monofásico) con 'TAP'. Punto 8: Devanados
+    // compacto agrega 6 columnas (trifásico, primario) y 4 columnas
+    // (monofásico, primario) también con 'TAP' — ambigüedad con TTR sin
+    // problema, ambas deben pinearse igual — más 6/4 columnas con
+    // 'DEVANADO' (secundario). Punto 5 había dejado sin pinear la
+    // variante Simple de Aislamiento (2 columnas) — se agrega aquí.
     var isResultsHeader =
       (cellCount === 7 && firstCellText === 'TAP') ||
+      (cellCount === 6 && firstCellText === 'TAP') ||
       (cellCount === 5 && firstCellText === 'TAP') ||
-      (cellCount === 4 && firstCellText === 'FASE') ||
+      (cellCount === 4 && firstCellText === 'TAP') ||
+      (cellCount === 6 && firstCellText === 'DEVANADO') ||
+      (cellCount === 4 && firstCellText === 'DEVANADO') ||
       (cellCount === 5 && firstCellText === 'COMBINACIÓN') ||
       (cellCount === 2 && firstCellText === 'COMBINACIÓN');
     if (!isResultsHeader) return;

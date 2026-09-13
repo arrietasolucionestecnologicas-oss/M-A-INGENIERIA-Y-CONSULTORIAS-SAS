@@ -33,8 +33,8 @@ compacto del PDF) necesitan que 2/3/4/5 ya existan primero.
    detalle abajo).
 7. [x] **TTR — tabla compacta, una fila por TAP** (implementado
    2026-09-13, **verificación en vivo pendiente** — ver detalle abajo).
-8. [ ] **Devanados — tabla compacta, una fila por TAP** (mismo criterio
-   que el punto 7).
+8. [x] **Devanados — tabla compacta, una fila por TAP** (implementado
+   2026-09-13, **verificación en vivo pendiente** — ver detalle abajo).
 9. [ ] **Aislamiento — tabla que quepa en una página**, dos variantes
    (Completo/Simple), tensión de prueba como línea de dato, no columna.
 
@@ -284,6 +284,42 @@ eléctrico de un transformador trifásico con varios TAPs y confirmar la
 tabla de 7 columnas, y de uno monofásico para confirmar la de 5. Backend
 desplegado en producción (`clasp deploy` @43, 2026-09-13); no hay cambios
 de frontend que pushear para este punto.
+
+### Punto 8 — Devanados: tabla compacta, una fila por TAP
+
+Mismo criterio y misma razón que el punto 7 — solo backend/plantilla, el
+formulario no cambió.
+
+- **`computeWindingCompactRows_`** (reemplaza a `computeWindingRows_`):
+  una fila por TAP del primario, DESVIACIÓN%/ESTADO = peor caso entre
+  fases. **`computeWindingSecondaryCompactRows_`** (reemplaza a
+  `computeWindingSecondaryRows_`): el secundario no tiene TAP — queda en
+  **1 sola fila** con `"SECUNDARIO"` en la primera columna. Esa primera
+  columna se renombró de `FASE` a **`DEVANADO`** (antes cada fila era una
+  fase distinta, ahora ya no aplica) — es también donde aterriza el
+  marcador `†` de lectura repetida del secundario (antes vivía en la
+  celda FASE, que ya no existe en el formato compacto).
+- **4 variantes de encabezado** (2 primario × 2 secundario, mismo
+  criterio que TTR): `WINDING_COMPACT_TRIFASICO_HEADER_` (6 cols:
+  TAP\|U\|V\|W\|DESVIACIÓN %\|ESTADO), `WINDING_COMPACT_MONOFASICO_HEADER_`
+  (4 cols), y sus equivalentes `WINDING_SECONDARY_COMPACT_*` con
+  `DEVANADO` en vez de `TAP`. 4 bloques de plantilla nuevos, anidados
+  dentro de los ya existentes `DEVANADOS_PRIMARIO`/`DEVANADOS_SECUNDARIO`:
+  `DEVANADOS_PRIMARIO_TRIFASICO`/`_MONOFASICO`,
+  `DEVANADOS_SECUNDARIO_TRIFASICO`/`_MONOFASICO` — el anidamiento de
+  bloques removibles ya se venía usando (TTR con su bloque `TTR_TEORICO`
+  adentro), funciona igual un nivel más adentro.
+- **`pinResultsTableHeaders_`**: se agregaron las 4 formas nuevas (6/4
+  columnas con `TAP`, 6/4 columnas con `DEVANADO`) a la lista de tablas
+  que se pinean contra salto de página.
+- Sin cambios de fuente adicionales — la reducción a 8pt ya quedó hecha
+  para todas las tablas en el punto 7 (código compartido).
+
+**Pendiente de verificación en vivo** (junto con 5/6/7): generar el
+informe con primario+secundario trifásico, con solo secundario (para ver
+la fila "SECUNDARIO" del secundario sola), y con un transformador
+monofásico. Backend desplegado en producción (`clasp deploy` @44,
+2026-09-13); no hay cambios de frontend que pushear para este punto.
 
 ## Arquitectura activa (esta es la que corre en producción)
 
