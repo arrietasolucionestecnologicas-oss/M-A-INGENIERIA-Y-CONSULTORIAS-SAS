@@ -873,6 +873,25 @@
                 <label>Temperatura de devanado (&deg;C) <span style="color:var(--danger);">*</span></label>
                 <input class="mono" id="insulationTemp" type="text" inputmode="decimal" pattern="[0-9]*[.,]?-?[0-9]*" oninput="updateInsulationTemp(this.value)">
               </div>
+              <div class="field" style="max-width:220px;">
+                <label>Tensión de prueba del megóhmetro (V)</label>
+                <select id="insulationTensionPrueba" onchange="updateInsulationTensionPrueba_(this.value)">
+                  <option value="500">500 V</option>
+                  <option value="1000" selected>1000 V</option>
+                  <option value="2500">2500 V</option>
+                  <option value="5000">5000 V</option>
+                </select>
+              </div>
+            </div>
+            <div class="form-field-block">
+              <div class="field">
+                <label>Método</label>
+                <select id="insulationMetodo" onchange="updateInsulationMetodo_(this.value)">
+                  <option value="completo" selected>Completo (DAR/IP)</option>
+                  <option value="simple">Simple (lectura al minuto)</option>
+                </select>
+                <div class="field-note">"Simple" es para cuando en campo solo se tomó una lectura de resistencia (ej. al minuto), sin las lecturas adicionales de tiempo que arman el DAR/IP — no exige esos datos.</div>
+              </div>
             </div>
             <div class="phase-entry-grid" id="insulationCombinationEntries"></div>
             <div class="form-field-block">

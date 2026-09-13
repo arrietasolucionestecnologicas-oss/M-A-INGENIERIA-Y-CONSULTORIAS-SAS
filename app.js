@@ -3323,9 +3323,17 @@ function ipRating_(ip) {
  *  combinaciones existen igual en ambos casos. */
 var INSULATION_COMBINATIONS = ['AT-BT', 'AT-Tierra', 'BT-Tierra'];
 
+/** Punto 5 (2026-09-13): cada combinación guarda SIEMPRE los 2 juegos de
+ *  campos (Completo: r30s/r60s/r10min; Simple: resistenciaValor/Unidad) —
+ *  así cambiar de método no pierde lo ya digitado del otro. Cuál juego se
+ *  ENVÍA depende de `state.insulation.metodo` (ver buildInsulationRequestBody). */
+var INSULATION_UNIDADES = ['GΩ', 'MΩ', 'KΩ'];
+
 function defaultInsulationCombinations_() {
   var p = {};
-  INSULATION_COMBINATIONS.forEach(function (k) { p[k] = { r30sMegaohm: 0, r60sMegaohm: 0, r10minMegaohm: 0 }; });
+  INSULATION_COMBINATIONS.forEach(function (k) {
+    p[k] = { r30sMegaohm: 0, r60sMegaohm: 0, r10minMegaohm: 0, resistenciaValor: 0, resistenciaUnidad: 'MΩ' };
+  });
   return p;
 }
 
@@ -3333,6 +3341,8 @@ function resetInsulationStateFromTransformer() {
   var draft = loadDraft_('mya_draft_insulation_' + state.currentTransformerId);
   state.insulation = draft || { windingTemperatureC: 20, combinations: defaultInsulationCombinations_() };
   if (!state.insulation.combinations) state.insulation.combinations = defaultInsulationCombinations_();
+  if (!state.insulation.metodo) state.insulation.metodo = 'completo';
+  if (!state.insulation.tension_prueba_v) state.insulation.tension_prueba_v = 1000;
   var evidenceInput = document.getElementById('insulationEvidence');
   if (evidenceInput) evidenceInput.value = '';
 }
@@ -3344,14 +3354,37 @@ function renderInsulationFormContext() {
     (editing ? ' · <strong>Editando borrador existente</strong> · <a href="#" onclick="event.preventDefault(); cancelEditDraft_();">Cancelar edición</a>' : '');
   document.getElementById('insulationTenantChip').textContent = state.username + ' · ' + state.role;
   document.getElementById('submitInsulationBtn').textContent = editing ? 'Guardar cambios en el borrador' : 'Enviar prueba';
+  document.getElementById('insulationMetodo').value = state.insulation.metodo;
+  document.getElementById('insulationTensionPrueba').value = String(state.insulation.tension_prueba_v);
+}
+
+function updateInsulationMetodo_(value) {
+  state.insulation.metodo = value;
+  refreshInsulation();
+}
+
+function updateInsulationTensionPrueba_(value) {
+  state.insulation.tension_prueba_v = parseInt(value, 10);
+  refreshInsulation();
 }
 
 function renderInsulationCombinationEntries() {
   var wrap = document.getElementById('insulationCombinationEntries');
   if (!wrap) return;
   document.getElementById('insulationTemp').value = state.insulation.windingTemperatureC;
+  var esSimple = state.insulation.metodo === 'simple';
   wrap.innerHTML = Object.keys(state.insulation.combinations).map(function (k) {
     var r = state.insulation.combinations[k];
+    if (esSimple) {
+      var unitOptions = INSULATION_UNIDADES.map(function (u) {
+        return '<option value="' + u + '"' + (r.resistenciaUnidad === u ? ' selected' : '') + '>' + u + '</option>';
+      }).join('');
+      return '<div class="phase-entry">' +
+        '<div class="ph-name">' + k + '</div>' +
+        '<div class="field"><label>Resistencia</label><input class="mono" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*" value="' + r.resistenciaValor + '" oninput="updateInsulationSimpleValue_(\'' + k + '\', this.value)"></div>' +
+        '<div class="field"><label>Unidad</label><select onchange="updateInsulationSimpleUnidad_(\'' + k + '\', this.value)">' + unitOptions + '</select></div>' +
+        '</div>';
+    }
     return '<div class="phase-entry">' +
       '<div class="ph-name">' + k + '</div>' +
       '<div class="field"><label>R 30 s (M&Omega;)</label><input class="mono" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*" value="' + r.r30sMegaohm + '" oninput="updateInsulationCombination_(\'' + k + '\', \'r30sMegaohm\', this.value)"></div>' +
@@ -3367,6 +3400,17 @@ function updateInsulationCombination_(key, field, value) {
   refreshInsulation();
 }
 
+function updateInsulationSimpleValue_(key, value) {
+  var v = parseDecimal_(value); if (isNaN(v)) v = 0;
+  state.insulation.combinations[key].resistenciaValor = v;
+  refreshInsulation();
+}
+
+function updateInsulationSimpleUnidad_(key, value) {
+  state.insulation.combinations[key].resistenciaUnidad = value;
+  refreshInsulation();
+}
+
 function updateInsulationTemp(value) {
   var v = parseDecimal_(value); if (isNaN(v)) v = 0;
   state.insulation.windingTemperatureC = v;
@@ -3375,6 +3419,13 @@ function updateInsulationTemp(value) {
 
 function computeInsulationPreview() {
   var keys = Object.keys(state.insulation.combinations);
+  if (state.insulation.metodo === 'simple') {
+    var simpleRows = keys.map(function (k) {
+      var r = state.insulation.combinations[k];
+      return { key: k, resistenciaValor: r.resistenciaValor, resistenciaUnidad: r.resistenciaUnidad };
+    });
+    return { rows: simpleRows, verdict: 'REGISTRADO' };
+  }
   var hasMalo = false, hasCuestionable = false;
   var rows = keys.map(function (k) {
     var r = state.insulation.combinations[k];
@@ -3398,7 +3449,12 @@ function ratingClass_(rating) {
 
 function renderInsulationPreview() {
   var result = computeInsulationPreview();
+  var esSimple = state.insulation.metodo === 'simple';
   document.getElementById('insulationPreviewRows').innerHTML = result.rows.map(function (r) {
+    if (esSimple) {
+      return '<div class="preview-row"><span class="phase-name">' + r.key + '</span>' +
+        '<span class="num">' + r.resistenciaValor + ' ' + r.resistenciaUnidad + '</span></div>';
+    }
     return '<div class="preview-row"><span class="phase-name">' + r.key + '</span>' +
       '<span class="num">DAR = ' + r.dar.toFixed(2) + '</span>' +
       '<span class="err ' + ratingClass_(r.darRating) + '">' + r.darRating + '</span></div>' +
@@ -3407,18 +3463,33 @@ function renderInsulationPreview() {
       '<span class="err ' + ratingClass_(r.ipRating) + '">' + r.ipRating + '</span></div>';
   }).join('');
   var banner = document.getElementById('insulationVerdictBanner');
-  banner.className = 'verdict-banner ' + (result.verdict === 'APROBADO' ? 'success' : result.verdict === 'OBSERVADO' ? 'warning' : 'danger');
-  banner.innerHTML = 'Veredicto: ' + result.verdict;
+  if (esSimple) {
+    banner.className = 'verdict-banner';
+    banner.innerHTML = 'Lecturas registradas (método simple, sin DAR/IP)';
+  } else {
+    banner.className = 'verdict-banner ' + (result.verdict === 'APROBADO' ? 'success' : result.verdict === 'OBSERVADO' ? 'warning' : 'danger');
+    banner.innerHTML = 'Veredicto: ' + result.verdict;
+  }
 }
 
 function buildInsulationRequestBody() {
+  var esSimple = state.insulation.metodo === 'simple';
+  var measurements = {};
+  Object.keys(state.insulation.combinations).forEach(function (k) {
+    var r = state.insulation.combinations[k];
+    measurements[k] = esSimple
+      ? { resistenciaValor: r.resistenciaValor, resistenciaUnidad: r.resistenciaUnidad }
+      : { r30sMegaohm: r.r30sMegaohm, r60sMegaohm: r.r60sMegaohm, r10minMegaohm: r.r10minMegaohm };
+  });
   return {
     transformer_id: state.currentTransformerId,
     instrument_used: document.getElementById('insulationInstrument').value,
     operador_nombre: getOperatorName_(),
     readings: {
+      metodo: state.insulation.metodo,
+      tension_prueba_v: state.insulation.tension_prueba_v,
       windingTemperatureC: state.insulation.windingTemperatureC,
-      measurements: state.insulation.combinations
+      measurements: measurements
     }
   };
 }

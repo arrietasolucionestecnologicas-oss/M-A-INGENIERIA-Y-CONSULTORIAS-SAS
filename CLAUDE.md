@@ -24,8 +24,10 @@ compacto del PDF) necesitan que 2/3/4/5 ya existan primero.
    ver detalle abajo).
 4. [x] **Devanados: solo primario, solo secundario, o ambos** (completado
    2026-09-13) — ver detalle abajo.
-5. [ ] **Aislamiento: método Simple (solo resistencia) vs Completo
-   (DAR/IP)** — hoy exige DAR/IP siempre, hay que dejar de forzarlo.
+5. [x] **Aislamiento: método Simple (solo resistencia) vs Completo
+   (DAR/IP)** (implementado 2026-09-13, **verificación en vivo pendiente**
+   — el usuario pidió verificar todo junto al final en vez de punto por
+   punto, ver detalle abajo).
 6. [ ] **Repetir una lectura puntual con nota**, sin perder la anterior —
    en los 3 módulos.
 7. [ ] **TTR — tabla compacta, una fila por TAP** (TAP\|U\|V\|W\|TEÓRICA\|ERROR %\|ESTADO).
@@ -121,6 +123,61 @@ secundario para `DEMO-MONOFASICO-01` — el backend calculó
 regenerado muestra el bloque "Datos de la prueba — Resistencia de
 Devanados" seguido directo de "SECUNDARIO", sin ningún rastro de la tabla
 ni el título del primario.
+
+### Punto 5 — Aislamiento: método Simple vs Completo
+
+Antes de este punto, `calculateInsulation_` exigía siempre las 3 lecturas
+de tiempo (30s/60s/10min) para calcular DAR e IP — no había forma de
+guardar solo una lectura de resistencia tomada en campo (ej. al minuto,
+sin las lecturas adicionales de tiempo).
+
+- **`calculateInsulation_`** (`Código.gs`): ahora branchea en
+  `readings.metodo` (`'simple'` | `'completo'`, default `'completo'` si no
+  viene). En `'simple'` valida solo `resistenciaValor` (> 0) y
+  `resistenciaUnidad` (una de `GΩ/MΩ/KΩ`) por combinación, sin tocar
+  DAR/IP, y devuelve `overallVerdict: 'REGISTRADO'` (no hay pass/fail
+  posible con una sola lectura). En `'completo'` seguimos con la
+  validación/cálculo de siempre (DAR, IP, calificación, veredicto
+  APROBADO/OBSERVADO/RECHAZADO).
+- **Tensión de prueba del megóhmetro** (500/1000/2500/5000 V):
+  independiente del método, se guarda junto a los resultados
+  (`tension_prueba_v` en `raw_readings_json`) y se muestra en la grilla de
+  "Datos de la prueba" vía el nuevo parámetro `extraRows` de
+  `appendTestMetaSection_`. El valor simple ingresado por el técnico
+  **nunca se convierte** entre unidades — se guarda y se muestra tal cual
+  con su unidad (GΩ/MΩ/KΩ) elegida.
+- **Plantilla** (`buildElectricalTemplateDoc_`): el bloque `AISLAMIENTO`
+  ahora contiene 2 sub-bloques removibles, `AISLAMIENTO_COMPLETO` (tabla
+  `INSULATION_TABLE_HEADER_`, DAR/IP) y `AISLAMIENTO_SIMPLE` (tabla nueva
+  `INSULATION_SIMPLE_TABLE_HEADER_` = `COMBINACIÓN|RESISTENCIA`, vía
+  `computeInsulationSimpleRows_`). `regenerateElectricalCombinedReport_`
+  resuelve uno u otro según `calc.metodo === 'simple'` y reemplaza
+  `<<METODO_AISLAMIENTO>>`/`<<TENSION_PRUEBA_AISLAMIENTO>>` en la grilla de
+  metadatos. **Las 2 plantillas necesitan regenerarse** para tomar los
+  bloques nuevos (mismo costo de siempre: se pierde el watermark, el
+  usuario debe reponerlo) — pendiente, se hará junto con la verificación
+  final en vivo.
+- **Frontend** (`index.html`/`app.js`): 2 selects nuevos en el formulario
+  de Aislamiento — "Método" (`insulationMetodo`: Completo/Simple) y
+  "Tensión de prueba del megóhmetro" (`insulationTensionPrueba`:
+  500/1000/2500/5000 V). Cada combinación guarda SIEMPRE los 2 juegos de
+  campos en el estado local (`r30sMegaohm/r60sMegaohm/r10minMegaohm` y
+  `resistenciaValor/resistenciaUnidad`) para no perder lo digitado si el
+  técnico cambia de método por error; cuál juego se **envía** depende de
+  `state.insulation.metodo` (`buildInsulationRequestBody`).
+  `renderInsulationCombinationEntries()`/`computeInsulationPreview()`/
+  `renderInsulationPreview()` branchean en método: Simple muestra 1 campo
+  de resistencia + selector de unidad por combinación, sin DAR/IP ni
+  veredicto inventado (solo "Lecturas registradas").
+
+**Pendiente de verificación en vivo** (decisión explícita del usuario
+2026-09-13: verificar todos los puntos juntos al final, no uno por uno) —
+falta: regenerar ambas plantillas, reponer el watermark, y probar en la
+app real un caso `metodo: 'simple'` y uno `metodo: 'completo'` contra un
+transformador de prueba, generar el informe eléctrico y confirmar
+visualmente la tabla de 2 columnas (Simple) y la de DAR/IP (Completo).
+Backend desplegado en producción (`clasp push` + `clasp deploy` @41,
+2026-09-13); frontend pusheado a GitHub Pages, pendiente.
 
 ## Arquitectura activa (esta es la que corre en producción)
 

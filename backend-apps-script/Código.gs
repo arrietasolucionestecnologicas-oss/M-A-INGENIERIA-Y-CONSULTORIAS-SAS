@@ -1488,10 +1488,47 @@ function ipRating_(ip) {
   return 'EXCELENTE';
 }
 
+/** Tensiones de prueba estándar de un megóhmetro — independiente del
+ *  método (Completo o Simple), se guarda junto a los resultados. */
+var INSULATION_TENSION_PRUEBA_VALUES = [500, 1000, 2500, 5000];
+var INSULATION_UNIDAD_VALUES = ['GΩ', 'MΩ', 'KΩ'];
+
+/**
+ * Punto 5 (2026-09-13), a pedido explícito del usuario: hasta ahora esta
+ * función SIEMPRE exigía R30s/R60s/R10min (para poder armar DAR e IP) —
+ * eso bloqueaba al técnico cuando en campo solo se tomó una lectura simple
+ * de resistencia (ej. una sola medición al minuto, sin las lecturas de
+ * tiempo adicionales). Ahora `readings.metodo` decide:
+ * - `'completo'` (default, compatibilidad con datos ya guardados que nunca
+ *   tuvieron este campo): comportamiento EXACTO de siempre — DAR/IP con
+ *   calificación BUENO/MALO/etc., obligatorios.
+ * - `'simple'`: un solo valor de resistencia + su unidad por combinación,
+ *   sin DAR ni IP. Sin umbral de aprobado/rechazado — nadie definió uno
+ *   para este modo, así que el veredicto queda `'REGISTRADO'` (mismo
+ *   criterio que DGA en Aceite: solo captura de datos, sin interpretación
+ *   automática inventada).
+ */
 function calculateInsulation_(readings) {
   var measurements = readings.measurements || {};
   var keys = Object.keys(measurements);
   if (keys.length === 0) throw new Error('Debe incluir al menos una lectura de aislamiento');
+
+  var metodo = readings.metodo === 'simple' ? 'simple' : 'completo';
+
+  if (metodo === 'simple') {
+    var simpleResults = {};
+    keys.forEach(function (k) {
+      var r = measurements[k];
+      if (!(typeof r.resistenciaValor === 'number' && r.resistenciaValor > 0)) {
+        throw new Error('La combinación ' + k + ' no tiene un valor de resistencia válido');
+      }
+      if (INSULATION_UNIDAD_VALUES.indexOf(r.resistenciaUnidad) === -1) {
+        throw new Error('La combinación ' + k + ' no tiene una unidad de resistencia válida (GΩ/MΩ/KΩ)');
+      }
+      simpleResults[k] = { resistenciaValor: r.resistenciaValor, resistenciaUnidad: r.resistenciaUnidad };
+    });
+    return { metodo: 'simple', measurements: simpleResults, overallVerdict: 'REGISTRADO' };
+  }
 
   var results = {};
   var hasMalo = false;
@@ -1512,7 +1549,7 @@ function calculateInsulation_(readings) {
   });
 
   var overallVerdict = hasMalo ? 'RECHAZADO' : (hasCuestionable ? 'OBSERVADO' : 'APROBADO');
-  return { measurements: results, overallVerdict: overallVerdict };
+  return { metodo: 'completo', measurements: results, overallVerdict: overallVerdict };
 }
 
 // ---------------------------------------------------------------------------
@@ -2004,15 +2041,21 @@ function appendReportHeader_(body, site, transformer, protocolTitle) {
  *  solo usada al armar plantillas. `typeLabel` opcional — el informe
  *  eléctrico combinado puede traer hasta 3 bloques "Datos de la prueba"
  *  (uno por tipo ofertado) en el mismo documento. */
-function appendTestMetaSection_(body, testMeta, typeLabel) {
+/** `extraRows` (opcional, arreglo de filas de 4 celdas) — filas extra
+ *  después de las 2 de siempre, para datos propios de un tipo específico
+ *  (ej. Aislamiento: método + tensión de prueba). `undefined` para
+ *  TTR/Devanados, que no cambian. */
+function appendTestMetaSection_(body, testMeta, typeLabel, extraRows) {
   appendSectionTitle_(body, typeLabel ? ('Datos de la prueba — ' + typeLabel) : 'Datos de la prueba');
   var calMatch = findMatchingCalibracionServer_(testMeta.instrument_used);
   var instrumentoLine = testMeta.instrument_used || '—';
   if (calMatch) instrumentoLine += ' (' + calMatch.estado + ')';
-  appendDenseInfoGrid_(body, [
+  var rows = [
     ['FECHA', fmtDatePdf_(testMeta.created_at), 'TÉCNICO RESPONSABLE', testMeta.tested_by || '—'],
     ['INSTRUMENTO UTILIZADO', instrumentoLine, 'NORMA DE REFERENCIA', 'IEEE C57.12.90']
-  ]);
+  ];
+  if (extraRows) rows = rows.concat(extraRows);
+  appendDenseInfoGrid_(body, rows);
 }
 
 /** Banner de veredicto — el elemento más visible del informe, mismo color
@@ -2101,6 +2144,9 @@ var TTR_TABLE_HEADER_ = ['TAP', 'FASE', 'RELACIÓN MEDIDA', 'RELACIÓN TEÓRICA'
 var WINDING_TABLE_HEADER_ = ['TAP', 'FASE', 'RESISTENCIA (Ω)', 'DESVIACIÓN %', 'ESTADO'];
 var WINDING_SECONDARY_TABLE_HEADER_ = ['FASE', 'RESISTENCIA (Ω)', 'DESVIACIÓN %', 'ESTADO'];
 var INSULATION_TABLE_HEADER_ = ['COMBINACIÓN', 'DAR', 'CALIFICACIÓN DAR', 'IP', 'CALIFICACIÓN IP'];
+/** Punto 5 (2026-09-13) — modo Simple: solo un valor de resistencia por
+ *  combinación, sin DAR/IP. */
+var INSULATION_SIMPLE_TABLE_HEADER_ = ['COMBINACIÓN', 'RESISTENCIA'];
 
 /** Calcula las filas de datos de cada tabla variable — extraído tal cual
  *  del cuerpo de las antiguas appendTtrResultsTable_/
@@ -2150,6 +2196,16 @@ function computeInsulationRows_(calculated) {
   Object.keys(calculated.measurements).forEach(function (key) {
     var m = calculated.measurements[key];
     rows.push([key, m.dar.toFixed(2), m.darRating, m.ip.toFixed(2), m.ipRating]);
+  });
+  return rows;
+}
+
+/** Punto 5 (2026-09-13) — modo Simple. */
+function computeInsulationSimpleRows_(calculated) {
+  var rows = [];
+  Object.keys(calculated.measurements).forEach(function (key) {
+    var m = calculated.measurements[key];
+    rows.push([key, m.resistenciaValor + ' ' + m.resistenciaUnidad]);
   });
   return rows;
 }
@@ -2446,9 +2502,16 @@ function buildElectricalTemplateDoc_() {
   appendBlockEnd_(body, 'DEVANADOS');
 
   appendBlockStart_(body, 'AISLAMIENTO');
-  appendTestMetaSection_(body, templateTestMeta_('AISLAMIENTO'), 'Resistencia de Aislamiento');
+  appendTestMetaSection_(body, templateTestMeta_('AISLAMIENTO'), 'Resistencia de Aislamiento',
+    [['MÉTODO', '<<METODO_AISLAMIENTO>>', 'TENSIÓN DE PRUEBA', '<<TENSION_PRUEBA_AISLAMIENTO>>']]);
+  appendBlockStart_(body, 'AISLAMIENTO_COMPLETO');
   appendSectionTitle_(body, 'Resultados — Resistencia de Aislamiento (DAR/IP)');
   appendResultsTable_(body, [INSULATION_TABLE_HEADER_]);
+  appendBlockEnd_(body, 'AISLAMIENTO_COMPLETO');
+  appendBlockStart_(body, 'AISLAMIENTO_SIMPLE');
+  appendSectionTitle_(body, 'Resultados — Resistencia de Aislamiento');
+  appendResultsTable_(body, [INSULATION_SIMPLE_TABLE_HEADER_]);
+  appendBlockEnd_(body, 'AISLAMIENTO_SIMPLE');
   appendVerdictBanner_(body, 'Veredicto', '<<VEREDICTO_AISLAMIENTO>>');
   body.appendParagraph('');
   appendBlockEnd_(body, 'AISLAMIENTO');
@@ -2660,6 +2723,23 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
       // opcional — se prueba solo primario, solo secundario, o ambos.
       resolveTemplateBlock_(body, 'DEVANADOS_PRIMARIO', isPresent && !!(calc.taps && calc.taps.length > 0));
       resolveTemplateBlock_(body, 'DEVANADOS_SECUNDARIO', isPresent && !!calc.secondary);
+    }
+
+    if (type === 'AISLAMIENTO') {
+      // Punto 5 (2026-09-13): método Completo (DAR/IP, tabla de 5 columnas)
+      // o Simple (solo resistencia, tabla de 2 columnas) — mutuamente
+      // excluyentes, cada uno en su propio bloque removible de plantilla.
+      var esSimple = isPresent && calc.metodo === 'simple';
+      resolveTemplateBlock_(body, 'AISLAMIENTO_SIMPLE', esSimple);
+      resolveTemplateBlock_(body, 'AISLAMIENTO_COMPLETO', isPresent && !esSimple);
+      if (isPresent) {
+        cfg = esSimple
+          ? { blockName: 'AISLAMIENTO', headerCellCount: 2, headerFirstCell: 'COMBINACIÓN', computeRows: computeInsulationSimpleRows_ }
+          : { blockName: 'AISLAMIENTO', headerCellCount: 5, headerFirstCell: 'COMBINACIÓN', computeRows: computeInsulationRows_ };
+        var aislamientoRaw = safeParseJson_(testRow.raw_readings_json);
+        body.replaceText('<<METODO_AISLAMIENTO>>', esSimple ? 'Simple (lectura al minuto)' : 'Completo (DAR/IP)');
+        body.replaceText('<<TENSION_PRUEBA_AISLAMIENTO>>', aislamientoRaw.tension_prueba_v ? (aislamientoRaw.tension_prueba_v + ' V') : '—');
+      }
     }
 
     resolveTemplateBlock_(body, cfg.blockName, isPresent);
