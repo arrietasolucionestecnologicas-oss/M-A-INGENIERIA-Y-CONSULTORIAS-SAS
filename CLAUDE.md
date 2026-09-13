@@ -4,6 +4,38 @@ App de campo para técnicos que hacen pruebas eléctricas a transformadores (TTR
 resistencia de devanados, aceite dieléctrico) siguiendo criterios tipo IEEE.
 Pensada para usarse en exteriores, con conectividad inestable, en celular.
 
+## Lista de cambios pendientes en curso (pedida 2026-09-13)
+
+El usuario pidió una lista de 9 cambios grandes, a trabajar **uno por uno,
+no todos a la vez**, con un plan de archivos/funciones antes de cada uno y
+esta lista actualizada (con fecha) al terminar cada punto — así si la
+sesión se corta no se pierde en cuál íbamos. Orden elegido (no el orden en
+que se pidieron) por dependencias reales: los puntos 7/8/9 (formato
+compacto del PDF) necesitan que 2/3/4/5 ya existan primero.
+
+1. [x] **Color de plantillas azul → gris** (completado 2026-09-13) — ver
+   "Informes PDF de pruebas" → `PDF_COLORS_`.
+2. [ ] **TAPs parciales en TTR y Resistencia de Devanados** — el técnico
+   elige cuáles TAPs probó, no todos.
+3. [ ] **Transformadores monofásicos** — 1 combinación en vez de 3 en
+   TTR/Devanados/Aislamiento.
+4. [ ] **Devanados: solo primario, solo secundario, o ambos**.
+5. [ ] **Aislamiento: método Simple (solo resistencia) vs Completo
+   (DAR/IP)** — hoy exige DAR/IP siempre, hay que dejar de forzarlo.
+6. [ ] **Repetir una lectura puntual con nota**, sin perder la anterior —
+   en los 3 módulos.
+7. [ ] **TTR — tabla compacta, una fila por TAP** (TAP\|U\|V\|W\|TEÓRICA\|ERROR %\|ESTADO).
+8. [ ] **Devanados — tabla compacta, una fila por TAP** (mismo criterio
+   que el punto 7).
+9. [ ] **Aislamiento — tabla que quepa en una página**, dos variantes
+   (Completo/Simple), tensión de prueba como línea de dato, no columna.
+
+**Objetivo general**: que el informe eléctrico completo (TTR + Devanados +
+Aislamiento + firmas) quepa en una sola página para el caso normal
+(trifásico, ≤5 tomas, todo probado). `pinTableHeaderRows` y el salto de
+página forzado antes de firmas (ver "Informes PDF de pruebas") se quedan
+como respaldo para equipos con más tomas — no se tocan.
+
 ## Arquitectura activa (esta es la que corre en producción)
 
 - **Frontend**: HTML/CSS/JS estático servido por **GitHub Pages** desde la raíz
@@ -1586,9 +1618,19 @@ igual, solo sin logo — nunca bloquea.
 Rediseñado (2026-08-30) a partir de una referencia visual real que dio el
 usuario (un protocolo de otra empresa de pruebas eléctricas) — se adoptó la
 **estructura y densidad**, no la marca ni los colores de esa referencia
-(esos siguen siendo los de M&A, ver `PDF_COLORS_`). Cambios concretos sobre
-la primera versión (que usaba tablas simples de 2 columnas y encabezados de
-texto plano):
+(ver `PDF_COLORS_`). Cambios concretos sobre la primera versión (que usaba
+tablas simples de 2 columnas y encabezados de texto plano):
+
+**Punto 1 de la lista de cambios pendientes (2026-09-13)**: `ACCENT`/
+`ACCENT_SOFT` en `PDF_COLORS_` dejaron de ser el azul de la app (`#258fbf`)
+y pasaron a gris (`#585d63`/`#e4e6e8`) — a pedido explícito del cliente,
+solo para el documento oficial, no para el tema visual de la app en
+pantalla (`--accent` en `styles.css` sigue azul, sin tocar). Como estos
+colores solo se aplican al ARMAR la plantilla (`buildElectricalTemplateDoc_`/
+`buildOilTemplateDoc_`), hubo que regenerar las 2 plantillas
+(`generateReportTemplates`) para que el cambio se viera — eso reemplaza
+los 2 documentos existentes por unos nuevos SIN watermark, así que el
+usuario tuvo que volver a agregárselo a mano después.
 
 - **`appendSectionTitle_`** ya no es un párrafo con texto coloreado — es una
   barra de ancho completo, fondo `--accent` sólido, texto blanco en

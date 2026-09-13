@@ -1663,13 +1663,19 @@ var OIL_DGA_GASES_ = [
   { key: 'c2h6', label: 'Etano (C2H6)' }
 ];
 
-/** Colores exactos del sistema de diseño de la app (ver comentario al
- *  inicio de styles.css) — duplicados a propósito porque un PDF no puede
- *  leer variables CSS. Si cambian los colores de la app, cambiar aquí
- *  también. */
+/** ACCENT/ACCENT_SOFT (2026-09-13, a pedido explícito del cliente): ya NO
+ *  son el azul de `--accent` en `styles.css` — el documento oficial usa
+ *  gris, independiente del azul de la app en pantalla. Antes de este
+ *  cambio este bloque decía explícitamente "duplicados a propósito... si
+ *  cambian los colores de la app, cambiar aquí también" — eso dejó de ser
+ *  cierto a propósito: el pedido fue específicamente sobre las plantillas
+ *  de informe, no sobre el tema visual de la app, así que `--accent` en
+ *  `styles.css` NO se tocó. El resto de estos colores (`TEXT`/`SUCCESS`/
+ *  `WARNING`/`DANGER`/etc.) sigue siendo el mismo que usa la app en
+ *  pantalla. */
 var PDF_COLORS_ = {
-  ACCENT: '#258fbf',
-  ACCENT_SOFT: '#e9f4f9',
+  ACCENT: '#585d63',
+  ACCENT_SOFT: '#e4e6e8',
   TEXT: '#152618',
   TEXT_MUTED: '#5a6983',
   SUCCESS: '#3aaa35', SUCCESS_BG: '#ebf7eb',
