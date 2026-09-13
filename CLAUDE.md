@@ -2585,6 +2585,21 @@ desde cero **sin watermark** — si ya existían con el watermark agregado a
 mano, hay que volver a agregarlo después de cada clic; el botón lo advierte
 explícitamente antes de confirmar.
 
+**Ajustes manuales de espaciado del encabezado (2026-09-13):** el usuario
+va a reducir a mano, directo en el documento de Google Docs, el espacio
+"desperdiciado" alrededor del encabezado y del título "PROTOCOLO DE
+PRUEBAS ELÉCTRICAS" (`appendPageHeader_`/título en
+`buildElectricalTemplateDoc_`), para que el informe quepa mejor en una
+página — a propósito no se tocó por código, es un ajuste visual fino que
+no vale la pena mantener sincronizado en `Código.gs`. **Mismo costo que
+el watermark: cualquier regeneración de plantillas (clic en "Generar
+plantillas de informes") borra este ajuste también**, porque
+`crearPlantillasInformes_` arma el documento desde cero cada vez. Antes
+de regenerar plantillas por cualquier motivo futuro (típicamente, un
+cambio de estructura de bloques como los de los puntos 4/5/7/8), avisar
+al usuario explícitamente que va a perder AMBAS cosas (watermark + este
+espaciado) y que tendrá que rehacerlas después.
+
 ## Convenciones de frontend que hay que respetar
 
 - **Nunca uses `parseFloat()` directo sobre un input de usuario** — trunca en
