@@ -1906,7 +1906,7 @@ function appendSectionTitle_(body, text) {
   table.setBorderWidth(0);
   var cell = table.getRow(0).getCell(0);
   cell.setBackgroundColor(PDF_COLORS_.ACCENT);
-  cell.editAsText().setBold(true).setFontSize(10).setForegroundColor('#ffffff');
+  cell.editAsText().setBold(true).setFontSize(9).setForegroundColor('#ffffff');
   return table;
 }
 
@@ -1936,14 +1936,21 @@ function appendDenseInfoGrid_(body, rows) {
   table.setBorderColor(PDF_COLORS_.BORDER);
   for (var r = 0; r < table.getNumRows(); r++) {
     var row = table.getRow(r);
+    // El ancho de la columna de etiqueta se reparte según cuántos pares
+    // etiqueta/valor tiene ESTA fila (115 para 2 pares, como siempre;
+    // menos para filas más anchas como la grilla compartida de "Datos
+    // generales de la prueba", de 3 pares — si no, las 3 etiquetas se
+    // comen casi todo el ancho de página y los valores quedan sin espacio).
+    var pairsInRow = row.getNumCells() / 2;
+    var labelWidth = pairsInRow > 2 ? 78 : 115;
     for (var c = 0; c < row.getNumCells(); c++) {
       var cell = row.getCell(c);
       if (c % 2 === 0) {
         cell.setBackgroundColor(PDF_COLORS_.NEUTRAL_BG);
-        cell.setWidth(115);
-        cell.editAsText().setBold(true).setFontSize(8).setForegroundColor(PDF_COLORS_.TEXT);
+        cell.setWidth(labelWidth);
+        cell.editAsText().setBold(true).setFontSize(7).setForegroundColor(PDF_COLORS_.TEXT);
       } else {
-        cell.editAsText().setFontSize(9).setForegroundColor(PDF_COLORS_.TEXT);
+        cell.editAsText().setFontSize(7).setForegroundColor(PDF_COLORS_.TEXT);
       }
     }
   }
@@ -1963,11 +1970,11 @@ function appendResultsTable_(body, rows) {
   var header = table.getRow(0);
   for (var c = 0; c < header.getNumCells(); c++) {
     header.getCell(c).setBackgroundColor(PDF_COLORS_.ACCENT);
-    header.getCell(c).editAsText().setBold(true).setFontSize(8).setForegroundColor('#ffffff');
+    header.getCell(c).editAsText().setBold(true).setFontSize(7).setForegroundColor('#ffffff');
   }
   for (var r = 1; r < table.getNumRows(); r++) {
     for (var c2 = 0; c2 < table.getRow(r).getNumCells(); c2++) {
-      table.getRow(r).getCell(c2).editAsText().setFontSize(8);
+      table.getRow(r).getCell(c2).editAsText().setFontSize(7);
     }
   }
   return table;
@@ -2038,25 +2045,38 @@ function appendReportHeader_(body, site, transformer, protocolTitle) {
   ]);
 }
 
-/** Datos de la prueba (fecha, técnico, instrumento, norma de referencia) —
- *  solo usada al armar plantillas. `typeLabel` opcional — el informe
- *  eléctrico combinado puede traer hasta 3 bloques "Datos de la prueba"
- *  (uno por tipo ofertado) en el mismo documento. */
-/** `extraRows` (opcional, arreglo de filas de 4 celdas) — filas extra
- *  después de las 2 de siempre, para datos propios de un tipo específico
- *  (ej. Aislamiento: método + tensión de prueba). `undefined` para
- *  TTR/Devanados, que no cambian. */
-function appendTestMetaSection_(body, testMeta, typeLabel, extraRows) {
-  appendSectionTitle_(body, typeLabel ? ('Datos de la prueba — ' + typeLabel) : 'Datos de la prueba');
-  var calMatch = findMatchingCalibracionServer_(testMeta.instrument_used);
-  var instrumentoLine = testMeta.instrument_used || '—';
-  if (calMatch) instrumentoLine += ' (' + calMatch.estado + ')';
-  var rows = [
-    ['FECHA', fmtDatePdf_(testMeta.created_at), 'TÉCNICO RESPONSABLE', testMeta.tested_by || '—'],
-    ['INSTRUMENTO UTILIZADO', instrumentoLine, 'NORMA DE REFERENCIA', 'IEEE C57.12.90']
-  ];
-  if (extraRows) rows = rows.concat(extraRows);
-  appendDenseInfoGrid_(body, rows);
+/** Datos generales de la prueba — reemplaza (2026-09-13, a pedido
+ *  explícito del cliente tras compararlo con un certificado real de otra
+ *  empresa que cabe en una sola hoja) a la vieja `appendTestMetaSection_`,
+ *  que repetía FECHA/TÉCNICO/INSTRUMENTO/NORMA una vez POR CADA tipo
+ *  (TTR/Devanados/Aislamiento) — 3 grillas casi idénticas, mucho espacio
+ *  vertical desperdiciado para datos que casi siempre son los mismos en
+ *  los 3. Ahora FECHA/TÉCNICO/NORMA se muestran UNA sola vez para todo el
+ *  informe (NORMA es literal, nunca cambia; FECHA/TÉCNICO usan los de la
+ *  prueba más reciente entre las presentes — mismo criterio que ya usaba
+ *  la firma "PROBADO POR", ver regenerateElectricalCombinedReport_). El
+ *  INSTRUMENTO sigue por módulo (si varía de verdad, cada prueba usa su
+ *  propio equipo) — ver appendInstrumentLine_ más abajo. Solo usada al
+ *  armar plantillas. */
+function appendSharedTestMetaSection_(body) {
+  appendSectionTitle_(body, 'Datos generales de la prueba');
+  appendDenseInfoGrid_(body, [
+    ['FECHA', '<<FECHA_GENERAL>>', 'TÉCNICO RESPONSABLE', '<<TECNICO_GENERAL>>', 'NORMA DE REFERENCIA', 'IEEE C57.12.90']
+  ]);
+}
+
+/** Línea compacta (no grilla) con el instrumento usado en ESTE módulo
+ *  específico — y, para Aislamiento, método + tensión de prueba en la
+ *  misma línea (`extraText`). Reemplaza la grilla de 2 filas que antes se
+ *  repetía por módulo dentro de `appendTestMetaSection_`. Solo usada al
+ *  armar plantillas — el texto real (incluida la calibración vigente del
+ *  instrumento) se llena con `body.replaceText()` en tiempo de
+ *  generación, igual que siempre. */
+function appendInstrumentLine_(body, instrumentPlaceholder, extraText) {
+  var text = 'Instrumento: ' + instrumentPlaceholder;
+  if (extraText) text += '   ·   ' + extraText;
+  var p = body.appendParagraph(text);
+  p.editAsText().setFontSize(7).setForegroundColor(PDF_COLORS_.TEXT_MUTED);
 }
 
 /** Banner de veredicto — el elemento más visible del informe, mismo color
@@ -2083,19 +2103,21 @@ function appendVerdictBanner_(body, label, verdict) {
  *  armar la plantilla llevan placeholders de texto; en el informe real
  *  esos 4 valores se llenan con `body.replaceText()`.
  *
- *  **Salto de página forzado**: el bloque completo (título + fila de
- *  firmas) se veía partido entre dos páginas en un reporte real. Verificado
- *  contra la referencia oficial de `DocumentApp`: ni `Paragraph` ni
- *  `TableRow` exponen ningún "mantener junto"/"evitar salto de página" en
- *  Apps Script (no existe un equivalente a `page-break-inside: avoid` para
- *  tablas en este servicio). La única garantía real posible es forzar que
- *  este bloque, que siempre es pequeño, empiece siempre en una página
- *  nueva — como ahora esto se hornea en la plantilla (una sola vez), el
- *  costo de a veces dejar espacio en blanco al final de la página anterior
- *  también queda fijo, no se recalcula por informe. */
+ *  **Salto de página forzado — QUITADO (2026-09-13)**: originalmente este
+ *  bloque forzaba su propio salto de página porque, sin él, se veía
+ *  partido entre dos páginas (`Paragraph`/`TableRow` no exponen ningún
+ *  "mantener junto" en Apps Script, no existe equivalente a
+ *  `page-break-inside: avoid` para tablas en este servicio). A pedido
+ *  explícito del cliente (quiere el informe completo en una sola hoja,
+ *  comparado contra un certificado real de otra empresa que sí lo logra)
+ *  se quitó el salto forzado — junto con la compactación de fuente/
+ *  espaciado de los puntos 7/8 y la fusión de las 3 grillas de "Datos de
+ *  la prueba" en una sola (`appendSharedTestMetaSection_`), el bloque de
+ *  firmas debería quedar en la misma página como el resto en el caso
+ *  normal. Riesgo aceptado explícitamente: en un equipo con muchos TAPs
+ *  las firmas podrían volver a partirse entre páginas — decisión del
+ *  cliente, no un descuido. */
 function appendSignatureSection_(body, probadoPor, certificadoPor) {
-  body.appendPageBreak();
-  body.appendParagraph('');
   appendSectionTitle_(body, 'Área de control de calidad');
   var table = body.appendTable([
     ['PROBADO POR', 'CERTIFICADO POR', 'APROBADO POR'],
@@ -2108,23 +2130,23 @@ function appendSignatureSection_(body, probadoPor, certificadoPor) {
   table.setBorderColor(PDF_COLORS_.BORDER);
   for (var c = 0; c < 3; c++) {
     table.getRow(0).getCell(c).setBackgroundColor(PDF_COLORS_.NEUTRAL_BG);
-    table.getRow(0).getCell(c).editAsText().setBold(true).setFontSize(8);
+    table.getRow(0).getCell(c).editAsText().setBold(true).setFontSize(7);
   }
-  table.getRow(1).getCell(0).editAsText().setFontSize(9);
-  table.getRow(1).getCell(1).editAsText().setFontSize(9);
+  table.getRow(1).getCell(0).editAsText().setFontSize(8);
+  table.getRow(1).getCell(1).editAsText().setFontSize(8);
 
   var aprobadoCell = table.getRow(1).getCell(2);
   var engineerBlob = getEngineerSignatureBlob_();
   if (engineerBlob) {
     var img = aprobadoCell.appendImage(engineerBlob);
     var ratio = img.getHeight() / img.getWidth();
-    img.setWidth(85);
-    img.setHeight(Math.round(85 * ratio));
+    img.setWidth(70);
+    img.setHeight(Math.round(70 * ratio));
   }
   var nameLine = aprobadoCell.appendParagraph(ENGINEER_SIGNATURE_NAME_);
-  nameLine.editAsText().setBold(true).setFontSize(9);
+  nameLine.editAsText().setBold(true).setFontSize(8);
   var titleLine = aprobadoCell.appendParagraph(ENGINEER_SIGNATURE_TITLE_);
-  titleLine.editAsText().setFontSize(8).setForegroundColor(PDF_COLORS_.TEXT_MUTED);
+  titleLine.editAsText().setFontSize(7).setForegroundColor(PDF_COLORS_.TEXT_MUTED);
 }
 
 var TEST_TYPE_DISPLAY_LABEL_ = {
@@ -2331,7 +2353,7 @@ function appendRepeatedNoteFootnote_(body, table, notes) {
   if (!notes || notes.length === 0) return;
   var idx = body.getChildIndex(table);
   var p = body.insertParagraph(idx + 1, '† Lectura repetida — ' + notes.join('  ·  '));
-  p.editAsText().setFontSize(8).setItalic(true).setForegroundColor(PDF_COLORS_.TEXT_MUTED);
+  p.editAsText().setFontSize(7).setItalic(true).setForegroundColor(PDF_COLORS_.TEXT_MUTED);
   p.setSpacingBefore(2).setSpacingAfter(6);
 }
 
@@ -2425,7 +2447,7 @@ function fmtTimestampForFilename_(date) {
 
 /** Objetos de datos "de mentira" — cada campo es literalmente el texto
  *  `<<...>>` que queda horneado en la plantilla. Truco central de este
- *  diseño: appendReportHeader_/appendTestMetaSection_/appendSignatureSection_
+ *  diseño: appendReportHeader_/appendSharedTestMetaSection_/appendSignatureSection_
  *  (las MISMAS funciones que arman el informe real hasta este cambio) arman
  *  la plantilla sin tocarlas — la única diferencia es qué objeto de datos
  *  reciben. Esto reduce el riesgo de que la plantilla se desalinee
@@ -2437,14 +2459,6 @@ var TEMPLATE_TRANSFORMER_ = {
   rated_power_kva: '<<POTENCIA_NOMINAL>>', hv_nominal_voltage: '<<TENSION_PRIMARIA>>', lv_nominal_voltage: '<<TENSION_SECUNDARIA>>',
   cooling_type: '<<REFRIGERACION>>', manufacture_year: '<<ANO_FABRICACION>>'
 };
-function templateTestMeta_(blockName) {
-  return {
-    created_at: '<<FECHA_' + blockName + '>>',
-    tested_by: '<<TECNICO_' + blockName + '>>',
-    instrument_used: '<<INSTRUMENTO_' + blockName + '>>'
-  };
-}
-
 /** Marcador de bloque opcional — un párrafo propio, invisible (tamaño de
  *  fuente 1) porque siempre se borra antes de exportar a PDF, nunca debe
  *  verse. `body.findText()` los ubica por su texto exacto. */
@@ -2561,7 +2575,7 @@ function appendDataRowsToTable_(table, rows) {
       // marca de agua de la plantilla en esa zona de la página — el fondo
       // sin fijar es transparente y deja verla, igual que el resto de la
       // página.
-      cell.editAsText().setFontSize(8).setBold(false).setForegroundColor(PDF_COLORS_.TEXT);
+      cell.editAsText().setFontSize(7).setBold(false).setForegroundColor(PDF_COLORS_.TEXT);
     });
   });
 }
@@ -2599,10 +2613,11 @@ function buildElectricalTemplateDoc_() {
 
   appendPageHeader_(doc);
   appendReportHeader_(body, TEMPLATE_SITE_, TEMPLATE_TRANSFORMER_, 'PROTOCOLO DE PRUEBAS ELÉCTRICAS');
+  appendSharedTestMetaSection_(body);
 
   appendBlockStart_(body, 'TTR');
-  appendTestMetaSection_(body, templateTestMeta_('TTR'), 'TTR');
   appendSectionTitle_(body, 'Resultados — TTR (Relación de Transformación)');
+  appendInstrumentLine_(body, '<<INSTRUMENTO_TTR>>');
   appendBlockStart_(body, 'TTR_TEORICO');
   appendPlaceholderWarningBanner_(body, '<<AVISO_TEORICO_TTR>>');
   appendBlockEnd_(body, 'TTR_TEORICO');
@@ -2617,7 +2632,7 @@ function buildElectricalTemplateDoc_() {
   appendBlockEnd_(body, 'TTR');
 
   appendBlockStart_(body, 'DEVANADOS');
-  appendTestMetaSection_(body, templateTestMeta_('DEVANADOS'), 'Resistencia de Devanados');
+  appendInstrumentLine_(body, '<<INSTRUMENTO_DEVANADOS>>');
   appendBlockStart_(body, 'DEVANADOS_PRIMARIO');
   appendSectionTitle_(body, 'Resultados — Resistencia de Devanados');
   appendBlockStart_(body, 'DEVANADOS_PRIMARIO_TRIFASICO');
@@ -2629,7 +2644,7 @@ function buildElectricalTemplateDoc_() {
   appendBlockEnd_(body, 'DEVANADOS_PRIMARIO');
   appendBlockStart_(body, 'DEVANADOS_SECUNDARIO');
   var secTitle = body.appendParagraph('SECUNDARIO');
-  secTitle.editAsText().setBold(true).setFontSize(10);
+  secTitle.editAsText().setBold(true).setFontSize(8);
   appendBlockStart_(body, 'DEVANADOS_SECUNDARIO_TRIFASICO');
   appendResultsTable_(body, [WINDING_SECONDARY_COMPACT_TRIFASICO_HEADER_]);
   appendBlockEnd_(body, 'DEVANADOS_SECUNDARIO_TRIFASICO');
@@ -2642,8 +2657,8 @@ function buildElectricalTemplateDoc_() {
   appendBlockEnd_(body, 'DEVANADOS');
 
   appendBlockStart_(body, 'AISLAMIENTO');
-  appendTestMetaSection_(body, templateTestMeta_('AISLAMIENTO'), 'Resistencia de Aislamiento',
-    [['MÉTODO', '<<METODO_AISLAMIENTO>>', 'TENSIÓN DE PRUEBA', '<<TENSION_PRUEBA_AISLAMIENTO>>']]);
+  appendInstrumentLine_(body, '<<INSTRUMENTO_AISLAMIENTO>>',
+    'Método: <<METODO_AISLAMIENTO>>   ·   Tensión de prueba: <<TENSION_PRUEBA_AISLAMIENTO>>');
   appendBlockStart_(body, 'AISLAMIENTO_COMPLETO');
   appendSectionTitle_(body, 'Resultados — Resistencia de Aislamiento (DAR/IP)');
   appendResultsTable_(body, [INSULATION_TABLE_HEADER_]);
@@ -2915,8 +2930,6 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
     setVerdictBannerColor_(body, '<<VEREDICTO_' + cfg.blockName + '>>', calc.overallVerdict);
     body.replaceText('<<VEREDICTO_' + cfg.blockName + '>>', calc.overallVerdict);
 
-    body.replaceText('<<FECHA_' + cfg.blockName + '>>', fmtDatePdf_(testRow.created_at));
-    body.replaceText('<<TECNICO_' + cfg.blockName + '>>', testRow.tested_by || '—');
     var calMatch = findMatchingCalibracionServer_(testRow.instrument_used);
     var instrumentoLine = testRow.instrument_used || '—';
     if (calMatch) instrumentoLine += ' (' + calMatch.estado + ')';
@@ -2942,6 +2955,13 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
     return toComparableDate_(latest[a].created_at) >= toComparableDate_(latest[b].created_at) ? a : b;
   });
   var signedTest = latest[mostRecentType];
+
+  // FECHA/TÉCNICO ahora se muestran UNA sola vez para todo el informe (ver
+  // appendSharedTestMetaSection_) — se usa la prueba más reciente entre
+  // las presentes, mismo criterio que ya usaba "PROBADO POR" abajo.
+  body.replaceText('<<FECHA_GENERAL>>', fmtDatePdf_(signedTest.created_at));
+  body.replaceText('<<TECNICO_GENERAL>>', signedTest.tested_by || '—');
+
   body.replaceText('<<PROBADO_POR_NOMBRE>>', signedTest.tested_by || '—');
   body.replaceText('<<PROBADO_POR_FECHA>>', fmtDatePdf_(signedTest.created_at));
   body.replaceText('<<CERTIFICADO_POR_NOMBRE>>', signedTest.revisado_por || '—');

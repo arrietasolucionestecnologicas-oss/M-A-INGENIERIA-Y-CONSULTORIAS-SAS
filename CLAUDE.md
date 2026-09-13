@@ -39,9 +39,14 @@ compacto del PDF) necesitan que 2/3/4/5 ya existan primero.
 
 **Objetivo general**: que el informe eléctrico completo (TTR + Devanados +
 Aislamiento + firmas) quepa en una sola página para el caso normal
-(trifásico, ≤5 tomas, todo probado). `pinTableHeaderRows` y el salto de
-página forzado antes de firmas (ver "Informes PDF de pruebas") se quedan
-como respaldo para equipos con más tomas — no se tocan.
+(trifásico, ≤5 tomas, todo probado). `pinTableHeaderRows` se queda como
+respaldo para equipos con más tomas — no se toca. **Actualización
+2026-09-13 (después de completar los 9 puntos)**: el cliente comparó el
+informe contra un certificado real de otra empresa que sí cabe en una
+sola hoja y pidió una ronda extra de compactación — ver "Punto 10" más
+abajo. Como parte de esa ronda, el salto de página forzado antes de
+firmas **si se quitó** (decisión explícita del cliente, contradice la
+frase de arriba que decía "no se tocan" — esa frase quedó desactualizada).
 
 ### Puntos 2 y 3 — resultaron ya estar implementados, no se escribió código nuevo
 
@@ -326,16 +331,83 @@ resuelto exactamente así al implementar el punto 5 el mismo día:
   `INSULATION_SIMPLE_TABLE_HEADER_` = `COMBINACIÓN|RESISTENCIA` (Simple,
   2 columnas) — coinciden literalmente con lo pedido en el punto 9.
 - **Tensión de prueba como línea de dato, no columna**: `MÉTODO`/
-  `TENSIÓN DE PRUEBA` ya viven en la grilla de "Datos de la prueba"
-  (`<<METODO_AISLAMIENTO>>`/`<<TENSION_PRUEBA_AISLAMIENTO>>`, ver punto
-  5), nunca como columna de la tabla de resultados.
+  `TENSIÓN DE PRUEBA` viven en la línea de instrumento del módulo
+  (`<<METODO_AISLAMIENTO>>`/`<<TENSION_PRUEBA_AISLAMIENTO>>` — ver punto
+  10 abajo, `appendInstrumentLine_`), nunca como columna de la tabla de
+  resultados.
 - **Letras pequeñas**: heredado del punto 7 (cambio de fuente
   compartido en `appendResultsTable_`/`appendDataRowsToTable_`).
 
 No se tocó ningún archivo para este punto — solo se confirmó por lectura
 de código que ya cumplía el pedido. Con esto, **los 9 puntos de la lista
-quedan implementados**; falta únicamente la verificación en vivo
-conjunta (ver más abajo, sección "Verificación").
+quedan implementados**; la verificación en vivo conjunta se hizo (ver
+"Verificación" más abajo).
+
+### Punto 10 (extra, 2026-09-13) — Ronda de compactación adicional: informe en una sola hoja
+
+Después de completar y verificar los 9 puntos, el cliente redujo a mano
+el padding/fuente del encabezado de la plantilla (a 7pt) y aun así el
+informe seguía en 2 páginas. Comparó contra un certificado real de otra
+empresa (D&R Eléctricos / Jorge León Bedoya Marín & Cía, adjuntado como
+PDF) que cabe en 1 sola hoja: una sola tabla continua sin grillas de
+"Datos de la prueba" repetidas por módulo, sin banner de veredicto por
+color, con letra ~5-6pt. Se le preguntó explícitamente qué de eso
+adoptar (no se copió a ciegas, para no perder trazabilidad que el
+cliente ya había pedido en sesiones anteriores):
+
+- **Fusionar las 3 grillas de "Datos de la prueba" en una sola** —
+  aceptado. Antes: `appendTestMetaSection_` se llamaba 1 vez por tipo
+  (TTR/Devanados/Aislamiento), cada una con su propia grilla FECHA/
+  TÉCNICO/INSTRUMENTO/NORMA (norma siempre `IEEE C57.12.90`, literal,
+  nunca cambiaba). Ahora: `appendSharedTestMetaSection_` — UNA sola vez,
+  arriba de todo, con FECHA/TÉCNICO/NORMA en una sola fila de 3 pares.
+  FECHA/TÉCNICO usan los de la prueba **más reciente entre las
+  presentes** (`<<FECHA_GENERAL>>`/`<<TECNICO_GENERAL>>`, llenados en
+  `regenerateElectricalCombinedReport_` con el mismo `signedTest` que ya
+  usaba el bloque "PROBADO POR" — no se inventó un criterio nuevo). El
+  **instrumento sigue por módulo** (si varía de verdad) pero ya no como
+  grilla — una sola línea chica (`appendInstrumentLine_`, 7pt,
+  `TEXT_MUTED`) tipo "Instrumento: X" justo antes de la tabla de
+  resultados de ese módulo. Para Aislamiento, esa misma línea también
+  lleva Método y Tensión de prueba ("Instrumento: X · Método: Y ·
+  Tensión de prueba: Z"), reemplazando el `extraRows` que antes tenía
+  `appendTestMetaSection_`. `appendDenseInfoGrid_` ahora calcula el ancho
+  de la columna de etiqueta según cuántos pares tiene la fila (115 para
+  2 pares como siempre, 78 para 3) — si no, la fila de 3 pares se comía
+  casi todo el ancho de página.
+- **Mantener los banners de veredicto por color** — aceptado NO
+  quitarlos (son parte del criterio de aceptación automático ya pedido
+  en sesiones anteriores). Sin cambios de código aquí.
+- **Quitar el salto de página forzado antes de "Área de Control de
+  Calidad"** — aceptado, con el riesgo reconocido de que en un equipo
+  con muchos TAPs las firmas puedan volver a partirse entre páginas.
+  `appendSignatureSection_` ya no llama `body.appendPageBreak()` (el
+  comentario de la función se actualizó explicando la decisión y el
+  riesgo aceptado).
+- **Bajar la fuente de las tablas de 8pt a 7pt** — aceptado. Además:
+  `appendSectionTitle_` (barras de título de sección) de 10pt a 9pt,
+  `appendDenseInfoGrid_` de 8/9pt a 7pt parejo, el pie de nota de lectura
+  repetida (`appendRepeatedNoteFootnote_`) de 8pt a 7pt, y el bloque de
+  firmas (`appendSignatureSection_`) de 8/9pt a 7/8pt con la firma del
+  ingeniero un poco más chica (85px → 70px de ancho). El banner de
+  veredicto (13pt) y el encabezado/título del protocolo (14pt logo,
+  13pt título) **no se tocaron** — el cliente pidió específicamente
+  reducir ESE espacio él mismo, a mano, directo en el documento (ver
+  "Convenciones de frontend..." más abajo, nota sobre ajustes manuales).
+
+**Resultado verificado en vivo**: el mismo informe de prueba que antes
+(TTR+Devanados+Aislamiento, 3 TAPs, `DEMO-PLANTILLAS-V2`) pasó de 3
+páginas a **2 páginas**, sin ninguna tabla partida a la mitad — el corte
+de página cae entre Devanados primario y secundario, un punto natural,
+no en medio de una tabla. Con el ajuste manual de espaciado de
+encabezado que el cliente va a hacer encima de esto, es razonable que
+quede en 1 sola página para el caso normal. Backend desplegado en
+producción (`clasp deploy` @45, 2026-09-13). **Plantillas regeneradas
+de nuevo** (Eléctrico `1yCmRthxvnzOZ8unJzklXbpJfOwaGeoAd29tVVqQRZPU`,
+Aceite `1p57ox9_MFoba6lU9e_dnMmDrKwhcbVyYGnrcBW7FLVg`) — **el cliente
+debe volver a agregar el watermark Y su ajuste manual de espaciado del
+encabezado en ambas**, ya que se perdieron otra vez al regenerar (mismo
+costo de siempre, avisado explícitamente antes de tocar nada).
 
 ## Arquitectura activa (esta es la que corre en producción)
 
