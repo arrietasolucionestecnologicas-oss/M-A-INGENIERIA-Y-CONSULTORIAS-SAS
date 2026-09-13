@@ -15,10 +15,13 @@ compacto del PDF) necesitan que 2/3/4/5 ya existan primero.
 
 1. [x] **Color de plantillas azul → gris** (completado 2026-09-13) — ver
    "Informes PDF de pruebas" → `PDF_COLORS_`.
-2. [ ] **TAPs parciales en TTR y Resistencia de Devanados** — el técnico
-   elige cuáles TAPs probó, no todos.
-3. [ ] **Transformadores monofásicos** — 1 combinación en vez de 3 en
-   TTR/Devanados/Aislamiento.
+2. [x] **TAPs parciales en TTR y Resistencia de Devanados** (verificado
+   2026-09-13, **ya estaba implementado** — ver detalle abajo) — el
+   técnico elige cuáles TAPs probó, no todos.
+3. [x] **Transformadores monofásicos** (verificado 2026-09-13, **ya estaba
+   implementado** para TTR/Devanados; Aislamiento se deja con las 3
+   combinaciones siempre, decisión confirmada de nuevo con el usuario —
+   ver detalle abajo).
 4. [ ] **Devanados: solo primario, solo secundario, o ambos**.
 5. [ ] **Aislamiento: método Simple (solo resistencia) vs Completo
    (DAR/IP)** — hoy exige DAR/IP siempre, hay que dejar de forzarlo.
@@ -35,6 +38,51 @@ Aislamiento + firmas) quepa en una sola página para el caso normal
 (trifásico, ≤5 tomas, todo probado). `pinTableHeaderRows` y el salto de
 página forzado antes de firmas (ver "Informes PDF de pruebas") se quedan
 como respaldo para equipos con más tomas — no se tocan.
+
+### Puntos 2 y 3 — resultaron ya estar implementados, no se escribió código nuevo
+
+Antes de tocar nada se revisó el código real (`getPhaseKeys()`/
+`getSecondaryPhaseKeys_()` en `app.js`, `calculateTtr_`/
+`calculateWindingResistance_` en `Código.gs`) y resultó que **ambos puntos
+ya funcionaban de punta a punta**, de una sesión anterior:
+
+- **TAPs parciales (punto 2)**: ni el frontend ni el backend fuerzan un
+  rango 1..N de TAPs. `state.ttr.readings`/`state.wr.readings` solo tienen
+  entradas para los TAPs que el técnico realmente abrió/agregó
+  (`selectTap`/`+ Agregar TAP`); `buildTtrRequestBody()` y el equivalente
+  de Devanados solo envían esos. `calculateTtr_`/
+  `calculateWindingResistance_` ya iteraban `Object.keys(readings.measurements)`
+  genéricamente, sin asumir un rango contiguo. `computeTtrRows_` (el PDF)
+  también ya iteraba solo los TAPs presentes en `calculated.taps`. Nadie
+  había verificado esta cadena completa hasta ahora.
+- **Monofásico (punto 3, TTR/Devanados)**: `getPhaseKeys()` ya devuelve
+  `['H1H2-X1X2']` (un solo elemento) cuando `transformer.phase_type ===
+  'MONOFASICO'`, y `getSecondaryPhaseKeys_()` ya devuelve `['X1-X2']` para
+  el secundario de Devanados — ambas funciones son las mismas que usan los
+  formularios Y la matriz personalizada, así que el efecto ya se propagaba
+  a todos lados. Como `calculateTtr_`/`calculateWindingResistance_` nunca
+  asumieron una cantidad fija de fases (iteran `Object.keys(phases)`),
+  monofásico simplemente resulta en 1 fila por TAP en vez de 3, sin tocar
+  ninguna función de cálculo ni de PDF.
+- **Aislamiento (punto 3) — se confirmó de nuevo con el usuario que NO
+  cambia**: el código ya tenía un comentario explícito de una decisión
+  anterior ("las 3 combinaciones AT-BT/AT-Tierra/BT-Tierra existen igual
+  en monofásico y trifásico — son combinaciones devanado/tierra, no fases
+  eléctricas"). Se le presentó la contradicción con el pedido nuevo
+  ("monofásico debe mostrar 1 combinación") y el usuario confirmó
+  mantener la decisión original: Aislamiento siempre pide las 3
+  combinaciones, sin importar `phase_type`.
+
+**Verificado en vivo (2026-09-13)**: equipo de prueba `DEMO-MONOFASICO-01`
+(`phase_type: 'MONOFASICO'`, sitio `DEMO - Verificación Plantillas V2`,
+`numero_posiciones_tap: 5`), TTR enviado con **solo TAP 2 y TAP 4**
+(saltando 1, 3 y 5), Devanados igual (TAP 2 y 4 + secundario) — certificado
+y generado el informe combinado. El PDF real muestra únicamente los TAPs 2
+y 4 (nunca 1/3/5), una sola columna de fase por TAP en vez de tres, y el
+aviso "Teórico no disponible" correctamente activado (el equipo de prueba
+no tenía `lv_nominal_voltage`, caso ya manejado por
+`theoreticalAvailable`). Nada de esto necesitó cambios de código — solo
+confirmar que ya funcionaba.
 
 ## Arquitectura activa (esta es la que corre en producción)
 
@@ -2648,4 +2696,7 @@ de datos insertadas.
 
 Sigue pendiente, no urgente: decidir si se conserva o se borra el equipo
 de demo `DEMO-PLANTILLAS-V2` (mismo criterio de siempre — confirmar con el
-usuario antes de tocarlo, el cliente real ya está en producción).
+usuario antes de tocarlo, el cliente real ya está en producción). Mismo
+caso para `DEMO-MONOFASICO-01` (mismo sitio "DEMO - Verificación
+Plantillas V2"), creado el 2026-09-13 para verificar los puntos 2/3 de la
+lista de cambios pendientes.
