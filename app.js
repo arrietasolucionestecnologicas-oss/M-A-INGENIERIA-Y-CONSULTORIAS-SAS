@@ -235,10 +235,10 @@ function verdictBannerClass_(verdict) {
 }
 
 function verdictPillClass_(verdict) {
-  if (verdict === 'APROBADO' || verdict === 'No contaminado') return 'success';
+  if ((verdict && verdict.indexOf('APROBADO') === 0) || verdict === 'No contaminado') return 'success';
   if (verdict === 'RECHAZADO' || verdict === 'REQUIERE REGENERACIÓN / CAMBIO' || (verdict && verdict.indexOf('Contaminado') === 0)) return 'danger';
   if (verdict === 'OBSERVADO' || verdict === 'REQUIERE TERMOVACÍO') return 'warning';
-  return 'neutral'; // incluye 'REGISTRADO' (solo DGA, sin veredicto propio)
+  return 'neutral'; // incluye 'REGISTRADO' (solo DGA, sin veredicto propio) y 'Sin datos'
 }
 
 /** Flujo de certificación (2026-09-05) — Borrador/Certificada/Rechazada,
@@ -2945,16 +2945,21 @@ function calculateOilPreview_(readings) {
   if (readings.fisicoquimico_realizado) {
     var rigidez = readings.rigidez_dielectrica_kv, agua = readings.agua_ppm,
       acidez = readings.numero_acido_mg_koh_g, tension = readings.tension_interfacial_dinas_cm;
-    var complete = [rigidez, agua, acidez, tension].every(function (v) { return typeof v === 'number' && !isNaN(v); });
-    if (complete) {
+    var isNum = function (v) { return typeof v === 'number' && !isNaN(v); };
+    var anyFqValue = isNum(rigidez) || isNum(agua) || isNum(acidez) || isNum(tension);
+    if (anyFqValue) {
+      // Cada umbral solo se evalúa si su parámetro fue capturado: un análisis
+      // parcial (p. ej. solo rigidez + acidez) igual puede detectar un problema
+      // real, y nunca bloquea el envío — refleja calculateOilAnalysis_ del backend.
+      var complete = isNum(rigidez) && isNum(agua) && isNum(acidez) && isNum(tension);
       var fqVerdict, fqSeverity;
-      if (acidez >= OIL_ACIDEZ_MAX || tension <= OIL_TENSION_INTERFACIAL_MIN) { fqVerdict = 'REQUIERE REGENERACIÓN / CAMBIO'; fqSeverity = 3; }
-      else if (rigidez <= OIL_RIGIDEZ_MIN || agua >= OIL_HUMEDAD_MAX) { fqVerdict = 'REQUIERE TERMOVACÍO'; fqSeverity = 2; }
-      else { fqVerdict = 'APROBADO'; fqSeverity = 1; }
-      sections.fisicoquimico = { verdict: fqVerdict, complete: true };
+      if ((isNum(acidez) && acidez >= OIL_ACIDEZ_MAX) || (isNum(tension) && tension <= OIL_TENSION_INTERFACIAL_MIN)) { fqVerdict = 'REQUIERE REGENERACIÓN / CAMBIO'; fqSeverity = 3; }
+      else if ((isNum(rigidez) && rigidez <= OIL_RIGIDEZ_MIN) || (isNum(agua) && agua >= OIL_HUMEDAD_MAX)) { fqVerdict = 'REQUIERE TERMOVACÍO'; fqSeverity = 2; }
+      else { fqVerdict = complete ? 'APROBADO' : 'APROBADO (datos parciales)'; fqSeverity = 1; }
+      sections.fisicoquimico = { verdict: fqVerdict, complete: complete };
       consider(fqVerdict, fqSeverity);
     } else {
-      sections.fisicoquimico = { verdict: 'Faltan datos', complete: false };
+      sections.fisicoquimico = { verdict: 'Sin datos', complete: false };
     }
   }
 
@@ -2988,7 +2993,8 @@ function renderOilPreview() {
 
   if (state.oil.fisicoquimico_realizado) {
     var fq = result.sections.fisicoquimico;
-    rows.push(['Fisicoquímico', fq.verdict, !fq.complete ? 'pending' : (fq.verdict === 'APROBADO' ? 'ok' : 'bad')]);
+    var fqCls = fq.verdict === 'Sin datos' ? 'pending' : (fq.verdict.indexOf('APROBADO') === 0 ? 'ok' : 'bad');
+    rows.push(['Fisicoquímico', fq.verdict, fqCls]);
   }
   if (state.oil.dga_realizado) {
     rows.push(['DGA', 'Registrado (sin veredicto automático)', 'pending']);
