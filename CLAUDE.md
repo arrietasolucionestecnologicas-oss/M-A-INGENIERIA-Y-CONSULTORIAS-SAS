@@ -1437,41 +1437,110 @@ lo primero que hay que revisar es si el deploy a Pages realmente se hizo
 
 ## Informes PDF de pruebas
 
-Generación automática, **dentro de `persistTest_()`**, justo después de
-guardar la prueba — no es una acción separada que el técnico deba disparar.
-Dos formatos, dos mecanismos de disparo distintos (ver
-"Arquitectura del informe eléctrico" más abajo): Aceite genera un PDF por
-cada envío (`generateOilTestReportPdf_`); TTR/Devanados/Aislamiento
-**regeneran un único PDF combinado por transformador**
-(`regenerateElectricalCombinedReport_`). Mismo mecanismo de construcción de
-PDF debajo de los dos.
+`persistTest_()` (al guardar una prueba individual) **ya no genera ningún
+PDF** — eso se decidió hace una semana (ver "Informe de Prueba Eléctrica"
+más abajo). Dos formatos, dos disparadores distintos: Aceite genera su PDF
+al certificar ESA prueba individual (`certifyTest_` →
+`generateOilTestReportPdf_`, un informe por envío certificado); TTR/
+Devanados/Aislamiento generan **un único PDF combinado por transformador**
+solo con la acción separada "Certificar Pruebas Eléctricas"
+(`certifyElectricalReport_` → `regenerateElectricalCombinedReport_`, ver esa
+sección). Mismo mecanismo de construcción de PDF debajo de los dos.
 
-### Mecanismo — `DocumentApp` programático, no plantilla de Google Docs
+### Mecanismo — copia de una plantilla con placeholders (2026-09-13, reemplaza la primera versión)
 
-Se evaluaron las dos opciones y se descartó la plantilla con reemplazo de
-texto **por los dos requisitos que más importan**: TTR necesita cualquier
-número de TAPs (tabla de tamaño variable) y Aceite necesita 1-3 secciones
-que pueden estar activas o no (secciones enteras condicionales). Una
-plantilla tiene una tabla de filas fijas — soportar "cualquier cantidad de
-TAPs" ahí igual requeriría manipular filas ya copiadas en código, tan
-frágil como construir desde cero pero con una capa extra de fragilidad para
-encontrar/borrar secciones por texto. Construir el documento completo por
-código evita eso: los bucles arman las tablas con cualquier cantidad de
-filas (`appendTtrResultsTable_`/`appendWindingResultsTable_` iteran
-`Object.keys(...)`/arrays sin límite), y las secciones de Aceite
-simplemente no se agregan si `calculated.sections.<nombre>` no existe
-(`generateOilTestReportPdf_`, tres `if` independientes).
+**Esta sección reemplaza una decisión de arquitectura anterior que decía
+justo lo contrario** ("se descartó la plantilla con reemplazo de texto"),
+tomada cuando el único mecanismo disponible era `DocumentApp` puro. El
+usuario pidió retomarla, pero generándola por código en vez de armarla a
+mano, para poder agregarle una marca de agua real (ver más abajo) — algo
+que `DocumentApp` no puede hacer de ninguna forma.
 
-Flujo: `DocumentApp.create(...)` (Doc temporal) → se arma el contenido →
-`doc.saveAndClose()` → `docFile.getAs('application/pdf')` → el PDF se
-guarda en `[Cliente]/Certificados de Pruebas/` (mismo `certificadosFolderId`
-que ya usa el adjunto crudo) → el Doc intermedio se manda a la papelera
-(`setTrashed(true)`) — solo el PDF queda como archivo real. Todo en
-`finalizeReportPdf_`.
+Los dos problemas que hicieron descartar la plantilla la primera vez siguen
+siendo reales, pero ya no bloquean el enfoque, porque se resolvieron
+explícitamente en vez de ignorarse:
 
-**Nunca bloquea el guardado de la prueba**: la generación va envuelta en
-`try/catch` dentro de `persistTest_` — si algo falla, la prueba se guarda
-igual, solo con `report_file_id` vacío.
+- **Tablas de filas variables** (TTR/Devanados/Aislamiento): la plantilla
+  solo trae la fila de encabezado (`TTR_TABLE_HEADER_`/`WINDING_TABLE_HEADER_`/
+  `WINDING_SECONDARY_TABLE_HEADER_`/`INSULATION_TABLE_HEADER_`); el informe
+  real localiza esa tabla ya copiada por la FORMA de su encabezado
+  (`findResultsTableByHeader_`: cantidad de celdas + texto de la primera —
+  6+"TAP"=TTR, 5+"TAP"=Devanados primario, 4+"FASE"=Devanados secundario,
+  5+"COMBINACIÓN"=Aislamiento) y le agrega las filas reales
+  (`appendDataRowsToTable_`, `table.appendTableRow()` de DocumentApp sobre
+  una tabla que ya existe).
+- **Secciones enteras que pueden no estar presentes** (alcance ofertado del
+  eléctrico, las 3 secciones independientes de Aceite, el aviso de
+  "teórico no disponible" de TTR, la tabla "Secundario" de Devanados, el
+  bloque de referencia al adjunto del laboratorio en Aceite): cada una
+  queda envuelta en la plantilla entre dos marcadores invisibles de texto
+  (`<<BLOQUE_X_INICIO>>`/`<<BLOQUE_X_FIN>>`, fuente tamaño 1,
+  `appendBlockStart_`/`appendBlockEnd_`). En tiempo de generación,
+  `resolveTemplateBlock_(body, nombre, keep)` ubica ambos marcadores con
+  `Body.findText()` (confirmado que existe en DocumentApp antes de diseñar
+  esto) y, si `keep` es `false`, borra TODO el rango entre ellos
+  (`Body.removeChild()`, de atrás hacia adelante para no invalidar índices
+  todavía por procesar); si `keep` es `true`, deja el contenido y borra
+  solo los 2 marcadores.
+
+**Las funciones que arman la ESTRUCTURA visual** (`appendSectionTitle_`,
+`appendReportHeader_`, `appendTestMetaSection_`, `appendVerdictBanner_`,
+`appendSignatureSection_`, etc.) **son literalmente las mismas de antes** —
+ya no las llama el informe real, solo `buildElectricalTemplateDoc_`/
+`buildOilTemplateDoc_` (los dos armadores de plantilla), pasándoles objetos
+de datos "de mentira" donde cada campo es su propio placeholder
+(`TEMPLATE_SITE_`, `TEMPLATE_TRANSFORMER_`, `templateTestMeta_(...)`) — el
+mismo código de armado sirve para las dos cosas, así la plantilla nunca
+puede desalinearse visualmente del informe real por accidente.
+
+**Banners de veredicto/aviso**: `body.replaceText()` cambia texto, nunca
+estilo de celda — el color real (verde/amarillo/rojo) se fija por separado
+con `setVerdictBannerColor_` (ubica la celda por su placeholder ANTES de
+reemplazar el texto, porque una vez reemplazado ya no se puede volver a
+encontrar por ese placeholder).
+
+**Cómo se generan las 2 plantillas**: `crearPlantillasInformes_` (acción
+`generateReportTemplates`, solo Administrador) — botón "Generar plantillas
+de informes" en Administración (ver esa sección). Ni Claude puede correr
+esto directamente (`clasp run` pide un permiso de cuenta que solo el dueño
+puede activar, ver "Verificación" más abajo) ni debe escribir la
+contraseña de `admin.mya` — por eso es un botón que el usuario mismo hace
+clic con su propia sesión ya logueada. Los 2 `fileId` quedan en Propiedades
+del script (`TEMPLATE_ELECTRICO_FILE_ID`/`TEMPLATE_ACEITE_FILE_ID`,
+`getElectricalTemplateFileId_`/`getOilTemplateFileId_`) — si cualquiera de
+los dos falta, el informe real lanza un error claro en vez de generar algo
+roto ("genera las plantillas primero desde Administración").
+
+**El único paso manual del usuario, y por qué es inevitable**: agregar el
+watermark del logo a cada plantilla ya generada (Insertar imagen → Ajustar
+texto: Detrás del texto → Opciones de imagen → Transparencia 85-92% →
+centrarla arrastrando). Se intentó automatizar esto por la Docs API
+avanzada y se confirmó, contra la referencia oficial, que **no existe
+ningún request de `batchUpdate` que cree o convierta una imagen a
+"posicionada"/`BEHIND_TEXT`** — de los 48 tipos de request que existen,
+solo `deletePositionedObject` toca objetos posicionados (para borrar uno
+que ya exista), ninguno para crearlo; el fondo de página
+(`DocumentStyle.background`) tampoco admite imagen, solo color sólido. Un
+objeto posicionado únicamente puede crearse a mano en la UI de Docs. Una
+vez agregado a mano, `makeCopy()` lo copia intacto en cada informe real
+(vive anclado a la página, no al flujo del cuerpo — agregar
+párrafos/tablas al `body` no lo toca).
+
+Flujo real de generación (`regenerateElectricalCombinedReport_`/
+`generateOilTestReportPdf_`): `DriveApp.getFileById(templateId).makeCopy(...)`
+→ `DocumentApp.openById(copy.getId())` → `body.replaceText()` para cada
+placeholder escalar → `resolveTemplateBlock_` por cada bloque opcional →
+`appendDataRowsToTable_` en las tablas variables → `finalizeReportPdf_`
+(reemplaza `<<FECHA_GENERACION>>` en el pie ya copiado, `doc.saveAndClose()`,
+`pinResultsTableHeaders_` vía Docs API, exporta a PDF, guarda en
+`[Cliente]/Certificados de Pruebas/`, manda el Doc intermedio a la
+papelera). `finalizeReportPdf_` ya NO arma el pie de página desde cero
+(`doc.addFooter()`) — lo hereda de la plantilla copiada, solo le reemplaza
+su placeholder de fecha.
+
+**Nunca bloquea el guardado de la prueba individual**: eso no cambió —
+`persistTest_` nunca generó/genera nada. Sí puede fallar la certificación
+completa si falta alguna plantilla (error explícito, no un PDF corrupto).
 
 ### Logo — subido a Drive, no embebido en el código
 
@@ -1792,16 +1861,24 @@ del histórico completo, `electrical_report_file_id` en `TRANSFORMADORES`
 sigue siendo solo el caché del más reciente. Aceite dieléctrico sigue
 fuera de este mecanismo, sin cambios.
 
-- **TTR** (`appendTtrResultsTable_`): una fila por (TAP, fase) —
-  `calculated.taps` recorrido con `Object.keys().map(Number).sort()` para
-  que salga en orden numérico aunque el objeto no lo garantice.
-- **Devanados** (`appendWindingResultsTable_`): tabla del primario (una
-  fila por TAP × fase) + tabla "Secundario" aparte **solo si**
-  `calculated.secondary` no es `null`.
-- **Aislamiento** (`appendInsulationResultsTable_`): una fila por
-  combinación de `calculated.measurements` (en la práctica siempre
-  AT-BT/AT-Tierra/BT-Tierra, pero el código no asume esas claves — igual
-  de genérico que el propio `calculateInsulation_`).
+- **TTR** (`computeTtrRows_`): una fila por (TAP, fase) — `calculated.taps`
+  recorrido con `Object.keys().map(Number).sort()` para que salga en orden
+  numérico aunque el objeto no lo garantice.
+- **Devanados** (`computeWindingRows_`/`computeWindingSecondaryRows_`):
+  filas del primario (una por TAP × fase) + filas "Secundario" aparte
+  **solo si** `calculated.secondary` no es `null` (la tabla "Secundario"
+  misma solo sobrevive en el documento si aplica, ver
+  `resolveTemplateBlock_(body, 'DEVANADOS_SECUNDARIO', ...)` en el
+  "Mecanismo" de arriba).
+- **Aislamiento** (`computeInsulationRows_`): una fila por combinación de
+  `calculated.measurements` (en la práctica siempre AT-BT/AT-Tierra/
+  BT-Tierra, pero el código no asume esas claves — igual de genérico que
+  el propio `calculateInsulation_`).
+
+(Desde el cambio de arquitectura de plantillas del 2026-09-13, estas 3
+funciones ya no arman una tabla completa desde cero — solo calculan las
+filas; `appendDataRowsToTable_` las inserta en la tabla que ya trae la
+plantilla copiada. Ver "Mecanismo" arriba para el detalle completo.)
 
 **Encabezado de tabla repetido — Docs API avanzada, no un truco manual
 (2026-09-12, reemplaza un intento anterior el mismo día)**. Primera
@@ -1833,10 +1910,10 @@ no expone `startIndex`, un dato que solo trae este servicio) → recorre
 de si Devanados trae su tabla "Secundario" o no) → arma un
 `pinTableHeaderRows` por cada una encontrada.
 
-`appendPaginatedResultsTable_` sigue existiendo (mismo nombre, mismos
-llamadores en TTR/Devanados/Aislamiento) pero ahora es solo un alias fino
-de `appendResultsTable_` con una sola tabla — ya no trocea nada ni fuerza
-saltos de página.
+(`appendPaginatedResultsTable_` de este mismo cambio ya **no existe** —
+con el cambio de arquitectura de plantillas del día siguiente, las tablas
+de resultados dejaron de armarse en el momento; la plantilla ya trae la
+fila de encabezado sola, ver "Mecanismo" arriba.)
 
 **Confirmado que NO existe** (verificado dos veces contra la referencia
 oficial de `TableRowStyle`, incluyendo un intento explícito de encontrar
@@ -1850,33 +1927,32 @@ es un límite real de la plataforma, igual que la ausencia de
 "page-break-inside" ya documentada para `DocumentApp`. No se implementó
 porque no hay forma de implementarlo.
 
-**Pendiente de decisión del usuario, no implementado — marca de agua
-del logo**: pidió replicar la marca de agua centrada y transparente que
-usan en sus formatos físicos, con una receta de 4 pasos vía Docs API
-(`insertInlineImage` → convertir a imagen posicionada `BEHIND_TEXT` →
-`imageProperties.transparency` 0.85-0.92 → centrarla con offsets).
-Verificado contra la referencia oficial (lista completa de los 48 tipos
-de request de `batchUpdate`, más `ReplaceImageRequest`, más
+**Marca de agua del logo — resuelta (2026-09-13) con el cambio de
+arquitectura de plantillas, un día después de confirmar que era imposible
+por API.** El intento directo (receta de 4 pasos vía Docs API:
+`insertInlineImage` → convertir a imagen posicionada `BEHIND_TEXT` →
+`imageProperties.transparency` 0.85-0.92 → centrarla con offsets) se
+descartó tras verificar contra la referencia oficial (lista completa de
+los 48 tipos de request de `batchUpdate`, más `ReplaceImageRequest`, más
 `DocumentStyle.background`) que **no existe ningún request que cree o
 convierta un objeto a "posicionado"/`BEHIND_TEXT`** — solo
 `deletePositionedObject` existe (borrar uno ya existente), y el fondo de
 página (`Background`) solo admite un color sólido, nunca una imagen. Un
 objeto posicionado únicamente puede crearse a mano en la UI de Google
-Docs (arrastrar la imagen → "Ajustar texto" → "Detrás del texto"), nunca
-por API — límite real, confirmado en 4 consultas distintas contra la
-documentación oficial, no una limitación de esta implementación.
-**Alternativa propuesta, no construida todavía**: crear UNA VEZ, a mano
-en la UI de Docs, un documento plantilla que solo tenga el logo ya
-posicionado/transparente/centrado (el usuario o quien tenga acceso a
-Docs, no Claude — este paso es inherentemente manual e interactivo), y
-que el generador arranque cada informe copiando ese archivo
-(`DriveApp.getFileById(templateId).makeCopy(...)`) en vez de
-`DocumentApp.create(...)`, abriendo la copia con `DocumentApp.openById(...)`
-y agregando el contenido dinámico igual que hoy — un objeto posicionado
-vive anclado a la página, no al flujo del cuerpo, así que agregar
-párrafos/tablas no debería tocarlo. Falta que el usuario decida si quiere
-seguir este camino y construya la plantilla antes de que se implemente el
-lado del código.
+Docs — límite real, confirmado en 4 consultas distintas, no una
+limitación de esta implementación.
+
+La salida: en vez de intentar automatizar lo imposible, se rediseñó todo
+el generador alrededor de una plantilla persistente (ver "Mecanismo" al
+inicio de esta sección) que el usuario edita UNA sola vez a mano
+(Insertar imagen → Detrás del texto → transparencia → centrada) y que el
+código copia (`makeCopy()`) en cada informe real — el objeto posicionado
+sobrevive la copia intacto porque vive anclado a la página, no al flujo
+del cuerpo. Ya implementado y desplegado; el paso manual del usuario
+(generar las plantillas desde el botón en Administración, después
+abrirlas y agregar el watermark) sigue pendiente de que él lo haga — sin
+eso, cualquier intento de certificar un informe (Eléctrico o Aceite) falla
+con un mensaje explícito en vez de generar un PDF sin plantilla.
 
 ### Informe de Análisis de Aceite Dieléctrico — plantilla distinta
 
@@ -1888,7 +1964,13 @@ DGA con los 9 gases + nota de que no tiene interpretación automática
 todavía; PCB con los 7 Aroclores + total + nota IDEAM) → referencia al
 adjunto crudo si el técnico subió uno ("Este informe es un resumen/
 interpretación... no reemplaza el certificado del laboratorio acreditado")
-→ veredicto general → Área de control de calidad.
+→ veredicto general → Área de control de calidad. (Desde el cambio de
+arquitectura de plantillas del 2026-09-13, esta descripción sigue siendo
+la estructura visual real, pero ya no se arma así en código en cada
+informe — es un `makeCopy()` de la plantilla + `replaceText`/
+`resolveTemplateBlock_`, ver "Mecanismo" arriba. A diferencia del
+Eléctrico, las 3 tablas de Aceite tienen cantidad de filas fija, así que
+no necesitan `appendDataRowsToTable_` — son placeholder por celda.)
 
 ### Storage y el link en el historial de pruebas
 
@@ -2118,6 +2200,21 @@ de esa app por accidente. Es irreversible — a diferencia de desactivar,
 borra la fila completa de la hoja "Usuarios". En el frontend, el botón
 "Eliminar" no se pinta para el usuario con el que se tiene la sesión
 activa (mismo criterio, a nivel de UI).
+
+### Plantillas de informes — botón agregado (2026-09-13)
+
+A diferencia de todo lo demás en esta sección, **no toca Control de
+Acceso** — es una acción propia del backend de M&A
+(`generateReportTemplates` → `crearPlantillasInformes_`, ver "Informes PDF
+de pruebas" arriba para el detalle completo del mecanismo de plantillas).
+Se agregó acá (nuevo panel "Plantillas de informes" en `view-admin`, botón
+`handleGenerateReportTemplates_`) solo porque es la única acción de
+Administrador que necesitaba un disparador manual sin depender de `clasp
+run` (bloqueado, ver "Verificación") ni de que Claude escriba la
+contraseña de `admin.mya` (prohibido). Un clic regenera ambas plantillas
+desde cero **sin watermark** — si ya existían con el watermark agregado a
+mano, hay que volver a agregarlo después de cada clic; el botón lo advierte
+explícitamente antes de confirmar.
 
 ## Convenciones de frontend que hay que respetar
 
@@ -2460,3 +2557,17 @@ verificación en vivo de los fixes de PDF de esta misma sesión. Mismo
 riesgo que el resto de este archivo advierte: el cliente real ya está en
 producción, así que antes de borrar hay que confirmar con el usuario que
 este id específico es el de verificación, nunca asumir por el nombre.
+
+**Pendiente urgente, acción del usuario (2026-09-13) — sin esto, certificar
+CUALQUIER informe (Eléctrico o Aceite) falla**: el cambio de arquitectura
+de plantillas (ver "Informes PDF de pruebas" arriba) dejó el sistema sin
+ninguna plantilla generada todavía. El usuario debe: (1) entrar a
+Administración → "Plantillas de informes" → clic en "Generar plantillas de
+informes"; (2) abrir cada una de las 2 URLs devueltas y agregarle el
+watermark del logo a mano (Insertar imagen → Ajustar texto: Detrás del
+texto → Opciones de imagen → Transparencia 85-92% → centrarla). Hasta que
+esto se haga, `getElectricalTemplateFileId_`/`getOilTemplateFileId_`
+devuelven `null` y `regenerateElectricalCombinedReport_`/
+`generateOilTestReportPdf_` lanzan un error explícito en vez de generar
+un PDF — Claude no puede hacer este paso (ni `clasp run` ni la contraseña
+de `admin.mya` están disponibles, ver "Verificación").
