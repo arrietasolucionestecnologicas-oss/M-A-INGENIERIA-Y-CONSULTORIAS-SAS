@@ -2816,10 +2816,17 @@ diferida. Todo el backend ya está desplegado en producción
 puntos que lo tocaron (5 y 6; 7/8/9 son solo backend/plantilla). Falta,
 en este orden (regenerar plantillas primero, todo lo demás depende de
 eso):
-1. Regenerar las 2 plantillas (Eléctrico/Aceite) desde Administración —
-   **obligatorio**, cambiaron los bloques de TTR/Devanados/Aislamiento en
-   los puntos 5/7/8. **Avisar al usuario que debe reponer el watermark**
-   en ambas plantillas después (se pierde siempre que se regeneran).
+1. [x] **Regeneradas 2026-09-13.** El usuario inició sesión él mismo en el
+   navegador embebido (nunca se tocó su contraseña); como el botón
+   dispara un `confirm()` nativo que el motor del navegador embebido
+   auto-rechaza (mismo problema ya documentado antes en esta sección), se
+   llamó `callApi('generateReportTemplates', 'POST', {})` directo desde
+   la consola — mismo bypass de solo-el-diálogo ya usado antes, no de
+   login. Nuevos archivos: Eléctrico
+   `1uMH0OR1A8AUZ0idXjafrj8ah8FgcmPENocBGpLUi5gs`, Aceite
+   `120niME2HGgBXdE5YtU9R_ejrWwvHtMNfvRtyCmu1nNM`. **Pendiente: el usuario
+   debe reponer el watermark en ambas** (se pierde siempre que se
+   regeneran) antes de certificar cualquier informe real.
 2. Aislamiento: una prueba con `metodo: 'simple'` y otra con
    `'completo'` — confirmar tabla de 2 columnas vs. 5 columnas, y que
    MÉTODO/TENSIÓN DE PRUEBA aparecen bien en la grilla de datos (punto 5).
