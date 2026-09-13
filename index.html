@@ -610,28 +610,33 @@
         </div>
 
         <div class="test-grid">
-          <div class="panel">
-            <div class="panel-head">
-              <h2>Lecturas por TAP</h2>
+          <div class="panel" id="wrPanelPrimario">
+            <label class="panel-head oil-section-head">
+              <span class="oil-section-toggle-group">
+                <input type="checkbox" id="wrSectionPrimario" checked onchange="toggleWrSection_('primario')">
+                <h2>Primario &mdash; Lecturas por TAP</h2>
+              </span>
               <span class="hint">Agrega los TAPs que midas en esta visita</span>
-            </div>
-            <div class="form-field-block">
-              <div class="field">
-                <label>Instrumento utilizado</label>
-                <input class="mono" id="wrInstrument" value="Micro-ohmmeter DLRO-10" list="instrumentCatalogList">
+            </label>
+            <div id="wrBodyPrimario">
+              <div class="form-field-block">
+                <div class="field">
+                  <label>Instrumento utilizado</label>
+                  <input class="mono" id="wrInstrument" value="Micro-ohmmeter DLRO-10" list="instrumentCatalogList">
+                </div>
               </div>
-            </div>
-            <div class="tap-chip-row" id="wrTapChipRow"></div>
-            <div class="form-field-block">
-              <div class="field" style="max-width:220px;">
-                <label>Temperatura de devanado &mdash; TAP <span id="wrTempTapLabel">&mdash;</span> (&deg;C) <span style="color:var(--danger);">*</span></label>
-                <input class="mono" id="wrTemp" type="text" inputmode="decimal" pattern="[0-9]*[.,]?-?[0-9]*" oninput="updateWrTemp(this.value)">
+              <div class="tap-chip-row" id="wrTapChipRow"></div>
+              <div class="form-field-block">
+                <div class="field" style="max-width:220px;">
+                  <label>Temperatura de devanado &mdash; TAP <span id="wrTempTapLabel">&mdash;</span> (&deg;C) <span style="color:var(--danger);">*</span></label>
+                  <input class="mono" id="wrTemp" type="text" inputmode="decimal" pattern="[0-9]*[.,]?-?[0-9]*" oninput="updateWrTemp(this.value)">
+                </div>
               </div>
-            </div>
-            <div class="phase-entry-grid" id="wrPhaseEntries"></div>
-            <div class="matrix-actions">
-              <button class="btn" onclick="addWrTap()">+ Agregar TAP</button>
-              <button class="btn" id="removeWrTapBtn" onclick="removeWrTap()">Quitar TAP actual</button>
+              <div class="phase-entry-grid" id="wrPhaseEntries"></div>
+              <div class="matrix-actions">
+                <button class="btn" onclick="addWrTap()">+ Agregar TAP</button>
+                <button class="btn" id="removeWrTapBtn" onclick="removeWrTap()">Quitar TAP actual</button>
+              </div>
             </div>
             <div class="form-field-block">
               <div class="field">
@@ -639,14 +644,14 @@
                 <input id="wrEvidence" type="file" accept="application/pdf,image/*">
               </div>
             </div>
-            <p class="field-note">Al enviar, la prueba queda como <strong>Borrador</strong> pendiente de certificación — el informe se genera solo cuando un Supervisor o Administrador la certifique.</p>
+            <p class="field-note">Marca solo lo que se probó en esta visita — primario, secundario, o ambos. Al enviar, la prueba queda como <strong>Borrador</strong> pendiente de certificación — el informe se genera solo cuando un Supervisor o Administrador la certifique.</p>
             <div class="submit-row">
               <button class="btn primary" id="submitWrBtn" onclick="submitWinding()">Enviar prueba</button>
               <span class="status-line" id="wrSubmitStatus" hidden></span>
             </div>
           </div>
 
-          <div>
+          <div id="wrPreviewPrimario">
             <div class="panel">
               <div class="panel-head">
                 <h2>Vista previa &mdash; TAP <span id="wrPreviewTapLabel">&mdash;</span></h2>
@@ -657,21 +662,26 @@
             </div>
           </div>
 
-          <div class="panel">
-            <div class="panel-head">
-              <h2>Devanado secundario</h2>
+          <div class="panel" id="wrPanelSecundario">
+            <label class="panel-head oil-section-head">
+              <span class="oil-section-toggle-group">
+                <input type="checkbox" id="wrSectionSecundario" checked onchange="toggleWrSection_('secundario')">
+                <h2>Devanado secundario</h2>
+              </span>
               <span class="hint">Sin cambiador de tomas &mdash; una sola medición</span>
-            </div>
-            <div class="form-field-block">
-              <div class="field" style="max-width:220px;">
-                <label>Temperatura de devanado (&deg;C) <span style="color:var(--danger);">*</span></label>
-                <input class="mono" id="wrSecondaryTemp" type="text" inputmode="decimal" pattern="[0-9]*[.,]?-?[0-9]*" oninput="updateWrSecondaryTemp(this.value)">
+            </label>
+            <div id="wrBodySecundario">
+              <div class="form-field-block">
+                <div class="field" style="max-width:220px;">
+                  <label>Temperatura de devanado (&deg;C) <span style="color:var(--danger);">*</span></label>
+                  <input class="mono" id="wrSecondaryTemp" type="text" inputmode="decimal" pattern="[0-9]*[.,]?-?[0-9]*" oninput="updateWrSecondaryTemp(this.value)">
+                </div>
               </div>
+              <div class="phase-entry-grid" id="wrSecondaryPhaseEntries"></div>
             </div>
-            <div class="phase-entry-grid" id="wrSecondaryPhaseEntries"></div>
           </div>
 
-          <div>
+          <div id="wrPreviewSecundario">
             <div class="panel">
               <div class="panel-head">
                 <h2>Vista previa &mdash; Secundario</h2>

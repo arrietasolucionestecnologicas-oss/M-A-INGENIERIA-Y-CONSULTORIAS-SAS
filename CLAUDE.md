@@ -22,7 +22,8 @@ compacto del PDF) necesitan que 2/3/4/5 ya existan primero.
    implementado** para TTR/Devanados; Aislamiento se deja con las 3
    combinaciones siempre, decisión confirmada de nuevo con el usuario —
    ver detalle abajo).
-4. [ ] **Devanados: solo primario, solo secundario, o ambos**.
+4. [x] **Devanados: solo primario, solo secundario, o ambos** (completado
+   2026-09-13) — ver detalle abajo.
 5. [ ] **Aislamiento: método Simple (solo resistencia) vs Completo
    (DAR/IP)** — hoy exige DAR/IP siempre, hay que dejar de forzarlo.
 6. [ ] **Repetir una lectura puntual con nota**, sin perder la anterior —
@@ -83,6 +84,43 @@ aviso "Teórico no disponible" correctamente activado (el equipo de prueba
 no tenía `lv_nominal_voltage`, caso ya manejado por
 `theoreticalAvailable`). Nada de esto necesitó cambios de código — solo
 confirmar que ya funcionaba.
+
+### Punto 4 — Devanados: primario y/o secundario, cada uno opcional
+
+A diferencia de 2/3, este sí necesitó cambios reales — antes de este
+punto, el secundario ya se enviaba SIEMPRE (con ceros si no se tocaba, sin
+ninguna forma de decirle a la app "esto no se probó") y el primario
+**exigía al menos 1 TAP siempre** (no existía "solo secundario").
+
+- **`calculateWindingResistance_`** (`Código.gs`): la validación pasó de
+  "measurements vacío → error" a "ni primario ni secundario → error".
+  `primaryVerdict` ahora es `null` (no `'APROBADO'` por vacuidad de
+  `.every()` en un arreglo vacío) cuando no hay TAPs primarios;
+  `overallVerdict` combina solo las partes realmente presentes.
+- **Plantilla** (`buildElectricalTemplateDoc_`): la tabla del primario
+  ahora vive en su propio bloque removible `DEVANADOS_PRIMARIO`, simétrico
+  al `DEVANADOS_SECUNDARIO` que ya existía. `regenerateElectricalCombinedReport_`
+  resuelve ambos por separado (`isPresent && calc.taps.length > 0` /
+  `isPresent && !!calc.secondary`) — se regeneraron las 2 plantillas para
+  que tomaran el bloque nuevo (mismo costo de siempre: watermark perdido,
+  el usuario lo repuso).
+- **Frontend** (`app.js`/`index.html`): 2 checkboxes "Primario"/
+  "Secundario" en el formulario de Devanados (mismo patrón visual que las
+  3 secciones de Aceite, `oil-section-head`), ambos marcados por defecto
+  (preserva el comportamiento de siempre si nadie los toca).
+  `state.wr.primario_realizado`/`secundario_realizado` — `toggleWrSection_(section)`
+  oculta el panel de captura Y el de vista previa, y guarda la bandera en
+  el borrador local. `buildWindingRequestBody()` envía `measurements: []`
+  o `secondary: null` (explícito, no un objeto en ceros) cuando esa
+  sección está desmarcada. Validación de envío: exige que al menos una de
+  las dos esté marcada.
+
+Verificado en vivo: prueba de Devanados con `measurements: []` y solo
+secundario para `DEMO-MONOFASICO-01` — el backend calculó
+`overallVerdict: APROBADO` sin exigir el primario, y el informe eléctrico
+regenerado muestra el bloque "Datos de la prueba — Resistencia de
+Devanados" seguido directo de "SECUNDARIO", sin ningún rastro de la tabla
+ni el título del primario.
 
 ## Arquitectura activa (esta es la que corre en producción)
 

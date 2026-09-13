@@ -2708,6 +2708,16 @@ function renderWindingFormContext() {
     (editing ? ' · <strong>Editando borrador existente</strong> · <a href="#" onclick="event.preventDefault(); cancelEditDraft_();">Cancelar edición</a>' : '');
   document.getElementById('wrTenantChip').textContent = state.username + ' · ' + state.role;
   document.getElementById('submitWrBtn').textContent = editing ? 'Guardar cambios en el borrador' : 'Enviar prueba';
+
+  ['primario', 'secundario'].forEach(function (section) {
+    var checkboxIds = { primario: 'wrSectionPrimario', secundario: 'wrSectionSecundario' };
+    var bodyIds = { primario: 'wrBodyPrimario', secundario: 'wrBodySecundario' };
+    var previewIds = { primario: 'wrPreviewPrimario', secundario: 'wrPreviewSecundario' };
+    var checked = state.wr[section + '_realizado'] !== false;
+    document.getElementById(checkboxIds[section]).checked = checked;
+    document.getElementById(bodyIds[section]).hidden = !checked;
+    document.getElementById(previewIds[section]).hidden = !checked;
+  });
 }
 
 /** Los identificadores de fase de TTR (H1H2-X1X2) y de resistencia de devanados (H1-H2) difieren; se mapean explícitamente. */
@@ -2734,6 +2744,10 @@ function defaultWrSecondary_() {
   return { windingTemperatureC: 25, phases: phases };
 }
 
+/** Punto 4 (2026-09-13): primario y secundario ahora son cada uno opcional
+ *  — el técnico marca solo lo que probó en esta visita. Ambos empiezan
+ *  marcados por defecto (comportamiento histórico: siempre se pedían los
+ *  dos), el técnico desmarca el que no aplique. */
 function resetWindingStateFromTransformer() {
   var positions = tapPositions();
   var firstTap = positions.length ? positions[0] : 1;
@@ -2742,12 +2756,30 @@ function resetWindingStateFromTransformer() {
     state.wr.readings = draft.readings;
     state.wr.currentTap = Object.keys(draft.readings).map(Number).sort(function (a, b) { return a - b; })[0];
     state.wr.secondary = draft.secondary || defaultWrSecondary_();
+    state.wr.primario_realizado = draft.primario_realizado !== false;
+    state.wr.secundario_realizado = draft.secundario_realizado !== false;
     return;
   }
   state.wr.currentTap = firstTap;
   state.wr.readings = {};
   state.wr.readings[firstTap] = { windingTemperatureC: 25, phases: defaultWrPhases_() };
   state.wr.secondary = defaultWrSecondary_();
+  state.wr.primario_realizado = true;
+  state.wr.secundario_realizado = true;
+}
+
+/** Marca/desmarca la sección Primario o Secundario — mismo patrón que
+ *  toggleOilSection_ para las 3 secciones de Aceite. No borra los datos ya
+ *  digitados, solo oculta la sección y evita que se envíe. */
+function toggleWrSection_(section) {
+  var checkboxIds = { primario: 'wrSectionPrimario', secundario: 'wrSectionSecundario' };
+  var bodyIds = { primario: 'wrBodyPrimario', secundario: 'wrBodySecundario' };
+  var previewIds = { primario: 'wrPreviewPrimario', secundario: 'wrPreviewSecundario' };
+  var checked = document.getElementById(checkboxIds[section]).checked;
+  document.getElementById(bodyIds[section]).hidden = !checked;
+  document.getElementById(previewIds[section]).hidden = !checked;
+  state.wr[section + '_realizado'] = checked;
+  refreshWinding();
 }
 
 function renderWrTapChips() {
@@ -2895,6 +2927,10 @@ function renderWindingSecondaryPreview() {
     '<span class="tol">desbalance máx. ' + result.maxUnbalance.toFixed(2) + ' % &middot; umbral 5&nbsp;%</span>';
 }
 
+/** Punto 4 (2026-09-13): `measurements`/`secondary` solo se incluyen si su
+ *  sección está marcada — un `[]`/`null` explícito, no un objeto en ceros,
+ *  para que calculateWindingResistance_ en el backend sepa que de verdad
+ *  no se probó, no que se probó y dio cero. */
 function buildWindingRequestBody() {
   var taps = Object.keys(state.wr.readings).map(Number).sort(function (a, b) { return a - b; });
   return {
@@ -2902,11 +2938,13 @@ function buildWindingRequestBody() {
     instrument_used: document.getElementById('wrInstrument').value,
     operador_nombre: getOperatorName_(),
     readings: {
-      measurements: taps.map(function (p) {
+      measurements: state.wr.primario_realizado !== false ? taps.map(function (p) {
         var tap = state.wr.readings[p];
         return { tapPosition: p, windingTemperatureC: tap.windingTemperatureC, phases: tap.phases };
-      }),
-      secondary: { windingTemperatureC: state.wr.secondary.windingTemperatureC, phases: state.wr.secondary.phases }
+      }) : [],
+      secondary: state.wr.secundario_realizado !== false
+        ? { windingTemperatureC: state.wr.secondary.windingTemperatureC, phases: state.wr.secondary.phases }
+        : null
     }
   };
 }
@@ -2917,13 +2955,24 @@ function refreshWinding() {
   renderWindingPreview();
   renderWrSecondaryPhaseEntries();
   renderWindingSecondaryPreview();
-  saveDraft_('mya_draft_wr_' + state.currentTransformerId, { readings: state.wr.readings, secondary: state.wr.secondary });
+  saveDraft_('mya_draft_wr_' + state.currentTransformerId, {
+    readings: state.wr.readings,
+    secondary: state.wr.secondary,
+    primario_realizado: state.wr.primario_realizado,
+    secundario_realizado: state.wr.secundario_realizado
+  });
 }
 
 function submitWinding() {
   var btn = document.getElementById('submitWrBtn');
   var status = document.getElementById('wrSubmitStatus');
   var editingId = state.editingDraftTestId && state.editingTestType === 'RESISTENCIA_DEVANADOS' ? state.editingDraftTestId : null;
+
+  if (state.wr.primario_realizado === false && state.wr.secundario_realizado === false) {
+    setStatus_(status, 'Marca al menos Primario o Secundario antes de enviar', false, true);
+    return;
+  }
+
   btn.disabled = true;
   setStatus_(status, editingId ? 'Guardando cambios…' : 'Enviando…', false);
 

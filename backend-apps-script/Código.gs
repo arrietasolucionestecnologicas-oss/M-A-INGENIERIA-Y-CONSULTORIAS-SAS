@@ -1411,7 +1411,10 @@ function computePhaseUnbalance_(phases) {
  */
 function calculateWindingResistance_(readings) {
   var measurements = readings.measurements || [];
-  if (measurements.length === 0) throw new Error('Debe incluir al menos un TAP con lecturas de resistencia de devanados');
+  var hasSecondaryInput = !!(readings.secondary && Object.keys(readings.secondary.phases || {}).length);
+  if (measurements.length === 0 && !hasSecondaryInput) {
+    throw new Error('Debe incluir al menos una lectura de resistencia de devanados (primario o secundario)');
+  }
 
   var tapResults = measurements.map(function (tap) {
     if (tap.windingTemperatureC === undefined || tap.windingTemperatureC === null) {
@@ -1430,10 +1433,15 @@ function calculateWindingResistance_(readings) {
     };
   });
 
-  var primaryVerdict = tapResults.every(function (t) { return t.tapVerdict === 'APROBADO'; }) ? 'APROBADO' : 'RECHAZADO';
+  // `null` (no "APROBADO" por vacuidad de .every() en un arreglo vacío) cuando
+  // no se probó el primario — el punto 4 (2026-09-13) permite enviar solo
+  // secundario, y un primario nunca probado no debe contar como "aprobado".
+  var primaryVerdict = tapResults.length > 0
+    ? (tapResults.every(function (t) { return t.tapVerdict === 'APROBADO'; }) ? 'APROBADO' : 'RECHAZADO')
+    : null;
 
   var secondaryResult = null;
-  if (readings.secondary && Object.keys(readings.secondary.phases || {}).length) {
+  if (hasSecondaryInput) {
     if (readings.secondary.windingTemperatureC === undefined || readings.secondary.windingTemperatureC === null) {
       throw new Error('El devanado secundario no tiene windingTemperatureC (obligatorio)');
     }
@@ -1447,7 +1455,11 @@ function calculateWindingResistance_(readings) {
     };
   }
 
-  var overallVerdict = (primaryVerdict === 'APROBADO' && (!secondaryResult || secondaryResult.verdict === 'APROBADO'))
+  // Combina solo las partes realmente presentes — antes del punto 4 siempre
+  // había primario, así que este `every` de facto solo miraba el secundario
+  // opcional; ahora cualquiera de los dos puede faltar.
+  var overallVerdict = ((primaryVerdict === null || primaryVerdict === 'APROBADO') &&
+    (secondaryResult === null || secondaryResult.verdict === 'APROBADO'))
     ? 'APROBADO' : 'RECHAZADO';
 
   return {
@@ -2420,8 +2432,10 @@ function buildElectricalTemplateDoc_() {
 
   appendBlockStart_(body, 'DEVANADOS');
   appendTestMetaSection_(body, templateTestMeta_('DEVANADOS'), 'Resistencia de Devanados');
+  appendBlockStart_(body, 'DEVANADOS_PRIMARIO');
   appendSectionTitle_(body, 'Resultados — Resistencia de Devanados');
   appendResultsTable_(body, [WINDING_TABLE_HEADER_]);
+  appendBlockEnd_(body, 'DEVANADOS_PRIMARIO');
   appendBlockStart_(body, 'DEVANADOS_SECUNDARIO');
   var secTitle = body.appendParagraph('SECUNDARIO');
   secTitle.editAsText().setBold(true).setFontSize(10);
@@ -2642,6 +2656,9 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
     }
 
     if (type === 'RESISTENCIA_DEVANADOS') {
+      // Punto 4 (2026-09-13): primario y secundario ahora son cada uno
+      // opcional — se prueba solo primario, solo secundario, o ambos.
+      resolveTemplateBlock_(body, 'DEVANADOS_PRIMARIO', isPresent && !!(calc.taps && calc.taps.length > 0));
       resolveTemplateBlock_(body, 'DEVANADOS_SECUNDARIO', isPresent && !!calc.secondary);
     }
 
