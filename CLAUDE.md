@@ -1549,6 +1549,98 @@ certificación de TTR, el informe combinado se generó con esa misma prueba
 incluida en el mismo llamado que la certificó (antes del fix quedaba
 excluida). Dato de prueba borrado al terminar.
 
+### Firma fija del ingeniero responsable — tercera columna "APROBADO POR"
+
+**Agregado (2026-09-12)**, a pedido explícito del usuario: subió una foto
+real de la firma de Michael Peña (Ingeniero Eléctrico) para que aparezca
+en todo certificado generado. Mismo patrón que el logo
+(`getLogoBlob_`/`uploadLogoAsset_`): `ENGINEER_SIGNATURE_NAME_`/
+`_TITLE_` (constantes fijas en código — hoy solo hay un ingeniero
+responsable; si eso cambia, hay que editarlas y volver a desplegar),
+`getEngineerSignatureBlob_()`, y la acción `uploadEngineerSignatureAsset`
+(solo Administrador) que sube el archivo a la carpeta raíz y persiste su
+`fileId` en Propiedades del script (`ENGINEER_SIGNATURE_FILE_ID`) — ya
+subida en vivo. A diferencia de "PROBADO POR"/"CERTIFICADO POR" (que
+cambian según la prueba real), esta columna **siempre** es la misma
+persona, en todo informe — un sello de aprobación técnica, no un dato de
+la prueba. Si nunca se sube, la columna queda solo con nombre y título,
+sin imagen (mismo criterio de "nunca bloquear" que el logo).
+
+### Auditoría del generador de PDF (2026-09-12) — qué es posible y qué no en DocumentApp
+
+El usuario reportó 3 problemas reales sobre un informe ya generado (logo
+desalineado, el veredicto de una sección apareciendo solo al principio de
+la página siguiente con espacios raros, y la fila de firmas partida entre
+dos páginas) y pidió, antes de tocar nada, confirmar qué tecnología genera
+estos PDF — asumía por defecto algo tipo html2canvas/jsPDF/html2pdf.js/
+pdfmake con CSS (`page-break-inside: avoid`, repetir `<thead>`, etc.).
+
+**Diagnóstico confirmado**: el generador es 100% `DocumentApp` de Google
+Apps Script — arma un Google Doc real de verdad por código
+(`DocumentApp.create(...)`, tablas/párrafos/imágenes vía su API), lo
+guarda, y lo exporta a PDF (`docFile.getAs('application/pdf')`). Es el
+mismo motor de renderizado/exportación que si alguien creara el Doc a mano
+y lo bajara como PDF desde el menú de Google Docs. **No es** html2canvas,
+ni jsPDF, ni html2pdf.js, ni pdfmake, ni impresión nativa del navegador,
+ni la API REST de Google Docs — no hay CSS en ningún punto de este código.
+
+**Verificado contra la referencia oficial de Apps Script antes de
+escribir una sola línea** (no se asumió nada): se revisó la lista
+completa de métodos de `Paragraph`, `TableRow` y `TableCell`, y el enum
+genérico `DocumentApp.Attribute` (el mecanismo de "atributos ocultos" que
+a veces expone cosas no documentadas como métodos directos). Resultado:
+**no existe ningún equivalente a `page-break-inside: avoid`, "keep with
+next" o "keep lines together" para tablas o párrafos en este servicio**, y
+**tampoco existe forma de marcar una fila de tabla como encabezado que se
+repita al saltar de página**. Esto no es una limitación de Apps Script
+específicamente — Google Docs tampoco lo ofrece por su propio menú para
+tablas. Conclusión: no se puede garantizar por código que una tabla larga
+(ej. TTR con muchos TAPs) nunca parta una fila entre dos páginas, ni que su
+encabezado se repita solo. La única forma de tener ese control fila-por-
+fila sería abandonar `DocumentApp` por completo y generar el PDF desde
+HTML/CSS con otro motor — un cambio de arquitectura grande, no algo para
+decidir sin pedirlo explícitamente, dado todo lo que ya está construido y
+verificado sobre `DocumentApp` (colores, firmas, encabezado/pie de
+página, etc.).
+
+**Lo que sí se corrigió, con esa limitación en mente:**
+- **Encabezado de página repetido de verdad** (`appendPageHeader_`, nuevo)
+  — el logo + nombre de la empresa vivían como una tabla más dentro del
+  cuerpo del documento, así que solo aparecían una vez, al principio.
+  `Document` (no `Body`) sí tiene un encabezado de página real —
+  `doc.addHeader()`, confirmado contra la referencia oficial, mismo
+  mecanismo que ya usaba `doc.addFooter()` para el pie de página — así que
+  ahora el logo aparece idéntico en TODAS las páginas.
+- **Logo desalineado, corregido**: las celdas de logo y nombre nunca
+  tenían alineación vertical explícita — ahora las dos fuerzan
+  `TableCell.setVerticalAlignment(DocumentApp.VerticalAlignment.CENTER)`.
+- **Bloque "ÁREA DE CONTROL DE CALIDAD" ya no se parte entre páginas**:
+  ante la imposibilidad de un "mantener junto" real, `appendSignatureSection_`
+  ahora empieza siempre con `body.appendPageBreak()` — el bloque completo
+  (título + fila de firmas) es chico y cabe siempre en una página nueva, así
+  que nunca vuelve a partirse. Costo aceptado: a veces queda algo de
+  espacio en blanco al final de la página anterior.
+- Verificado en vivo (2026-09-12) generando de nuevo los dos informes
+  del equipo de demo con el código corregido: encabezado con logo repite
+  en las 4 páginas del eléctrico combinado, bloque de firmas completo y
+  solo en la última página en ambos informes, logo alineado.
+
+**Pendiente, NO implementado todavía — pedido explícito, pero contradice
+decisiones ya tomadas con el usuario**: cambiar el flujo para que el PDF
+solo se genere con una acción explícita "Certificar/Generar Informe" que
+valide que **las 4 pruebas** (TTR + Devanados + Aislamiento + Aceite)
+estén completas antes de generar un ÚNICO documento consolidado.
+Esto choca con dos decisiones ya explícitas de este mismo proyecto: (1)
+Aceite dieléctrico se dejó **a propósito** como informe siempre separado,
+nunca fusionado con las 3 pruebas eléctricas ("un formato para pruebas
+eléctricas y otro para aceite"); (2) el flujo de certificación ya
+construido permite certificar TTR/Devanados/Aislamiento **de forma
+independiente entre sí** (un técnico puede hacer TTR hoy y Devanados la
+semana siguiente) — exigir las 4 completas de una bloquearía ese caso real
+que el flujo actual soporta a propósito. La app ya está en producción con
+técnicos usando el flujo actual. No se tocó nada de esto sin confirmación
+explícita del usuario.
+
 ### Colores y cruce con Calibraciones — duplicados a propósito
 
 - **Colores del veredicto** (`PDF_COLORS_`/`verdictColor_`): un PDF no

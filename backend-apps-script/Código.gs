@@ -1646,6 +1646,38 @@ function uploadLogoAsset_(params, auth) {
   return jsonResponse_({ status: 200, message: 'Logo subido', data: { fileId: file.getId() } });
 }
 
+/** Firma fija del ingeniero responsable — a diferencia de PROBADO POR/
+ *  CERTIFICADO POR (que cambian según quién hizo/certificó cada prueba
+ *  real), esta es siempre la misma persona en todo informe que la app
+ *  genera, como un sello de aprobación técnica. Nombre y título quedan
+ *  fijos en código (no hay más de un ingeniero responsable hoy) — si eso
+ *  cambia, hace falta editar estas dos constantes y volver a desplegar. */
+var ENGINEER_SIGNATURE_NAME_ = 'Michael Peña';
+var ENGINEER_SIGNATURE_TITLE_ = 'Ingeniero Eléctrico';
+
+/** Mismo patrón que getLogoBlob_ — si nunca se subió, el informe se genera
+ *  igual, solo sin esa firma (nunca debe bloquear). */
+function getEngineerSignatureBlob_() {
+  var id = PropertiesService.getScriptProperties().getProperty('ENGINEER_SIGNATURE_FILE_ID');
+  if (!id) return null;
+  try { return DriveApp.getFileById(id).getBlob(); } catch (e) { return null; }
+}
+
+/** Solo Administrador. Mismo patrón que uploadLogoAsset_. */
+function uploadEngineerSignatureAsset_(params, auth) {
+  if (auth.role !== 'Administrador') {
+    return jsonResponse_({ status: 403, message: 'Solo un Administrador puede subir la firma del ingeniero' });
+  }
+  if (!params.file_base64) return jsonResponse_({ status: 400, message: 'file_base64 es obligatorio' });
+  var root = getRootFolder_();
+  var decoded = Utilities.base64Decode(stripBase64Prefix_(params.file_base64));
+  var blob = Utilities.newBlob(decoded, params.file_mime_type || 'image/jpeg', 'firma-ingeniero.jpg');
+  var file = root.createFile(blob);
+  shareForEditAnyone_(file);
+  PropertiesService.getScriptProperties().setProperty('ENGINEER_SIGNATURE_FILE_ID', file.getId());
+  return jsonResponse_({ status: 200, message: 'Firma subida', data: { fileId: file.getId() } });
+}
+
 /** Minúsculas, sin acentos, solo alfanumérico — réplica exacta de
  *  normalizeInstrumentText_ en app.js (mismo algoritmo, dos runtimes
  *  distintos, no se puede compartir código entre backend y frontend). */
@@ -1772,18 +1804,32 @@ function appendResultsTable_(body, rows) {
   return table;
 }
 
-/** Encabezado compartido por los 2 formatos: logo + nombre lado a lado
- *  (tabla sin bordes de 1x2, mismo truco que usa el protocolo de
- *  referencia con el logo junto al eslogan) + caja de título del
- *  protocolo + datos del cliente y del equipo en una grilla densa (mismo
- *  criterio del protocolo de referencia: MARCA | valor | POTENCIA | valor,
- *  no una etiqueta por fila). */
-function appendReportHeader_(body, site, transformer, protocolTitle) {
+/**
+ * Encabezado de PÁGINA (2026-09-12) — logo + nombre repetido idéntico en
+ * TODAS las páginas del PDF, no solo en la primera. Corregido a partir de
+ * un reporte real: antes vivía como una tabla más dentro del cuerpo del
+ * documento, así que solo aparecía una vez, al principio. `Document`
+ * (no `Body`) sí tiene un encabezado de página real —
+ * `doc.addHeader()` — mismo mecanismo que ya usa `finalizeReportPdf_`
+ * para el pie de página (`doc.addFooter()`), confirmado contra la
+ * referencia oficial de DocumentApp antes de escribir esto (no hay
+ * `Body.addHeader()`, el método vive en `Document`). Se llama una sola
+ * vez por documento, antes de `appendReportHeader_`.
+ *
+ * También corrige el desalineado del logo reportado por el usuario: las
+ * dos celdas (logo e imagen) nunca tenían una alineación vertical
+ * explícita, así que Google Docs las alineaba cada una a su manera según
+ * su propio contenido — ahora ambas fuerzan
+ * `DocumentApp.VerticalAlignment.CENTER`.
+ */
+function appendPageHeader_(doc) {
+  var header = doc.addHeader();
   var logoBlob = getLogoBlob_();
-  var headTable = body.appendTable([['', 'M&A Ingeniería y Consultoría SAS']]);
+  var headTable = header.appendTable([['', 'M&A Ingeniería y Consultoría SAS']]);
   headTable.setBorderWidth(0);
   var logoCell = headTable.getRow(0).getCell(0);
   logoCell.setWidth(75);
+  logoCell.setVerticalAlignment(DocumentApp.VerticalAlignment.CENTER);
   if (logoBlob) {
     var img = logoCell.appendImage(logoBlob);
     var ratio = img.getHeight() / img.getWidth();
@@ -1791,9 +1837,14 @@ function appendReportHeader_(body, site, transformer, protocolTitle) {
     img.setHeight(Math.round(55 * ratio));
   }
   var nameCell = headTable.getRow(0).getCell(1);
+  nameCell.setVerticalAlignment(DocumentApp.VerticalAlignment.CENTER);
   nameCell.editAsText().setBold(true).setFontSize(14).setForegroundColor(PDF_COLORS_.TEXT);
+}
 
-  body.appendParagraph('');
+/** Caja de título del protocolo + datos del cliente y del equipo — a
+ *  diferencia del logo/nombre (ver appendPageHeader_ arriba), esto SÍ va
+ *  una sola vez, al principio del cuerpo del documento, no repetido. */
+function appendReportHeader_(body, site, transformer, protocolTitle) {
   appendProtocolTitle_(body, protocolTitle);
   body.appendParagraph('');
 
@@ -1848,22 +1899,60 @@ function appendVerdictBanner_(body, label, verdict) {
  *  después de que ambos pasos ya ocurrieron de verdad. `probadoPor`/
  *  `certificadoPor` son objetos `{ nombre, fecha }`; `fecha` acepta
  *  cualquier formato que entienda `fmtDatePdf_`. */
+/** Tercera columna agregada (2026-09-12), a pedido explícito del usuario:
+ *  "APROBADO POR" con la firma fija del ingeniero responsable
+ *  (ENGINEER_SIGNATURE_NAME_/_TITLE_, ver getEngineerSignatureBlob_) —
+ *  a diferencia de las otras dos columnas, esta NO depende de qué prueba
+ *  sea ni de quién la haya hecho o certificado: es siempre la misma
+ *  persona, en todo informe, como un sello de aprobación técnica. Mismo
+ *  criterio de "nunca bloquear" que el logo — si la firma no se ha
+ *  subido todavía, la columna queda solo con el nombre y el título, sin
+ *  imagen.
+ *
+ *  **Salto de página forzado (2026-09-12)**, a partir de un reporte real
+ *  del usuario: el bloque completo (título + fila de firmas) se veía
+ *  partido entre dos páginas, con la fila de firma sola y la página de
+ *  arriba casi vacía. Verificado contra la referencia oficial de
+ *  `DocumentApp` antes de intentar nada más: ni `Paragraph` ni `TableRow`
+ *  exponen ningún "mantener junto"/"evitar salto de página" en Apps
+ *  Script (no existe un equivalente a `page-break-inside: avoid` para
+ *  tablas en este servicio — tampoco lo tiene Google Docs mismo, ni por
+ *  su propio menú). La única garantía real posible es forzar que este
+ *  bloque, que siempre es pequeño, empiece siempre en una página nueva —
+ *  así nunca queda partido, al costo de a veces dejar algo de espacio en
+ *  blanco al final de la página anterior. */
 function appendSignatureSection_(body, probadoPor, certificadoPor) {
+  body.appendPageBreak();
   body.appendParagraph('');
   appendSectionTitle_(body, 'Área de control de calidad');
   var table = body.appendTable([
-    ['PROBADO POR', 'CERTIFICADO POR'],
+    ['PROBADO POR', 'CERTIFICADO POR', 'APROBADO POR'],
     [
       (probadoPor.nombre || '—') + '\n' + fmtDatePdf_(probadoPor.fecha),
-      (certificadoPor.nombre || '—') + '\n' + fmtDatePdf_(certificadoPor.fecha)
+      (certificadoPor.nombre || '—') + '\n' + fmtDatePdf_(certificadoPor.fecha),
+      ''
     ]
   ]);
   table.setBorderColor(PDF_COLORS_.BORDER);
-  for (var c = 0; c < 2; c++) {
+  for (var c = 0; c < 3; c++) {
     table.getRow(0).getCell(c).setBackgroundColor(PDF_COLORS_.NEUTRAL_BG);
     table.getRow(0).getCell(c).editAsText().setBold(true).setFontSize(8);
-    table.getRow(1).getCell(c).editAsText().setFontSize(9);
   }
+  table.getRow(1).getCell(0).editAsText().setFontSize(9);
+  table.getRow(1).getCell(1).editAsText().setFontSize(9);
+
+  var aprobadoCell = table.getRow(1).getCell(2);
+  var engineerBlob = getEngineerSignatureBlob_();
+  if (engineerBlob) {
+    var img = aprobadoCell.appendImage(engineerBlob);
+    var ratio = img.getHeight() / img.getWidth();
+    img.setWidth(85);
+    img.setHeight(Math.round(85 * ratio));
+  }
+  var nameLine = aprobadoCell.appendParagraph(ENGINEER_SIGNATURE_NAME_);
+  nameLine.editAsText().setBold(true).setFontSize(9);
+  var titleLine = aprobadoCell.appendParagraph(ENGINEER_SIGNATURE_TITLE_);
+  titleLine.editAsText().setFontSize(8).setForegroundColor(PDF_COLORS_.TEXT_MUTED);
 }
 
 /** Mismo lenguaje que la vista previa del frontend (computeStandardTtrTheoretical_
@@ -2058,6 +2147,7 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
   var body = doc.getBody();
   body.setMarginTop(36).setMarginBottom(36).setMarginLeft(50).setMarginRight(50);
 
+  appendPageHeader_(doc);
   appendReportHeader_(body, site, transformer, 'PROTOCOLO DE PRUEBAS ELÉCTRICAS');
   present.forEach(function (type) {
     appendElectricalTypeSection_(body, type, latest[type]);
@@ -2101,6 +2191,7 @@ function generateOilTestReportPdf_(transformer, site, rawReadings, calculated, t
   var body = doc.getBody();
   body.setMarginTop(36).setMarginBottom(36).setMarginLeft(50).setMarginRight(50);
 
+  appendPageHeader_(doc);
   appendReportHeader_(body, site, transformer, TEST_TYPE_PROTOCOL_TITLE_.ACEITE_DIELECTRICO);
 
   appendSectionTitle_(body, 'Datos de la muestra');
@@ -2944,7 +3035,8 @@ var POST_ACTIONS = {
   createCalibracion: createCalibracion_,
   updateCalibracion: updateCalibracion_,
   deleteCalibracion: deleteCalibracion_,
-  uploadLogoAsset: uploadLogoAsset_
+  uploadLogoAsset: uploadLogoAsset_,
+  uploadEngineerSignatureAsset: uploadEngineerSignatureAsset_
 };
 
 var GET_ACTIONS = {
