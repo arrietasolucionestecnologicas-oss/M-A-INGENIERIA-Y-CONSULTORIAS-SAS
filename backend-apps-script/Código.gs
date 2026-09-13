@@ -1349,7 +1349,8 @@ function calculateTtr_(transformer, readings) {
         measuredRatio: measured,
         appliedTheoreticalRatio: theoretical,
         errorPercent: errorPercent,
-        status: status
+        status: status,
+        nota: phaseReadings[phaseKey].nota || null
       };
     });
 
@@ -1387,13 +1388,13 @@ function computePhaseUnbalance_(phases) {
   var maxUnbalance = 0;
 
   if (keys.length === 1) {
-    phaseResults[keys[0]] = { resistanceOhm: values[0], deviationFromAvgPercent: 0, status: 'APROBADO' };
+    phaseResults[keys[0]] = { resistanceOhm: values[0], deviationFromAvgPercent: 0, status: 'APROBADO', nota: phases[keys[0]].nota || null };
   } else {
     keys.forEach(function (k) {
       var v = phases[k].resistanceOhm;
       var deviation = ((v - avg) / avg) * 100;
       var status = Math.abs(deviation) <= UNBALANCE_THRESHOLD_PERCENT ? 'APROBADO' : 'RECHAZADO';
-      phaseResults[k] = { resistanceOhm: v, deviationFromAvgPercent: deviation, status: status };
+      phaseResults[k] = { resistanceOhm: v, deviationFromAvgPercent: deviation, status: status, nota: phases[k].nota || null };
       if (Math.abs(deviation) > maxUnbalance) maxUnbalance = Math.abs(deviation);
     });
   }
@@ -1525,7 +1526,7 @@ function calculateInsulation_(readings) {
       if (INSULATION_UNIDAD_VALUES.indexOf(r.resistenciaUnidad) === -1) {
         throw new Error('La combinación ' + k + ' no tiene una unidad de resistencia válida (GΩ/MΩ/KΩ)');
       }
-      simpleResults[k] = { resistenciaValor: r.resistenciaValor, resistenciaUnidad: r.resistenciaUnidad };
+      simpleResults[k] = { resistenciaValor: r.resistenciaValor, resistenciaUnidad: r.resistenciaUnidad, nota: r.nota || null };
     });
     return { metodo: 'simple', measurements: simpleResults, overallVerdict: 'REGISTRADO' };
   }
@@ -1545,7 +1546,7 @@ function calculateInsulation_(readings) {
     var iRating = ipRating_(ip);
     if (dRating === 'MALO' || iRating === 'MALO') hasMalo = true;
     if (dRating === 'CUESTIONABLE' || iRating === 'CUESTIONABLE') hasCuestionable = true;
-    results[k] = { dar: dar, darRating: dRating, ip: ip, ipRating: iRating };
+    results[k] = { dar: dar, darRating: dRating, ip: ip, ipRating: iRating, nota: r.nota || null };
   });
 
   var overallVerdict = hasMalo ? 'RECHAZADO' : (hasCuestionable ? 'OBSERVADO' : 'APROBADO');
@@ -2163,7 +2164,7 @@ function computeTtrRows_(calculated) {
       var p = tap.phases[phaseKey];
       rows.push([
         String(tapNum),
-        phaseKey,
+        phaseKey + (p.nota ? ' †' : ''),
         p.measuredRatio != null ? p.measuredRatio.toFixed(4) : '—',
         theoAvailable && p.appliedTheoreticalRatio != null ? p.appliedTheoreticalRatio.toFixed(4) : '—',
         theoAvailable && p.errorPercent != null ? p.errorPercent.toFixed(2) + ' %' : '—',
@@ -2173,12 +2174,29 @@ function computeTtrRows_(calculated) {
   });
   return rows;
 }
+
+/** Punto 6 (2026-09-13) — junta las notas de "lectura repetida" de cada
+ *  tabla para imprimirlas como pie de página bajo la tabla (ver
+ *  appendRepeatedNoteFootnote_); el marcador "†" ya quedó en la celda
+ *  correspondiente desde compute*Rows_ de arriba. */
+function collectTtrNotes_(calculated) {
+  var notes = [];
+  Object.keys(calculated.taps).map(Number).sort(function (a, b) { return a - b; }).forEach(function (tapNum) {
+    var tap = calculated.taps[String(tapNum)];
+    Object.keys(tap.phases).forEach(function (phaseKey) {
+      var p = tap.phases[phaseKey];
+      if (p.nota) notes.push('TAP ' + tapNum + ' – Fase ' + phaseKey + ': ' + p.nota);
+    });
+  });
+  return notes;
+}
+
 function computeWindingRows_(calculated) {
   var rows = [];
   calculated.taps.forEach(function (tap) {
     Object.keys(tap.phases).forEach(function (phaseKey) {
       var p = tap.phases[phaseKey];
-      rows.push([String(tap.tapPosition), phaseKey, p.resistanceOhm.toFixed(4), p.deviationFromAvgPercent.toFixed(2) + ' %', p.status]);
+      rows.push([String(tap.tapPosition), phaseKey + (p.nota ? ' †' : ''), p.resistanceOhm.toFixed(4), p.deviationFromAvgPercent.toFixed(2) + ' %', p.status]);
     });
   });
   return rows;
@@ -2187,15 +2205,34 @@ function computeWindingSecondaryRows_(calculated) {
   var rows = [];
   Object.keys(calculated.secondary.phases).forEach(function (phaseKey) {
     var p = calculated.secondary.phases[phaseKey];
-    rows.push([phaseKey, p.resistanceOhm.toFixed(4), p.deviationFromAvgPercent.toFixed(2) + ' %', p.status]);
+    rows.push([phaseKey + (p.nota ? ' †' : ''), p.resistanceOhm.toFixed(4), p.deviationFromAvgPercent.toFixed(2) + ' %', p.status]);
   });
   return rows;
 }
+function collectWindingNotes_(calculated) {
+  var notes = [];
+  calculated.taps.forEach(function (tap) {
+    Object.keys(tap.phases).forEach(function (phaseKey) {
+      var p = tap.phases[phaseKey];
+      if (p.nota) notes.push('TAP ' + tap.tapPosition + ' – Fase ' + phaseKey + ': ' + p.nota);
+    });
+  });
+  return notes;
+}
+function collectWindingSecondaryNotes_(calculated) {
+  var notes = [];
+  Object.keys(calculated.secondary.phases).forEach(function (phaseKey) {
+    var p = calculated.secondary.phases[phaseKey];
+    if (p.nota) notes.push('Secundario – Fase ' + phaseKey + ': ' + p.nota);
+  });
+  return notes;
+}
+
 function computeInsulationRows_(calculated) {
   var rows = [];
   Object.keys(calculated.measurements).forEach(function (key) {
     var m = calculated.measurements[key];
-    rows.push([key, m.dar.toFixed(2), m.darRating, m.ip.toFixed(2), m.ipRating]);
+    rows.push([key + (m.nota ? ' †' : ''), m.dar.toFixed(2), m.darRating, m.ip.toFixed(2), m.ipRating]);
   });
   return rows;
 }
@@ -2205,9 +2242,32 @@ function computeInsulationSimpleRows_(calculated) {
   var rows = [];
   Object.keys(calculated.measurements).forEach(function (key) {
     var m = calculated.measurements[key];
-    rows.push([key, m.resistenciaValor + ' ' + m.resistenciaUnidad]);
+    rows.push([key + (m.nota ? ' †' : ''), m.resistenciaValor + ' ' + m.resistenciaUnidad]);
   });
   return rows;
+}
+function collectInsulationNotes_(calculated) {
+  var notes = [];
+  Object.keys(calculated.measurements).forEach(function (key) {
+    var m = calculated.measurements[key];
+    if (m.nota) notes.push(key + ': ' + m.nota);
+  });
+  return notes;
+}
+
+/** Punto 6 (2026-09-13): imprime, justo debajo de la tabla de resultados,
+ *  un pie de nota pequeño con el motivo de cada lectura repetida — el
+ *  técnico repite UNA lectura puntual (no toda la tabla) y el PDF solo
+ *  muestra el valor final (la segunda lectura), marcado con "†" en la
+ *  celda, con este pie explicando por qué. No requiere placeholder nuevo
+ *  en la plantilla: se inserta como párrafo directo justo después de la
+ *  tabla ya localizada, mismo criterio que el resto de tablas dinámicas. */
+function appendRepeatedNoteFootnote_(body, table, notes) {
+  if (!notes || notes.length === 0) return;
+  var idx = body.getChildIndex(table);
+  var p = body.insertParagraph(idx + 1, '† Lectura repetida — ' + notes.join('  ·  '));
+  p.editAsText().setFontSize(8).setItalic(true).setForegroundColor(PDF_COLORS_.TEXT_MUTED);
+  p.setSpacingBefore(2).setSpacingAfter(6);
 }
 
 /** `iso` puede llegar como string o como Date real (autoconversión de
@@ -2694,9 +2754,9 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
   body.replaceText('<<ANO_FABRICACION>>', transformer.manufacture_year ? String(transformer.manufacture_year) : '—');
 
   var typeConfig = {
-    TTR: { blockName: 'TTR', headerCellCount: 6, headerFirstCell: 'TAP', computeRows: computeTtrRows_ },
-    RESISTENCIA_DEVANADOS: { blockName: 'DEVANADOS', headerCellCount: 5, headerFirstCell: 'TAP', computeRows: computeWindingRows_ },
-    AISLAMIENTO: { blockName: 'AISLAMIENTO', headerCellCount: 5, headerFirstCell: 'COMBINACIÓN', computeRows: computeInsulationRows_ }
+    TTR: { blockName: 'TTR', headerCellCount: 6, headerFirstCell: 'TAP', computeRows: computeTtrRows_, collectNotes: collectTtrNotes_ },
+    RESISTENCIA_DEVANADOS: { blockName: 'DEVANADOS', headerCellCount: 5, headerFirstCell: 'TAP', computeRows: computeWindingRows_, collectNotes: collectWindingNotes_ },
+    AISLAMIENTO: { blockName: 'AISLAMIENTO', headerCellCount: 5, headerFirstCell: 'COMBINACIÓN', computeRows: computeInsulationRows_, collectNotes: collectInsulationNotes_ }
   };
 
   order.forEach(function (type) {
@@ -2734,8 +2794,8 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
       resolveTemplateBlock_(body, 'AISLAMIENTO_COMPLETO', isPresent && !esSimple);
       if (isPresent) {
         cfg = esSimple
-          ? { blockName: 'AISLAMIENTO', headerCellCount: 2, headerFirstCell: 'COMBINACIÓN', computeRows: computeInsulationSimpleRows_ }
-          : { blockName: 'AISLAMIENTO', headerCellCount: 5, headerFirstCell: 'COMBINACIÓN', computeRows: computeInsulationRows_ };
+          ? { blockName: 'AISLAMIENTO', headerCellCount: 2, headerFirstCell: 'COMBINACIÓN', computeRows: computeInsulationSimpleRows_, collectNotes: collectInsulationNotes_ }
+          : { blockName: 'AISLAMIENTO', headerCellCount: 5, headerFirstCell: 'COMBINACIÓN', computeRows: computeInsulationRows_, collectNotes: collectInsulationNotes_ };
         var aislamientoRaw = safeParseJson_(testRow.raw_readings_json);
         body.replaceText('<<METODO_AISLAMIENTO>>', esSimple ? 'Simple (lectura al minuto)' : 'Completo (DAR/IP)');
         body.replaceText('<<TENSION_PRUEBA_AISLAMIENTO>>', aislamientoRaw.tension_prueba_v ? (aislamientoRaw.tension_prueba_v + ' V') : '—');
@@ -2756,11 +2816,17 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
     body.replaceText('<<INSTRUMENTO_' + cfg.blockName + '>>', instrumentoLine);
 
     var table = findResultsTableByHeader_(body, cfg.headerCellCount, cfg.headerFirstCell);
-    if (table) appendDataRowsToTable_(table, cfg.computeRows(calc));
+    if (table) {
+      appendDataRowsToTable_(table, cfg.computeRows(calc));
+      appendRepeatedNoteFootnote_(body, table, cfg.collectNotes(calc));
+    }
 
     if (type === 'RESISTENCIA_DEVANADOS' && calc.secondary) {
       var secTable = findResultsTableByHeader_(body, 4, 'FASE');
-      if (secTable) appendDataRowsToTable_(secTable, computeWindingSecondaryRows_(calc));
+      if (secTable) {
+        appendDataRowsToTable_(secTable, computeWindingSecondaryRows_(calc));
+        appendRepeatedNoteFootnote_(body, secTable, collectWindingSecondaryNotes_(calc));
+      }
     }
   });
 

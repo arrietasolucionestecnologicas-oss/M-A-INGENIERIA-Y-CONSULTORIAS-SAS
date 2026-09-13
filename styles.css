@@ -420,6 +420,14 @@ tr.rowlink:hover td { background: var(--surface-alt); }
 .phase-entry .field label { font-size: 9.5px; }
 .phase-entry .field input { padding: 6px 8px; font-size: 16px; min-height: var(--tap-min); }
 
+/* Punto 6 (2026-09-13): marcador "repetí esta lectura" — mismo criterio
+   visual que .field-note (texto chico, discreto), no compite con los
+   campos numéricos principales. */
+.repeat-row { margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--border); }
+.repeat-toggle { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-muted); cursor: pointer; user-select: none; }
+.repeat-toggle input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
+.repeat-note { width: 100%; margin-top: 6px; padding: 6px 8px; font-size: 13px; box-sizing: border-box; }
+
 .rbac-note {
   display: flex; gap: 8px; align-items: flex-start; margin: 12px 18px; padding: 10px 12px; border-radius: 8px;
   font-size: 12px; background: var(--warning-bg); border: 1px solid var(--warning-border); color: var(--warning-text);

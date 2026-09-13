@@ -28,8 +28,9 @@ compacto del PDF) necesitan que 2/3/4/5 ya existan primero.
    (DAR/IP)** (implementado 2026-09-13, **verificación en vivo pendiente**
    — el usuario pidió verificar todo junto al final en vez de punto por
    punto, ver detalle abajo).
-6. [ ] **Repetir una lectura puntual con nota**, sin perder la anterior —
-   en los 3 módulos.
+6. [x] **Repetir una lectura puntual con nota** (implementado 2026-09-13,
+   **verificación en vivo pendiente**, misma razón que el punto 5 — ver
+   detalle abajo).
 7. [ ] **TTR — tabla compacta, una fila por TAP** (TAP\|U\|V\|W\|TEÓRICA\|ERROR %\|ESTADO).
 8. [ ] **Devanados — tabla compacta, una fila por TAP** (mismo criterio
    que el punto 7).
@@ -178,6 +179,67 @@ transformador de prueba, generar el informe eléctrico y confirmar
 visualmente la tabla de 2 columnas (Simple) y la de DAR/IP (Completo).
 Backend desplegado en producción (`clasp push` + `clasp deploy` @41,
 2026-09-13); frontend pusheado a GitHub Pages, pendiente.
+
+### Punto 6 — Repetir una lectura puntual con nota (TTR / Devanados / Aislamiento)
+
+Antes de este punto no existía forma de corregir UNA lectura puntual sin
+perderla o sin re-escribir el número encima sin dejar rastro. El pedido
+es específico: repetir una lectura de un punto concreto (un TAP+fase en
+TTR/Devanados, o una combinación en Aislamiento), guardar la segunda con
+una nota corta, sin perder la primera, y que el PDF muestre solo la final
+con un indicador hacia la nota.
+
+- **Modelo de datos**: cada unidad de lectura (fase dentro de un TAP en
+  TTR/Devanados-primario, fase del secundario, o combinación de
+  Aislamiento) ahora tiene 3 campos nuevos: `repetida` (bool),
+  `nota` (string corta) y `valorAnterior` (snapshot de los campos
+  numéricos en el momento en que se marcó como repetida). Al desmarcar el
+  checkbox se abandona el repetido (se borran nota/valorAnterior, no hay
+  "deshacer" del undo).
+- **Frontend** (`app.js`): un solo componente reutilizado en los 3
+  módulos, `renderRepeatToggle_(toggleFn, noteFn, key, r)` — un checkbox
+  "Repetí esta lectura" que, al marcarlo, congela los valores actuales en
+  `valorAnterior` (así la primera lectura no se pierde aunque el técnico
+  siga editando los campos como si fueran la segunda) y revela un campo
+  de texto corto para la nota. Funciones por módulo:
+  `toggleTtrRepeat_`/`updateTtrNote_`, `toggleWrRepeat_`/`updateWrNote_`
+  (primario), `toggleWrSecondaryRepeat_`/`updateWrSecondaryNote_`
+  (secundario), `toggleInsulationRepeat_`/`updateInsulationNote_`. CSS
+  nuevo: `.repeat-row`/`.repeat-toggle`/`.repeat-note` en `styles.css`
+  (mismo criterio visual discreto que `.field-note`).
+- **Envío**: `nota`/`valorAnterior` solo se envían (no `null`) cuando
+  `repetida` está marcado — igual que el resto de la app, un campo
+  ausente/`null` significa "no aplica", no "cero". Devanados no necesitó
+  cambios en `buildWindingRequestBody()`: ya reenvía el objeto `phases`
+  completo tal cual, así que los campos nuevos viajan solos.
+- **Backend** (`Código.gs`): `calculateTtr_`, `computePhaseUnbalance_`
+  (compartida por Devanados primario y secundario) y
+  `calculateInsulation_` (los 2 métodos) ahora copian `nota` de la
+  lectura cruda al resultado calculado — el resto de la validación/cálculo
+  no cambió, `valorAnterior` viaja intacto en `raw_readings_json` sin que
+  ninguna función de cálculo lo toque (nadie lo necesita para calcular,
+  solo queda como respaldo auditable de "qué había antes").
+- **PDF**: `compute*Rows_` (TTR/Devanados primario y secundario/
+  Aislamiento completo y simple) agregan un marcador `†` a la celda de
+  FASE/COMBINACIÓN cuando esa lectura tiene nota. `collectTtrNotes_`/
+  `collectWindingNotes_`/`collectWindingSecondaryNotes_`/
+  `collectInsulationNotes_` recolectan el texto de las notas de esa tabla,
+  y `appendRepeatedNoteFootnote_(body, table, notes)` inserta un párrafo
+  pequeño (8pt, cursivo, gris `PDF_COLORS_.TEXT_MUTED`) justo debajo de la
+  tabla con el detalle — **sin necesitar placeholder nuevo en la
+  plantilla**: se inserta como párrafo directo en la posición de la tabla
+  ya localizada (`body.insertParagraph(idx + 1, …)`), mismo criterio que
+  el resto de tablas dinámicas de este informe.
+
+**Pendiente de verificación en vivo** (junto con el punto 5, decisión del
+usuario): probar que marcar "Repetí esta lectura" en un TAP de TTR, una
+fase de Devanados y una combinación de Aislamiento efectivamente guarda
+`valorAnterior`+`nota`, que el informe regenerado marca esa fila con `†`
+y muestra el pie de nota correcto debajo de la tabla correspondiente (3
+veces: TTR, Devanados —incluyendo el caso de nota en el secundario—, y
+Aislamiento en ambos métodos). Backend desplegado en producción
+(`clasp deploy` @42, 2026-09-13); frontend pusheado a GitHub Pages,
+pendiente.
 
 ## Arquitectura activa (esta es la que corre en producción)
 

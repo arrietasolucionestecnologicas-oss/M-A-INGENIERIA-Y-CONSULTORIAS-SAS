@@ -2401,7 +2401,7 @@ function resetTtrStateFromTransformer() {
 
 function seedTtrTapReadings_(tap) {
   var readings = {};
-  getPhaseKeys().forEach(function (k) { readings[k] = { measuredRatio: 0, excitationCurrentMa: 0, phaseDeviationDeg: 0 }; });
+  getPhaseKeys().forEach(function (k) { readings[k] = { measuredRatio: 0, excitationCurrentMa: 0, phaseDeviationDeg: 0, repetida: false, nota: '', valorAnterior: null }; });
   state.ttr.readings[tap] = readings;
 }
 
@@ -2433,6 +2433,7 @@ function renderPhaseEntries() {
       '<div class="field"><label>Relación medida</label><input class="mono" type="number" step="0.001" value="' + r.measuredRatio + '" oninput="updateReading(\'' + k + '\',\'measuredRatio\',this.value)"></div>' +
       '<div class="field"><label>I. excitación (mA)</label><input class="mono" type="number" step="1" value="' + r.excitationCurrentMa + '" oninput="updateReading(\'' + k + '\',\'excitationCurrentMa\',this.value)"></div>' +
       '<div class="field"><label>Desviación de fase (&deg;)</label><input class="mono" type="number" step="0.01" value="' + r.phaseDeviationDeg + '" oninput="updateReading(\'' + k + '\',\'phaseDeviationDeg\',this.value)"></div>' +
+      renderRepeatToggle_('toggleTtrRepeat_', 'updateTtrNote_', k, r) +
       '</div>';
   }).join('');
 }
@@ -2440,6 +2441,39 @@ function renderPhaseEntries() {
 function updateReading(key, field, value) {
   var v = parseDecimal_(value); if (isNaN(v)) v = 0;
   state.ttr.readings[state.ttr.currentTap][key][field] = v;
+  refreshTtr();
+}
+
+/** Punto 6 (2026-09-13): marcador de "repetí esta lectura" reutilizable en
+ *  los 3 módulos (TTR/Devanados/Aislamiento) — al marcarlo, guarda una
+ *  copia (`valorAnterior`) de lo que había ANTES de repetir, para no
+ *  perder la primera lectura aunque el PDF solo muestre la final. */
+function renderRepeatToggle_(toggleFn, noteFn, key, r) {
+  return '<div class="repeat-row">' +
+    '<label class="repeat-toggle"><input type="checkbox" ' + (r.repetida ? 'checked' : '') +
+    ' onchange="' + toggleFn + '(\'' + key + '\', this.checked)"> Repetí esta lectura</label>' +
+    (r.repetida
+      ? '<input class="mono repeat-note" type="text" maxlength="140" placeholder="Motivo breve (ej. cable flojo, se repite la lectura)" value="' + escapeHtml_(r.nota || '') + '" oninput="' + noteFn + '(\'' + key + '\', this.value)">'
+      : '') +
+    '</div>';
+}
+
+function toggleTtrRepeat_(phaseKey, checked) {
+  var r = state.ttr.readings[state.ttr.currentTap][phaseKey];
+  if (checked) {
+    r.valorAnterior = { measuredRatio: r.measuredRatio, excitationCurrentMa: r.excitationCurrentMa, phaseDeviationDeg: r.phaseDeviationDeg };
+    r.repetida = true;
+  } else {
+    r.repetida = false;
+    r.valorAnterior = null;
+    r.nota = '';
+  }
+  renderPhaseEntries();
+  refreshTtr();
+}
+
+function updateTtrNote_(phaseKey, value) {
+  state.ttr.readings[state.ttr.currentTap][phaseKey].nota = value;
   refreshTtr();
 }
 
@@ -2638,7 +2672,10 @@ function buildTtrRequestBody() {
     var phaseObj = {};
     getPhaseKeys().forEach(function (k) {
       if (tap[k]) {
-        phaseObj[k] = { measuredRatio: tap[k].measuredRatio, excitationCurrentMa: tap[k].excitationCurrentMa, phaseDeviationDeg: tap[k].phaseDeviationDeg };
+        phaseObj[k] = {
+          measuredRatio: tap[k].measuredRatio, excitationCurrentMa: tap[k].excitationCurrentMa, phaseDeviationDeg: tap[k].phaseDeviationDeg,
+          nota: tap[k].repetida ? (tap[k].nota || '') : null, valorAnterior: tap[k].repetida ? tap[k].valorAnterior : null
+        };
       }
     });
     measurements[tapStr] = phaseObj;
@@ -2725,7 +2762,7 @@ var TTR_TO_WR_PHASE_MAP = { 'H1H2-X1X2': 'H1-H2', 'H2H3-X2X3': 'H2-H3', 'H3H1-X3
 
 function defaultWrPhases_() {
   var p = {};
-  getPhaseKeys().forEach(function (k) { p[TTR_TO_WR_PHASE_MAP[k] || k] = { resistanceOhm: 0 }; });
+  getPhaseKeys().forEach(function (k) { p[TTR_TO_WR_PHASE_MAP[k] || k] = { resistanceOhm: 0, repetida: false, nota: '', valorAnterior: null }; });
   return p;
 }
 
@@ -2740,7 +2777,7 @@ function getSecondaryPhaseKeys_() {
 
 function defaultWrSecondary_() {
   var phases = {};
-  getSecondaryPhaseKeys_().forEach(function (k) { phases[k] = { resistanceOhm: 0 }; });
+  getSecondaryPhaseKeys_().forEach(function (k) { phases[k] = { resistanceOhm: 0, repetida: false, nota: '', valorAnterior: null }; });
   return { windingTemperatureC: 25, phases: phases };
 }
 
@@ -2816,13 +2853,35 @@ function renderWrPhaseEntries() {
     return '<div class="phase-entry">' +
       '<div class="ph-name">' + k.replace('-', ' &ndash; ') + '</div>' +
       '<div class="field"><label>Resistencia (&Omega;)</label><input class="mono" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*" value="' + r.resistanceOhm + '" oninput="updateWrPhase(\'' + k + '\',this.value)"></div>' +
+      renderRepeatToggle_('toggleWrRepeat_', 'updateWrNote_', k, r) +
       '</div>';
   }).join('');
 }
 
 function updateWrPhase(key, value) {
   var v = parseDecimal_(value); if (isNaN(v)) v = 0;
-  state.wr.readings[state.wr.currentTap].phases[key] = { resistanceOhm: v };
+  var phases = state.wr.readings[state.wr.currentTap].phases;
+  if (!phases[key]) phases[key] = { resistanceOhm: 0, repetida: false, nota: '', valorAnterior: null };
+  phases[key].resistanceOhm = v;
+  refreshWinding();
+}
+
+function toggleWrRepeat_(phaseKey, checked) {
+  var r = state.wr.readings[state.wr.currentTap].phases[phaseKey];
+  if (checked) {
+    r.valorAnterior = { resistanceOhm: r.resistanceOhm };
+    r.repetida = true;
+  } else {
+    r.repetida = false;
+    r.valorAnterior = null;
+    r.nota = '';
+  }
+  renderWrPhaseEntries();
+  refreshWinding();
+}
+
+function updateWrNote_(phaseKey, value) {
+  state.wr.readings[state.wr.currentTap].phases[phaseKey].nota = value;
   refreshWinding();
 }
 
@@ -2841,13 +2900,35 @@ function renderWrSecondaryPhaseEntries() {
     return '<div class="phase-entry">' +
       '<div class="ph-name">' + k.replace('-', ' &ndash; ') + '</div>' +
       '<div class="field"><label>Resistencia (&Omega;)</label><input class="mono" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*" value="' + r.resistanceOhm + '" oninput="updateWrSecondaryPhase_(\'' + k + '\',this.value)"></div>' +
+      renderRepeatToggle_('toggleWrSecondaryRepeat_', 'updateWrSecondaryNote_', k, r) +
       '</div>';
   }).join('');
 }
 
 function updateWrSecondaryPhase_(key, value) {
   var v = parseDecimal_(value); if (isNaN(v)) v = 0;
-  state.wr.secondary.phases[key] = { resistanceOhm: v };
+  var phases = state.wr.secondary.phases;
+  if (!phases[key]) phases[key] = { resistanceOhm: 0, repetida: false, nota: '', valorAnterior: null };
+  phases[key].resistanceOhm = v;
+  refreshWinding();
+}
+
+function toggleWrSecondaryRepeat_(phaseKey, checked) {
+  var r = state.wr.secondary.phases[phaseKey];
+  if (checked) {
+    r.valorAnterior = { resistanceOhm: r.resistanceOhm };
+    r.repetida = true;
+  } else {
+    r.repetida = false;
+    r.valorAnterior = null;
+    r.nota = '';
+  }
+  renderWrSecondaryPhaseEntries();
+  refreshWinding();
+}
+
+function updateWrSecondaryNote_(phaseKey, value) {
+  state.wr.secondary.phases[phaseKey].nota = value;
   refreshWinding();
 }
 
@@ -3332,7 +3413,7 @@ var INSULATION_UNIDADES = ['GΩ', 'MΩ', 'KΩ'];
 function defaultInsulationCombinations_() {
   var p = {};
   INSULATION_COMBINATIONS.forEach(function (k) {
-    p[k] = { r30sMegaohm: 0, r60sMegaohm: 0, r10minMegaohm: 0, resistenciaValor: 0, resistenciaUnidad: 'MΩ' };
+    p[k] = { r30sMegaohm: 0, r60sMegaohm: 0, r10minMegaohm: 0, resistenciaValor: 0, resistenciaUnidad: 'MΩ', repetida: false, nota: '', valorAnterior: null };
   });
   return p;
 }
@@ -3383,6 +3464,7 @@ function renderInsulationCombinationEntries() {
         '<div class="ph-name">' + k + '</div>' +
         '<div class="field"><label>Resistencia</label><input class="mono" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*" value="' + r.resistenciaValor + '" oninput="updateInsulationSimpleValue_(\'' + k + '\', this.value)"></div>' +
         '<div class="field"><label>Unidad</label><select onchange="updateInsulationSimpleUnidad_(\'' + k + '\', this.value)">' + unitOptions + '</select></div>' +
+        renderRepeatToggle_('toggleInsulationRepeat_', 'updateInsulationNote_', k, r) +
         '</div>';
     }
     return '<div class="phase-entry">' +
@@ -3390,6 +3472,7 @@ function renderInsulationCombinationEntries() {
       '<div class="field"><label>R 30 s (M&Omega;)</label><input class="mono" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*" value="' + r.r30sMegaohm + '" oninput="updateInsulationCombination_(\'' + k + '\', \'r30sMegaohm\', this.value)"></div>' +
       '<div class="field"><label>R 60 s / 1 min (M&Omega;)</label><input class="mono" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*" value="' + r.r60sMegaohm + '" oninput="updateInsulationCombination_(\'' + k + '\', \'r60sMegaohm\', this.value)"></div>' +
       '<div class="field"><label>R 10 min (M&Omega;)</label><input class="mono" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*" value="' + r.r10minMegaohm + '" oninput="updateInsulationCombination_(\'' + k + '\', \'r10minMegaohm\', this.value)"></div>' +
+      renderRepeatToggle_('toggleInsulationRepeat_', 'updateInsulationNote_', k, r) +
       '</div>';
   }).join('');
 }
@@ -3408,6 +3491,28 @@ function updateInsulationSimpleValue_(key, value) {
 
 function updateInsulationSimpleUnidad_(key, value) {
   state.insulation.combinations[key].resistenciaUnidad = value;
+  refreshInsulation();
+}
+
+function toggleInsulationRepeat_(key, checked) {
+  var r = state.insulation.combinations[key];
+  if (checked) {
+    r.valorAnterior = {
+      r30sMegaohm: r.r30sMegaohm, r60sMegaohm: r.r60sMegaohm, r10minMegaohm: r.r10minMegaohm,
+      resistenciaValor: r.resistenciaValor, resistenciaUnidad: r.resistenciaUnidad
+    };
+    r.repetida = true;
+  } else {
+    r.repetida = false;
+    r.valorAnterior = null;
+    r.nota = '';
+  }
+  renderInsulationCombinationEntries();
+  refreshInsulation();
+}
+
+function updateInsulationNote_(key, value) {
+  state.insulation.combinations[key].nota = value;
   refreshInsulation();
 }
 
@@ -3477,9 +3582,11 @@ function buildInsulationRequestBody() {
   var measurements = {};
   Object.keys(state.insulation.combinations).forEach(function (k) {
     var r = state.insulation.combinations[k];
+    var nota = r.repetida ? (r.nota || '') : null;
+    var valorAnterior = r.repetida ? r.valorAnterior : null;
     measurements[k] = esSimple
-      ? { resistenciaValor: r.resistenciaValor, resistenciaUnidad: r.resistenciaUnidad }
-      : { r30sMegaohm: r.r30sMegaohm, r60sMegaohm: r.r60sMegaohm, r10minMegaohm: r.r10minMegaohm };
+      ? { resistenciaValor: r.resistenciaValor, resistenciaUnidad: r.resistenciaUnidad, nota: nota, valorAnterior: valorAnterior }
+      : { r30sMegaohm: r.r30sMegaohm, r60sMegaohm: r.r60sMegaohm, r10minMegaohm: r.r10minMegaohm, nota: nota, valorAnterior: valorAnterior };
   });
   return {
     transformer_id: state.currentTransformerId,
