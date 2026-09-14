@@ -477,6 +477,29 @@ tener tantos TAPs que el informe SÍ se corte entre páginas, esa sección
 no repetirá su encabezado en la página siguiente — riesgo conocido y
 aceptado por el cliente al pedir este cambio.
 
+**Verificación adicional en vivo (mismo día)**: con las **5 posiciones de
+TAP reales** (el caso típico, no las 9 de `DEMO-PLANTILLAS-V2`) el
+informe queda en 1 hoja con bastante espacio de sobra; con Aislamiento
+en método **Completo (DAR/IP)** en vez de Simple, la tabla de 5 columnas
+también cabe sin problema (mismas 3 filas que Simple, no hay lecturas
+crudas de tiempo — solo DAR/IP ya calculados — impresas en el PDF).
+
+**Leyenda de rangos DAR/IP (extra, mismo día)**: el cliente compartió
+otro formato de referencia (Rymel) que sí explica los rangos de
+calificación, y preguntó por qué se usan justo esos tiempos (30s/60s/10
+min) — confirmado contra fuentes técnicas reales (no de memoria): DAR =
+R60s/R30s, IP = R10min/R60s, son las únicas 2 razones que la norma
+necesita (ningún estándar exige registrar lecturas continuas cada
+15-45s). Se agregó `buildDarIpLegendRows_()` — una mini-tabla de 4 filas
+con color (rojo/amarillo/verde) mostrando los mismos umbrales que ya usan
+`darRating_`/`ipRating_` para decidir MALO/CUESTIONABLE/BUENO/EXCELENTE,
+insertada como más filas de la MISMA tabla única justo después del
+veredicto de Aislamiento — **solo cuando el método es Completo** (Simple
+no calcula DAR/IP, no aplica). Nuevo rol de fila `'legend'` en
+`insertUnifiedResultsTable_` (colores por celda vía `row.coloredCols`,
+no por fila entera como banner/header/verdict/labelvalue). Verificado en
+vivo: sigue cabiendo todo en 1 sola página con la leyenda incluida.
+
 ## Arquitectura activa (esta es la que corre en producción)
 
 - **Frontend**: HTML/CSS/JS estático servido por **GitHub Pages** desde la raíz
