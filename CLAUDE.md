@@ -331,10 +331,9 @@ resuelto exactamente así al implementar el punto 5 el mismo día:
   `INSULATION_SIMPLE_TABLE_HEADER_` = `COMBINACIÓN|RESISTENCIA` (Simple,
   2 columnas) — coinciden literalmente con lo pedido en el punto 9.
 - **Tensión de prueba como línea de dato, no columna**: `MÉTODO`/
-  `TENSIÓN DE PRUEBA` viven en la línea de instrumento del módulo
-  (`<<METODO_AISLAMIENTO>>`/`<<TENSION_PRUEBA_AISLAMIENTO>>` — ver punto
-  10 abajo, `appendInstrumentLine_`), nunca como columna de la tabla de
-  resultados.
+  `TENSIÓN DE PRUEBA` van dentro del texto del banner de la sección
+  Aislamiento (ver punto 10 abajo, `buildInsulationUnifiedRows_`), nunca
+  como columna de la tabla de resultados.
 - **Letras pequeñas**: heredado del punto 7 (cambio de fuente
   compartido en `appendResultsTable_`/`appendDataRowsToTable_`).
 
@@ -343,71 +342,140 @@ de código que ya cumplía el pedido. Con esto, **los 9 puntos de la lista
 quedan implementados**; la verificación en vivo conjunta se hizo (ver
 "Verificación" más abajo).
 
-### Punto 10 (extra, 2026-09-13) — Ronda de compactación adicional: informe en una sola hoja
+### Punto 10 (extra, 2026-09-13) — Informe eléctrico como UNA sola tabla fusionada (objetivo final: 1 sola hoja)
 
-Después de completar y verificar los 9 puntos, el cliente redujo a mano
-el padding/fuente del encabezado de la plantilla (a 7pt) y aun así el
-informe seguía en 2 páginas. Comparó contra un certificado real de otra
-empresa (D&R Eléctricos / Jorge León Bedoya Marín & Cía, adjuntado como
-PDF) que cabe en 1 sola hoja: una sola tabla continua sin grillas de
-"Datos de la prueba" repetidas por módulo, sin banner de veredicto por
-color, con letra ~5-6pt. Se le preguntó explícitamente qué de eso
-adoptar (no se copió a ciegas, para no perder trazabilidad que el
-cliente ya había pedido en sesiones anteriores):
+Después de completar y verificar los 9 puntos, el cliente comparó el
+informe contra 2 certificados reales de otras empresas que caben en 1
+sola hoja (D&R Eléctricos/Jorge León Bedoya Marín, y Rymel S.A.S.) y
+pidió acercarse a ese nivel. Esto pasó por **2 rondas** en la misma
+sesión — la primera (compactar fuente/espaciado, fusionar grillas de
+"Datos de la prueba") dejó el informe en 2 páginas; el cliente miró el
+resultado y pidió ir más lejos: **"una sola tabla donde esté todo, sin
+los espacios"** — comparando explícitamente con el protocolo de Rymel,
+donde ni siquiera la grilla de datos de placa es una tabla aparte. La
+arquitectura final (la que quedó, no la intermedia) es:
 
-- **Fusionar las 3 grillas de "Datos de la prueba" en una sola** —
-  aceptado. Antes: `appendTestMetaSection_` se llamaba 1 vez por tipo
-  (TTR/Devanados/Aislamiento), cada una con su propia grilla FECHA/
-  TÉCNICO/INSTRUMENTO/NORMA (norma siempre `IEEE C57.12.90`, literal,
-  nunca cambiaba). Ahora: `appendSharedTestMetaSection_` — UNA sola vez,
-  arriba de todo, con FECHA/TÉCNICO/NORMA en una sola fila de 3 pares.
-  FECHA/TÉCNICO usan los de la prueba **más reciente entre las
-  presentes** (`<<FECHA_GENERAL>>`/`<<TECNICO_GENERAL>>`, llenados en
-  `regenerateElectricalCombinedReport_` con el mismo `signedTest` que ya
-  usaba el bloque "PROBADO POR" — no se inventó un criterio nuevo). El
-  **instrumento sigue por módulo** (si varía de verdad) pero ya no como
-  grilla — una sola línea chica (`appendInstrumentLine_`, 7pt,
-  `TEXT_MUTED`) tipo "Instrumento: X" justo antes de la tabla de
-  resultados de ese módulo. Para Aislamiento, esa misma línea también
-  lleva Método y Tensión de prueba ("Instrumento: X · Método: Y ·
-  Tensión de prueba: Z"), reemplazando el `extraRows` que antes tenía
-  `appendTestMetaSection_`. `appendDenseInfoGrid_` ahora calcula el ancho
-  de la columna de etiqueta según cuántos pares tiene la fila (115 para
-  2 pares como siempre, 78 para 3) — si no, la fila de 3 pares se comía
-  casi todo el ancho de página.
-- **Mantener los banners de veredicto por color** — aceptado NO
-  quitarlos (son parte del criterio de aceptación automático ya pedido
-  en sesiones anteriores). Sin cambios de código aquí.
-- **Quitar el salto de página forzado antes de "Área de Control de
-  Calidad"** — aceptado, con el riesgo reconocido de que en un equipo
-  con muchos TAPs las firmas puedan volver a partirse entre páginas.
-  `appendSignatureSection_` ya no llama `body.appendPageBreak()` (el
-  comentario de la función se actualizó explicando la decisión y el
-  riesgo aceptado).
-- **Bajar la fuente de las tablas de 8pt a 7pt** — aceptado. Además:
-  `appendSectionTitle_` (barras de título de sección) de 10pt a 9pt,
-  `appendDenseInfoGrid_` de 8/9pt a 7pt parejo, el pie de nota de lectura
-  repetida (`appendRepeatedNoteFootnote_`) de 8pt a 7pt, y el bloque de
-  firmas (`appendSignatureSection_`) de 8/9pt a 7/8pt con la firma del
-  ingeniero un poco más chica (85px → 70px de ancho). El banner de
-  veredicto (13pt) y el encabezado/título del protocolo (14pt logo,
-  13pt título) **no se tocaron** — el cliente pidió específicamente
-  reducir ESE espacio él mismo, a mano, directo en el documento (ver
-  "Convenciones de frontend..." más abajo, nota sobre ajustes manuales).
+**Una sola tabla de Google Docs, de 7 columnas de ancho, con TODO
+adentro**: "Datos del cliente y del equipo", "Datos generales de la
+prueba", y las secciones TTR / Devanados-Alta Tensión (AT) / Devanados-
+Baja Tensión (BT) / Aislamiento que estén presentes — cada una como un
+banner fusionado (7 columnas), su fila de encabezado, sus filas de
+datos, y una fila de veredicto fusionada (con el mismo color que antes
+tenía el banner de veredicto aparte) — sin ningún párrafo ni tabla
+separada entre secciones. Solo "Área de Control de Calidad" (firmas)
+queda como tabla aparte, después, sin tocar.
 
-**Resultado verificado en vivo**: el mismo informe de prueba que antes
-(TTR+Devanados+Aislamiento, 3 TAPs, `DEMO-PLANTILLAS-V2`) pasó de 3
-páginas a **2 páginas**, sin ninguna tabla partida a la mitad — el corte
-de página cae entre Devanados primario y secundario, un punto natural,
-no en medio de una tabla. Con el ajuste manual de espaciado de
-encabezado que el cliente va a hacer encima de esto, es razonable que
-quede en 1 sola página para el caso normal. Backend desplegado en
-producción (`clasp deploy` @45, 2026-09-13). **Plantillas regeneradas
-de nuevo** (Eléctrico `1yCmRthxvnzOZ8unJzklXbpJfOwaGeoAd29tVVqQRZPU`,
-Aceite `1p57ox9_MFoba6lU9e_dnMmDrKwhcbVyYGnrcBW7FLVg`) — **el cliente
-debe volver a agregar el watermark Y su ajuste manual de espaciado del
-encabezado en ambas**, ya que se perdieron otra vez al regenerar (mismo
-costo de siempre, avisado explícitamente antes de tocar nada).
+**Por qué antes no daba 1 sola página con 2 tablas separadas**: cada
+tabla de Google Docs trae su propio espaciado antes/después aunque no
+haya ningún párrafo explícito entre ellas — 2 tablas adyacentes SIEMPRE
+se ven con un salto visual entre sí. La única forma de eliminarlo de
+raíz es que sea la MISMA tabla.
+
+**Renombrado Primario/Secundario → AT/BT**: `hv_nominal_voltage`/
+`lv_nominal_voltage` ya usaban Alta/Baja Tensión como convención en todo
+el código — el cambio es solo de TEXTO en el banner (`'ALTA TENSIÓN
+(AT)'`/`'BAJA TENSIÓN (BT)'`), el modelo de datos interno sigue
+llamándose primario/secundario en variables y nombres de función, sin
+renombrar nada del frontend/estado.
+
+**Material del devanado (AT/BT) — dato nuevo**: no existía en ningún
+lado del sistema. Se agregaron 2 campos nuevos al equipo,
+`at_devanado_material`/`bt_devanado_material` (Aluminio/Cobre/vacío),
+al final de `HEADERS.TRANSFORMADORES` (columna nueva, migración
+automática vía `ensureAllSheets_`) — con su select correspondiente en
+los formularios de Crear/Editar equipo (`index.html`) y su lectura/
+escritura en `app.js` (`handleCreateTransformerSubmit`/
+`openEditTransformerModal_`/`handleEditTransformerSubmit`), y su fila
+extra en la grilla de detalle del equipo. Se muestra en el banner de AT/
+BT ("· Material: Aluminio"), nunca como columna de tabla — a pedido
+explícito, aunque el certificado de Rymel de referencia SÍ lo pone como
+columna (se le preguntó explícitamente y prefirió el banner).
+
+**Cómo se fusionan celdas** (DocumentApp no tiene ningún `merge()` de
+celdas): se arma la tabla completa como una tabla NORMAL de 7 columnas
+con `DocumentApp` (todas las celdas llenas, vacías donde una fusión
+posterior las va a tapar), se guarda el documento
+(`doc.saveAndClose()`), se reabre con `Docs.Documents.get()` para ubicar
+la tabla por el texto exacto de su primera celda (banner de "DATOS DEL
+CLIENTE Y DEL EQUIPO", siempre la primera fila ahora), y se manda UN
+solo `Docs.Documents.batchUpdate()` con todas las `mergeTableCells`
+necesarias — mismo patrón que ya usaba `pinResultsTableHeaders_` para
+ubicar contenido por forma vía la Docs API avanzada. Ver
+`insertUnifiedResultsTable_`/`applyUnifiedTableMerges_`, llamadas desde
+`finalizeReportPdf_` (que ahora recibe un 4° parámetro opcional
+`unifiedTableMerge`).
+
+**Funciones nuevas clave** (`Código.gs`): `unifiedRow_`/
+`unifiedBannerRow_`/`unifiedVerdictRow_`/`unifiedLabelRow_` (helpers de
+fila), `buildClientEquipoUnifiedRows_`/`buildSharedMetaUnifiedRows_`
+(las 2 grillas, ahora filas de la tabla única),
+`buildTtrUnifiedSection_`/`buildWindingSideUnifiedRows_`/
+`buildInsulationUnifiedRows_` (las 4 secciones de resultados, con sus
+`collect*UnifiedNotes_` para el pie de nota — ahora UNO SOLO para toda
+la tabla, prefijado por sección), `insertUnifiedResultsTable_` (arma e
+inserta), `applyUnifiedTableMerges_` (fusiona). Reemplazan por completo
+a las funciones de la arquitectura de "3 tablas separadas" del punto 7/
+8/9 (`compute*CompactRows_`, `collect*Notes_` viejos,
+`findResultsTableByHeader_`, `appendDataRowsToTable_`,
+`appendRepeatedNoteFootnote_` — todas borradas). `buildElectricalTemplateDoc_`
+quedó mucho más simple: solo encabezado/título/marcador de posición
+(`<<TABLA_RESULTADOS_ELECTRICOS>>`) + firmas — ya no hornea NINGUNA
+grilla ni tabla de TTR/Devanados/Aislamiento, todo eso lo arma
+`regenerateElectricalCombinedReport_` en tiempo real. `appendReportHeader_`
+se separó en título + `appendClientEquipoGrid_` (esta última se dejó
+intacta para Aceite, que sigue con su grilla aparte — no le pidieron
+este cambio).
+
+**Bug real encontrado y corregido en la primera verificación en vivo**:
+`buildWindingSideUnifiedRows_` usaba `WINDING_PHASE_ORDER_` (fases de
+AT: H1-H2/H2-H3/H3-H1) también para BT, cuyas fases reales son X1-X2/
+X2-X3/X3-X1 — con eso, el filtro de orden de fases para BT daba un
+arreglo vacío y reventaba en un `.toFixed()` sobre `null`. Se agregó un
+parámetro `phaseOrder` explícito a la función (AT pasa
+`WINDING_PHASE_ORDER_`, BT pasa `WINDING_SECONDARY_PHASE_ORDER_`).
+
+**DESVIACIÓN%/ESTADO en Devanados monofásico**: con 1 sola fase no hay
+base de comparación real — en vez de un `0%`/`APROBADO` inventado (que
+sí calculaba `computePhaseUnbalance_` como placeholder interno, sin
+cambios), la fila muestra `—`/`REGISTRADO`, mismo criterio que
+Aislamiento Simple. Esto es solo de DISPLAY (`buildWindingSideUnifiedRows_`);
+el cálculo real y el veredicto agregado del lado no cambiaron.
+
+**Fuente y padding al mínimo** (a pedido explícito, "letra 5, celdas y
+filas al mínimo"): `UNIFIED_FONT_DATA_ = 5` (encabezados, datos,
+grillas etiqueta/valor), `UNIFIED_FONT_BANNER_ = 7`, `UNIFIED_FONT_VERDICT_ = 8`
+(estos 2 un poco más grandes porque son lo único que debe notarse a
+simple vista), `UNIFIED_CELL_PADDING_ = 1` (pt, los 4 lados de cada
+celda — el padding por defecto de DocumentApp, ~5pt, es lo que más
+altura de fila desperdiciaba, más que la fuente en sí). El
+encabezado/título del protocolo (logo 14pt, título 13pt) sigue sin
+tocarse — el cliente pidió reducir ESE espacio él mismo, a mano.
+
+**Salto de página forzado antes de "Área de Control de Calidad"**:
+sigue quitado (decisión de la ronda anterior, no cambió).
+
+**Resultado verificado en vivo (2026-09-13, `DEMO-PLANTILLAS-V2` y
+`DEMO-MONOFASICO-01`)**: el informe completo (cliente+equipo+datos de
+prueba+TTR+AT+BT+Aislamiento+firmas) quedó en **"Página 1 de 1"** —
+tanto en el caso normal (3 TAPs) como forzando las **9 posiciones de TAP
+completas** (el máximo que soporta el equipo de prueba usado, más
+exigente que el caso típico real de ~5 tomas) tanto en TTR como en
+Devanados AT — sin ninguna tabla partida entre páginas. También
+verificado el caso monofásico completo (TTR+AT+BT) en 1 sola página.
+Material de devanado (Aluminio/Cobre) confirmado visible en los banners
+de AT/BT. Backend desplegado en producción (`clasp deploy` @46-@48,
+2026-09-13). **Plantillas regeneradas de nuevo** — el cliente debe
+volver a agregar el watermark y su ajuste manual de espaciado de
+encabezado en ambas (se pierden siempre que se regeneran).
+
+**Pérdida de respaldo aceptada explícitamente**: `pinResultsTableHeaders_`
+(repetir encabezado si una tabla se corta entre páginas) queda inerte
+para el informe eléctrico — la fila 0 de la tabla única ahora es
+siempre un banner de sección (1 celda fusionada), nunca calza ninguna
+de las formas que esa función reconoce. Si algún equipo real llega a
+tener tantos TAPs que el informe SÍ se corte entre páginas, esa sección
+no repetirá su encabezado en la página siguiente — riesgo conocido y
+aceptado por el cliente al pedir este cambio.
 
 ## Arquitectura activa (esta es la que corre en producción)
 
@@ -1915,14 +1983,28 @@ explícitamente en vez de ignorarse:
   solo los 2 marcadores.
 
 **Las funciones que arman la ESTRUCTURA visual** (`appendSectionTitle_`,
-`appendReportHeader_`, `appendTestMetaSection_`, `appendVerdictBanner_`,
-`appendSignatureSection_`, etc.) **son literalmente las mismas de antes** —
-ya no las llama el informe real, solo `buildElectricalTemplateDoc_`/
-`buildOilTemplateDoc_` (los dos armadores de plantilla), pasándoles objetos
-de datos "de mentira" donde cada campo es su propio placeholder
-(`TEMPLATE_SITE_`, `TEMPLATE_TRANSFORMER_`, `templateTestMeta_(...)`) — el
-mismo código de armado sirve para las dos cosas, así la plantilla nunca
-puede desalinearse visualmente del informe real por accidente.
+`appendReportHeader_`, `appendVerdictBanner_`, `appendSignatureSection_`,
+etc.) **son literalmente las mismas de antes** — ya no las llama el
+informe real, solo `buildElectricalTemplateDoc_`/`buildOilTemplateDoc_`
+(los dos armadores de plantilla), pasándoles objetos de datos "de
+mentira" donde cada campo es su propio placeholder (`TEMPLATE_SITE_`,
+`TEMPLATE_TRANSFORMER_`) — el mismo código de armado sirve para las dos
+cosas, así la plantilla nunca puede desalinearse visualmente del
+informe real por accidente.
+
+> **⚠ Actualización 2026-09-13 — TODO lo de esta sección sobre "tablas de
+> filas variables" y "secciones que pueden no estar presentes" dejó de
+> aplicar a TTR/Devanados/Aislamiento** (sigue aplicando tal cual a
+> Aceite, que no cambió). El eléctrico se reescribió por completo hacia
+> una tabla única fusionada — `findResultsTableByHeader_`,
+> `appendDataRowsToTable_`, `appendTestMetaSection_`, `templateTestMeta_`
+> y los marcadores de bloque `TTR`/`TTR_TEORICO`/`DEVANADOS_*`/
+> `AISLAMIENTO_*` **ya no existen**. Ver "Punto 10" más arriba, en la
+> lista de cambios pendientes, para la arquitectura real actual
+> (`insertUnifiedResultsTable_`/`applyUnifiedTableMerges_`/
+> `build*UnifiedRows_`). Esta sección se deja tal cual (no se reescribe)
+> porque sigue siendo la explicación correcta del mecanismo general de
+> plantillas-con-placeholder que SÍ sigue usando Aceite.
 
 **Banners de veredicto/aviso**: `body.replaceText()` cambia texto, nunca
 estilo de celda — el color real (verde/amarillo/rojo) se fija por separado

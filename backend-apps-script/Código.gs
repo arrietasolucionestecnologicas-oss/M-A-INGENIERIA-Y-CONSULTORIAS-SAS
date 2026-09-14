@@ -105,7 +105,8 @@ var HEADERS = {
     'estado_equipo', 'plate_photo_file_id', 'created_at', 'updated_at',
     'cooling_type', 'impedance_percent', 'insulation_type',
     'numero_posiciones_tap', 'electrical_report_file_id', 'posicion_tap_nominal',
-    'ttr_ofertado', 'resistencia_devanados_ofertado', 'aislamiento_ofertado'
+    'ttr_ofertado', 'resistencia_devanados_ofertado', 'aislamiento_ofertado',
+    'at_devanado_material', 'bt_devanado_material'
   ],
   PRUEBAS: [
     'id', 'transformer_id', 'test_type', 'raw_readings_json',
@@ -665,7 +666,12 @@ function createTransformer_(params) {
       posicion_tap_nominal: params.posicion_tap_nominal || '',
       ttr_ofertado: !!params.ttr_ofertado,
       resistencia_devanados_ofertado: !!params.resistencia_devanados_ofertado,
-      aislamiento_ofertado: !!params.aislamiento_ofertado
+      aislamiento_ofertado: !!params.aislamiento_ofertado,
+      // Material del devanado AT/BT (2026-09-13) — dato de placa, usado en el
+      // banner de la tabla unificada de resultados eléctricos (ver
+      // buildWindingSideUnifiedRows_ en la sección de informes).
+      at_devanado_material: params.at_devanado_material || '',
+      bt_devanado_material: params.bt_devanado_material || ''
     });
 
     return jsonResponse_({ status: 201, message: 'Transformador creado', data: { id: id } });
@@ -690,7 +696,8 @@ function updateTransformer_(params) {
     var updates = {};
     ['serial_number', 'manufacturer', 'manufacture_year', 'phase_type', 'vector_group', 'rated_power_kva',
       'hv_nominal_voltage', 'lv_nominal_voltage', 'site_id',
-      'cooling_type', 'impedance_percent', 'insulation_type', 'numero_posiciones_tap', 'posicion_tap_nominal'].forEach(function (field) {
+      'cooling_type', 'impedance_percent', 'insulation_type', 'numero_posiciones_tap', 'posicion_tap_nominal',
+      'at_devanado_material', 'bt_devanado_material'].forEach(function (field) {
       if (params[field] !== undefined) updates[field] = params[field];
     });
     if (params.estado_equipo !== undefined) {
@@ -1958,12 +1965,13 @@ function appendDenseInfoGrid_(body, rows) {
 }
 
 /** Tabla de resultados con encabezado resaltado (fondo acento, texto
- *  blanco). Sigue usándose en dos casos: (1) al armar las plantillas, para
- *  las 3 tablas de Aceite (Fisicoquímico/DGA/PCB — filas fijas, con
- *  celdas de VALOR en placeholder) y para la fila de encabezado sola de
- *  las tablas de TTR/Devanados/Aislamiento (filas de datos variables, el
- *  informe real las agrega después con appendDataRowsToTable_); (2) nunca
- *  se usa ya en el armado del informe real, que solo copia la plantilla. */
+ *  blanco). Desde la tabla única de resultados eléctricos (2026-09-13),
+ *  solo la usa `buildOilTemplateDoc_` para las 3 tablas de Aceite
+ *  (Fisicoquímico/DGA/PCB — filas fijas, con celdas de VALOR en
+ *  placeholder); TTR/Devanados/Aislamiento ya no tienen ninguna tabla
+ *  horneada en la plantilla, se insertan enteras en tiempo de generación
+ *  real (ver insertUnifiedResultsTable_). Nunca se usa en el armado del
+ *  informe REAL de Aceite tampoco, que solo copia la plantilla. */
 function appendResultsTable_(body, rows) {
   var table = body.appendTable(rows);
   table.setBorderColor(PDF_COLORS_.BORDER);
@@ -2027,13 +2035,27 @@ function appendPageHeader_(doc) {
   nameCell.editAsText().setBold(true).setFontSize(14).setForegroundColor(PDF_COLORS_.TEXT);
 }
 
-/** Caja de título del protocolo + datos del cliente y del equipo — solo
- *  usada al armar plantillas (ver appendPageHeader_ arriba para el mismo
- *  criterio). */
+/** Caja de título del protocolo — solo usada al armar plantillas (ver
+ *  appendPageHeader_ arriba para el mismo criterio). Hasta el 2026-09-13
+ *  también armaba acá mismo la grilla "Datos del cliente y del equipo"
+ *  (ver appendClientEquipoGrid_ más abajo); para el informe Eléctrico esa
+ *  grilla se separó porque ahora vive DENTRO de la tabla única de
+ *  resultados (ver "Tabla única de resultados eléctricos" — el cliente
+ *  pidió que ni siquiera esa grilla tenga espacio antes de la tabla de
+ *  resultados). Aceite sigue usando appendClientEquipoGrid_ tal cual,
+ *  como una grilla aparte — no le pidieron ese cambio. */
 function appendReportHeader_(body, site, transformer, protocolTitle) {
   appendProtocolTitle_(body, protocolTitle);
   body.appendParagraph('');
+  appendClientEquipoGrid_(body, site, transformer);
+}
 
+/** La grilla "Datos del cliente y del equipo" en sí, separada de
+ *  appendReportHeader_ (ver comentario ahí) para que el informe Eléctrico
+ *  pueda omitirla como grilla aparte y construirla en cambio como más
+ *  filas de la tabla única (ver buildClientEquipoUnifiedRows_). Solo
+ *  usada tal cual por buildOilTemplateDoc_ (Aceite). */
+function appendClientEquipoGrid_(body, site, transformer) {
   appendSectionTitle_(body, 'Datos del cliente y del equipo');
   appendDenseInfoGrid_(body, [
     ['CLIENTE', site.client_name || '—', 'NIT', site.nit || '—'],
@@ -2043,40 +2065,6 @@ function appendReportHeader_(body, site, transformer, protocolTitle) {
     ['TENSIÓN PRIMARIA', transformer.hv_nominal_voltage ? (String(transformer.hv_nominal_voltage) + ' V') : '—', 'TENSIÓN SECUNDARIA', transformer.lv_nominal_voltage ? (String(transformer.lv_nominal_voltage) + ' V') : '—'],
     ['REFRIGERACIÓN', transformer.cooling_type || '—', 'AÑO DE FABRICACIÓN', transformer.manufacture_year ? String(transformer.manufacture_year) : '—']
   ]);
-}
-
-/** Datos generales de la prueba — reemplaza (2026-09-13, a pedido
- *  explícito del cliente tras compararlo con un certificado real de otra
- *  empresa que cabe en una sola hoja) a la vieja `appendTestMetaSection_`,
- *  que repetía FECHA/TÉCNICO/INSTRUMENTO/NORMA una vez POR CADA tipo
- *  (TTR/Devanados/Aislamiento) — 3 grillas casi idénticas, mucho espacio
- *  vertical desperdiciado para datos que casi siempre son los mismos en
- *  los 3. Ahora FECHA/TÉCNICO/NORMA se muestran UNA sola vez para todo el
- *  informe (NORMA es literal, nunca cambia; FECHA/TÉCNICO usan los de la
- *  prueba más reciente entre las presentes — mismo criterio que ya usaba
- *  la firma "PROBADO POR", ver regenerateElectricalCombinedReport_). El
- *  INSTRUMENTO sigue por módulo (si varía de verdad, cada prueba usa su
- *  propio equipo) — ver appendInstrumentLine_ más abajo. Solo usada al
- *  armar plantillas. */
-function appendSharedTestMetaSection_(body) {
-  appendSectionTitle_(body, 'Datos generales de la prueba');
-  appendDenseInfoGrid_(body, [
-    ['FECHA', '<<FECHA_GENERAL>>', 'TÉCNICO RESPONSABLE', '<<TECNICO_GENERAL>>', 'NORMA DE REFERENCIA', 'IEEE C57.12.90']
-  ]);
-}
-
-/** Línea compacta (no grilla) con el instrumento usado en ESTE módulo
- *  específico — y, para Aislamiento, método + tensión de prueba en la
- *  misma línea (`extraText`). Reemplaza la grilla de 2 filas que antes se
- *  repetía por módulo dentro de `appendTestMetaSection_`. Solo usada al
- *  armar plantillas — el texto real (incluida la calibración vigente del
- *  instrumento) se llena con `body.replaceText()` en tiempo de
- *  generación, igual que siempre. */
-function appendInstrumentLine_(body, instrumentPlaceholder, extraText) {
-  var text = 'Instrumento: ' + instrumentPlaceholder;
-  if (extraText) text += '   ·   ' + extraText;
-  var p = body.appendParagraph(text);
-  p.editAsText().setFontSize(7).setForegroundColor(PDF_COLORS_.TEXT_MUTED);
 }
 
 /** Banner de veredicto — el elemento más visible del informe, mismo color
@@ -2155,62 +2143,162 @@ var TEST_TYPE_DISPLAY_LABEL_ = {
   AISLAMIENTO: 'Resistencia de Aislamiento'
 };
 
-/** Encabezados fijos de las 4 tablas de filas variables (TTR, Devanados
- *  primario/secundario, Aislamiento) — sirven doble propósito: (1) construir
- *  la plantilla (solo la fila de encabezado, sin datos) y (2) identificar
- *  esa misma tabla dentro de la plantilla ya copiada (por forma: cantidad
- *  de celdas + texto de la primera), para saber dónde insertar las filas
- *  reales. Mismo criterio de "identificar por forma" que ya usa
- *  pinResultsTableHeaders_ vía la Docs API — acá se usa directo con
- *  DocumentApp porque el documento ya está abierto para edición. */
-/** Punto 7 (2026-09-13) — formato compacto: una fila por TAP en vez de una
- *  fila por TAP+fase. Dos variantes (mismo criterio que Aislamiento
- *  Simple/Completo en el punto 5) porque monofásico tiene 1 sola fase —
- *  la cantidad de columnas de valor cambia, no solo el contenido. */
-var TTR_COMPACT_TRIFASICO_HEADER_ = ['TAP', 'U', 'V', 'W', 'TEÓRICA', 'ERROR %', 'ESTADO'];
-var TTR_COMPACT_MONOFASICO_HEADER_ = ['TAP', 'VALOR', 'TEÓRICA', 'ERROR %', 'ESTADO'];
-/** Orden fijo U/V/W — coincide con getPhaseKeys() en app.js (H1H2-X1X2 /
- *  H2H3-X2X3 / H3H1-X3X1, siempre en ese orden para trifásico). */
+/** Orden fijo U/V/W de TTR — coincide con getPhaseKeys() en app.js
+ *  (H1H2-X1X2 / H2H3-X2X3 / H3H1-X3X1, siempre en ese orden para
+ *  trifásico), y de Devanados (H1-H2/H2-H3/H3-H1 para AT, ya mapeadas por
+ *  TTR_TO_WR_PHASE_MAP en app.js; X1-X2/X2-X3/X3-X1 para BT). */
 var TTR_PHASE_ORDER_ = ['H1H2-X1X2', 'H2H3-X2X3', 'H3H1-X3X1'];
-/** Punto 8 (2026-09-13) — mismo criterio que el punto 7 (TTR): una fila
- *  por TAP (primario) o una sola fila (secundario, no tiene TAP) en vez
- *  de una fila por fase. El secundario usa 'DEVANADO' como primera
- *  columna (valor fijo "SECUNDARIO") en el mismo lugar donde el primario
- *  usa 'TAP', para poder ubicar la tabla por forma igual que el resto y
- *  para tener dónde poner el marcador "†" de lectura repetida (punto 6) —
- *  antes esa columna era FASE y no sobrevive en el formato compacto. */
-var WINDING_COMPACT_TRIFASICO_HEADER_ = ['TAP', 'U', 'V', 'W', 'DESVIACIÓN %', 'ESTADO'];
-var WINDING_COMPACT_MONOFASICO_HEADER_ = ['TAP', 'VALOR', 'DESVIACIÓN %', 'ESTADO'];
-var WINDING_SECONDARY_COMPACT_TRIFASICO_HEADER_ = ['DEVANADO', 'U', 'V', 'W', 'DESVIACIÓN %', 'ESTADO'];
-var WINDING_SECONDARY_COMPACT_MONOFASICO_HEADER_ = ['DEVANADO', 'VALOR', 'DESVIACIÓN %', 'ESTADO'];
-/** Orden fijo U/V/W del primario (H1-H2/H2-H3/H3-H1, claves ya mapeadas
- *  por TTR_TO_WR_PHASE_MAP en app.js) y del secundario (X1-X2/X2-X3/X3-X1). */
 var WINDING_PHASE_ORDER_ = ['H1-H2', 'H2-H3', 'H3-H1'];
 var WINDING_SECONDARY_PHASE_ORDER_ = ['X1-X2', 'X2-X3', 'X3-X1'];
-var INSULATION_TABLE_HEADER_ = ['COMBINACIÓN', 'DAR', 'CALIFICACIÓN DAR', 'IP', 'CALIFICACIÓN IP'];
-/** Punto 5 (2026-09-13) — modo Simple: solo un valor de resistencia por
- *  combinación, sin DAR/IP. */
-var INSULATION_SIMPLE_TABLE_HEADER_ = ['COMBINACIÓN', 'RESISTENCIA'];
 
-/** Calcula las filas de datos de cada tabla variable — extraído tal cual
- *  del cuerpo de las antiguas appendTtrResultsTable_/
- *  appendWindingResultsTable_/appendInsulationResultsTable_ (ya no existen
- *  como tal: antes armaban tabla completa desde cero, ahora el informe
- *  real solo necesita las FILAS para insertarlas en la tabla que ya trae
- *  la plantilla copiada, ver appendDataRowsToTable_). */
-/** Punto 7 (2026-09-13): una fila por TAP (antes: una fila por TAP+fase).
- *  ERROR%/ESTADO = peor caso entre las fases de ese TAP (el peor error
- *  absoluto, y RECHAZADO si cualquier fase lo está) — un TAP con una fase
- *  mala no puede leerse como aprobado solo porque las otras 2 sí. TEÓRICA
- *  se muestra una sola vez porque la fórmula estándar (grupo de conexión)
- *  da el mismo valor teórico para las 3 fases de un TAP; se toma el de la
- *  primera fase disponible. El marcador "†" de lectura repetida (punto 6)
- *  se corre de la celda FASE (ya no existe) a la celda TAP. */
-function computeTtrCompactRows_(calculated) {
-  var theoAvailable = calculated.theoreticalAvailable !== false;
-  var rows = [];
-  Object.keys(calculated.taps).map(Number).sort(function (a, b) { return a - b; }).forEach(function (tapNum) {
-    var tap = calculated.taps[String(tapNum)];
+// ---------------------------------------------------------------------------
+// Tabla única de resultados eléctricos (2026-09-13, a pedido explícito del
+// cliente tras comparar contra 2 certificados reales de otras empresas que
+// caben en una sola hoja) — TTR + Devanados AT/BT + Aislamiento ya NO son 3
+// tablas separadas con espacio entre ellas (esa separación repetida era la
+// causa real de que el informe se fuera a 2-3 páginas): ahora son secciones
+// dentro de UNA sola tabla de 7 columnas de ancho (la más ancha que se
+// necesita). Cada sección aporta: 1 fila banner (fusionada en las 7
+// columnas), 1 fila de encabezado, sus filas de datos, y 1 fila de
+// veredicto (fusionada, con el mismo color que ya usaba appendVerdictBanner_)
+// — sin párrafos ni espacio entre secciones, todo dentro de la misma tabla.
+//
+// DocumentApp no puede fusionar celdas (no existe tableCell.merge() ni
+// similar). El flujo es: (1) construir la tabla COMPLETA con DocumentApp
+// como una tabla normal de 7 columnas, con TODAS las celdas llenas (vacías
+// donde luego se van a fusionar), (2) doc.saveAndClose() (ver
+// finalizeReportPdf_), (3) reabrir con Docs.Documents.get para ubicar la
+// tabla por el texto exacto de su primer banner (único por informe), (4)
+// mandar TODAS las mergeTableCells en un solo batchUpdate — ver
+// applyUnifiedTableMerges_, mismo patrón ya usado en pinResultsTableHeaders_
+// para ubicar contenido por forma vía la Docs API avanzada.
+// ---------------------------------------------------------------------------
+
+var UNIFIED_TABLE_COLS_ = 7;
+/** Tamaños de fuente al mínimo legible (2026-09-13, a pedido explícito
+ *  del cliente comparando contra un protocolo real de otra empresa que
+ *  cabe en 1 sola hoja con letra diminuta) — el banner/veredicto se dejan
+ *  un poco más grandes que el resto porque son el único texto que debe
+ *  notarse a simple vista; todo lo demás (encabezados, datos, grillas de
+ *  etiqueta/valor) baja a 5pt, el mínimo que pidió el cliente. */
+var UNIFIED_FONT_BANNER_ = 7;
+var UNIFIED_FONT_VERDICT_ = 8;
+var UNIFIED_FONT_DATA_ = 5;
+/** Padding mínimo de celda (en puntos) — DocumentApp lo deja en ~5pt por
+ *  defecto en cada lado; bajarlo a esto es lo que de verdad reduce la
+ *  altura de cada fila (más que la fuente en sí), igual que pidió el
+ *  cliente ("celdas y filas al mínimo"). */
+var UNIFIED_CELL_PADDING_ = 1;
+
+/** Una fila "lógica" de la tabla unificada. `cells` siempre tiene 7
+ *  strings (relleno con '' donde una fusión posterior los va a tapar).
+ *  `role` decide el estilo al insertar (banner/header/verdict/data).
+ *  `merges` (opcional, arreglo de {startColumnIndex, columnSpan}) son las
+ *  fusiones que necesita ESTA fila — casi siempre 0 o 1, pero Aislamiento
+ *  Simple necesita 2 en la misma fila (COMBINACIÓN y RESISTENCIA). */
+function unifiedRow_(cells, role, merges) {
+  return { cells: cells, role: role, merges: merges || [] };
+}
+function unifiedBannerRow_(text) {
+  var cells = new Array(UNIFIED_TABLE_COLS_).fill('');
+  cells[0] = text;
+  return unifiedRow_(cells, 'banner', [{ startColumnIndex: 0, columnSpan: UNIFIED_TABLE_COLS_ }]);
+}
+/** Fila de veredicto — mismo color que ya usaba appendVerdictBanner_
+ *  (verdictColor_), ahora como una fila fusionada más dentro de la misma
+ *  tabla en vez de una tabla aparte debajo de cada sección. Cada sección
+ *  (TTR, AT, BT, Aislamiento) trae la suya — el cliente pidió
+ *  explícitamente mantener el veredicto por sección, no uno solo al
+ *  final. */
+function unifiedVerdictRow_(label, verdict) {
+  var cells = new Array(UNIFIED_TABLE_COLS_).fill('');
+  cells[0] = label + ': ' + verdict;
+  var row = unifiedRow_(cells, 'verdict', [{ startColumnIndex: 0, columnSpan: UNIFIED_TABLE_COLS_ }]);
+  row.verdictValue = verdict;
+  return row;
+}
+
+/** Fila tipo "grilla densa" etiqueta/valor (fondo gris + negrita en la
+ *  etiqueta, texto normal en el valor) DENTRO de la tabla única — usada
+ *  por "Datos del cliente y del equipo" y "Datos generales de la prueba"
+ *  (2026-09-13: antes eran 2 grillas aparte, con espacio antes de la
+ *  tabla de resultados; el cliente pidió que no quede NINGÚN espacio en
+ *  todo el informe, así que ahora son más filas de la misma tabla).
+ *  `labelCols` son los índices de columna (0-6) que se ven como etiqueta;
+ *  el resto de columnas de esa fila son valor. */
+function unifiedLabelRow_(cells, labelCols, merges) {
+  var row = unifiedRow_(cells, 'labelvalue', merges);
+  row.labelCols = labelCols;
+  return row;
+}
+
+/** "Datos del cliente y del equipo" como filas de la tabla única — mismos
+ *  6 pares etiqueta/valor de siempre (ver appendClientEquipoGrid_, que
+ *  sigue existiendo tal cual solo para Aceite), repartidos en las 7
+ *  columnas físicas como etiqueta(1 col)+valor(2 cols)+etiqueta(1 col)+
+ *  valor(3 cols) por fila — el valor se deja más ancho porque suele ser
+ *  el dato más largo (nombre de cliente, número de serie, etc). */
+function buildClientEquipoUnifiedRows_(site, transformer) {
+  var rows = [unifiedBannerRow_('DATOS DEL CLIENTE Y DEL EQUIPO')];
+  var pairMerges = [{ startColumnIndex: 1, columnSpan: 2 }, { startColumnIndex: 4, columnSpan: 3 }];
+  var pairs = [
+    ['CLIENTE', site.client_name || '—', 'NIT', site.nit || '—'],
+    ['CIUDAD', site.ciudad || '—', 'PROYECTO', site.project_name || '—'],
+    ['FABRICANTE', transformer.manufacturer || '—', 'N° DE SERIE', transformer.serial_number || '—'],
+    ['GRUPO DE CONEXIÓN', transformer.vector_group || '—', 'POTENCIA NOMINAL', transformer.rated_power_kva ? (String(transformer.rated_power_kva) + ' kVA') : '—'],
+    ['TENSIÓN PRIMARIA', transformer.hv_nominal_voltage ? (String(transformer.hv_nominal_voltage) + ' V') : '—', 'TENSIÓN SECUNDARIA', transformer.lv_nominal_voltage ? (String(transformer.lv_nominal_voltage) + ' V') : '—'],
+    ['REFRIGERACIÓN', transformer.cooling_type || '—', 'AÑO DE FABRICACIÓN', transformer.manufacture_year ? String(transformer.manufacture_year) : '—']
+  ];
+  pairs.forEach(function (p) {
+    var cells = new Array(UNIFIED_TABLE_COLS_).fill('');
+    cells[0] = p[0]; cells[1] = p[1]; cells[3] = p[2]; cells[4] = p[3];
+    rows.push(unifiedLabelRow_(cells, [0, 3], pairMerges));
+  });
+  return rows;
+}
+
+/** "Datos generales de la prueba" (FECHA/TÉCNICO/NORMA) como 1 sola fila
+ *  de la tabla única — reemplaza a la vieja appendSharedTestMetaSection_
+ *  (que armaba esto como grilla aparte en la plantilla, con placeholders
+ *  <<FECHA_GENERAL>>/<<TECNICO_GENERAL>>). Ahora se construye con los
+ *  valores YA REALES en tiempo de generación (regenerateElectricalCombinedReport_
+ *  calcula `signedTest` — la prueba más reciente entre las presentes —
+ *  ANTES de armar esta fila, no después como antes), así que no hace
+ *  falta ningún placeholder ni body.replaceText() para esto. NORMA es
+ *  literal, nunca cambia. */
+function buildSharedMetaUnifiedRows_(fechaText, tecnicoText) {
+  var cells = new Array(UNIFIED_TABLE_COLS_).fill('');
+  cells[0] = 'FECHA'; cells[1] = fechaText;
+  cells[2] = 'TÉCNICO RESPONSABLE'; cells[3] = tecnicoText;
+  cells[4] = 'NORMA DE REFERENCIA'; cells[5] = 'IEEE C57.12.90';
+  var merges = [{ startColumnIndex: 5, columnSpan: 2 }];
+  return [unifiedBannerRow_('DATOS GENERALES DE LA PRUEBA'), unifiedLabelRow_(cells, [0, 2, 4], merges)];
+}
+
+/** TTR — banner + encabezado + 1 fila por TAP. Mismo criterio de
+ *  peor-caso-entre-fases que ya existía (ERROR%/ESTADO); el marcador "†"
+ *  de lectura repetida ahora vive en la celda ESTADO (antes vivía en la
+ *  celda TAP, que ya no le pertenece solo a esta fila desde que todo es
+ *  una tabla continua). El aviso de "teórico no disponible/no confiable"
+ *  (antes un banner de advertencia aparte) se dobla dentro del texto del
+ *  banner de esta sección — ya no hay espacio para un párrafo extra entre
+ *  secciones. */
+function buildTtrUnifiedSection_(calc, esMonofasico, instrumentoLine, warningText) {
+  var theoAvailable = calc.theoreticalAvailable !== false;
+  var bannerText = 'RESULTADOS — RELACIÓN DE TRANSFORMACIÓN (TTR)';
+  if (instrumentoLine) bannerText += '   ·   ' + instrumentoLine;
+  if (warningText) bannerText += '   ·   ' + warningText;
+
+  var rows = [unifiedBannerRow_(bannerText)];
+
+  var merges = esMonofasico ? [{ startColumnIndex: 1, columnSpan: 3 }] : [];
+  var headerCells = esMonofasico
+    ? ['TAP', 'VALOR', '', '', 'TEÓRICA', 'ERROR %', 'ESTADO']
+    : ['TAP', 'U', 'V', 'W', 'TEÓRICA', 'ERROR %', 'ESTADO'];
+  rows.push(unifiedRow_(headerCells, 'header', merges));
+
+  Object.keys(calc.taps).map(Number).sort(function (a, b) { return a - b; }).forEach(function (tapNum) {
+    var tap = calc.taps[String(tapNum)];
     var phaseKeys = Object.keys(tap.phases);
     var orderedKeys = phaseKeys.length > 1 ? TTR_PHASE_ORDER_.filter(function (k) { return tap.phases[k]; }) : phaseKeys;
 
@@ -2225,136 +2313,283 @@ function computeTtrCompactRows_(calculated) {
       if (theoAvailable && p.status === 'RECHAZADO') worstStatus = 'RECHAZADO';
     });
 
-    var row = [String(tapNum) + (anyNota ? ' †' : '')];
-    orderedKeys.forEach(function (k) {
-      var p = tap.phases[k];
-      row.push(p.measuredRatio != null ? p.measuredRatio.toFixed(4) : '—');
-    });
-    row.push(teorica != null ? teorica.toFixed(4) : '—');
-    row.push(worstErrorPercent != null ? worstErrorPercent.toFixed(2) + ' %' : '—');
-    row.push(theoAvailable ? worstStatus : 'PENDIENTE');
-    rows.push(row);
+    var cells = new Array(UNIFIED_TABLE_COLS_).fill('');
+    cells[0] = String(tapNum);
+    if (esMonofasico) {
+      var onlyPhase = tap.phases[orderedKeys[0]];
+      cells[1] = onlyPhase && onlyPhase.measuredRatio != null ? onlyPhase.measuredRatio.toFixed(4) : '—';
+    } else {
+      orderedKeys.forEach(function (k, i) {
+        var p = tap.phases[k];
+        cells[1 + i] = p.measuredRatio != null ? p.measuredRatio.toFixed(4) : '—';
+      });
+    }
+    cells[4] = teorica != null ? teorica.toFixed(4) : '—';
+    cells[5] = worstErrorPercent != null ? worstErrorPercent.toFixed(2) + ' %' : '—';
+    cells[6] = (theoAvailable ? worstStatus : 'PENDIENTE') + (anyNota ? ' †' : '');
+    rows.push(unifiedRow_(cells, 'data', merges));
   });
+
   return rows;
 }
 
-/** Punto 6 (2026-09-13) — junta las notas de "lectura repetida" de cada
- *  tabla para imprimirlas como pie de página bajo la tabla (ver
- *  appendRepeatedNoteFootnote_); el marcador "†" ya quedó en la celda
- *  correspondiente desde compute*Rows_ de arriba. */
-function collectTtrNotes_(calculated) {
+function collectTtrUnifiedNotes_(calc) {
   var notes = [];
-  Object.keys(calculated.taps).map(Number).sort(function (a, b) { return a - b; }).forEach(function (tapNum) {
-    var tap = calculated.taps[String(tapNum)];
+  Object.keys(calc.taps).map(Number).sort(function (a, b) { return a - b; }).forEach(function (tapNum) {
+    var tap = calc.taps[String(tapNum)];
     Object.keys(tap.phases).forEach(function (phaseKey) {
       var p = tap.phases[phaseKey];
-      if (p.nota) notes.push('TAP ' + tapNum + ' – Fase ' + phaseKey + ': ' + p.nota);
+      if (p.nota) notes.push('TTR — TAP ' + tapNum + ' – Fase ' + phaseKey + ': ' + p.nota);
     });
   });
   return notes;
 }
 
-/** Punto 8 (2026-09-13): una fila por TAP. DESVIACIÓN%/ESTADO = peor caso
- *  entre las fases de ese TAP, mismo criterio que TTR (punto 7). */
-function computeWindingCompactRows_(calculated) {
-  var rows = [];
-  calculated.taps.forEach(function (tap) {
+/** Devanados — banner + encabezado + 1 fila por TAP, para UN lado del
+ *  devanado (AT=primario, BT=secundario; comparten exactamente la misma
+ *  forma de fila, solo cambia de dónde sale `tapEntries` y `phaseOrder` —
+ *  AT usa WINDING_PHASE_ORDER_ (H1-H2/H2-H3/H3-H1), BT usa
+ *  WINDING_SECONDARY_PHASE_ORDER_ (X1-X2/X2-X3/X3-X1); pasar el orden
+ *  equivocado deja `orderedKeys` vacío para el lado contrario y revienta
+ *  en el `.toFixed()` de más abajo — bug real encontrado en la primera
+ *  verificación en vivo de este cambio, 2026-09-13). `materialText`
+ *  (Aluminio/Cobre, dato nuevo de placa — ver at_devanado_material/
+ *  bt_devanado_material en TRANSFORMADORES) se dobla en el banner en vez
+ *  de ocupar una columna, a pedido explícito del cliente.
+ *
+ *  DESVIACIÓN%/ESTADO son un cálculo real SOLO cuando hay 2+ fases contra
+ *  las cuales promediar. Con 1 sola fase (transformador monofásico) no
+ *  hay base de comparación — en vez de inventar un 0%/APROBADO (que sí
+ *  calcula computePhaseUnbalance_ como placeholder, ver su comentario en
+ *  calculateWindingResistance_ más arriba), esta función muestra '—'/
+ *  'REGISTRADO', mismo criterio que Aislamiento Simple ya usa para "no
+ *  hay verdicto automático posible" — decisión confirmada explícitamente
+ *  con el cliente el 2026-09-13. Esto es solo de DISPLAY: el cálculo real
+ *  (`calculateWindingResistance_`/`computePhaseUnbalance_`) no cambió, y
+ *  el veredicto agregado del lado (tapVerdict/secondary.verdict) sigue
+ *  siendo el mismo de siempre. */
+function buildWindingSideUnifiedRows_(sideLabel, tapEntries, esMonofasico, materialText, instrumentoLine, phaseOrder) {
+  var bannerText = 'RESULTADOS — RESISTENCIA DE DEVANADOS — ' + sideLabel;
+  var extras = [];
+  if (materialText) extras.push('Material: ' + materialText);
+  if (instrumentoLine) extras.push(instrumentoLine);
+  if (extras.length) bannerText += '   ·   ' + extras.join('   ·   ');
+
+  var rows = [unifiedBannerRow_(bannerText)];
+
+  var merges = esMonofasico ? [{ startColumnIndex: 1, columnSpan: 3 }] : [];
+  var headerCells = esMonofasico
+    ? ['TAP', 'VALOR', '', '', 'PROMEDIO', 'DESVIACIÓN %', 'ESTADO']
+    : ['TAP', 'U', 'V', 'W', 'PROMEDIO', 'DESVIACIÓN %', 'ESTADO'];
+  rows.push(unifiedRow_(headerCells, 'header', merges));
+
+  tapEntries.forEach(function (tap) {
     var phaseKeys = Object.keys(tap.phases);
-    var orderedKeys = phaseKeys.length > 1 ? WINDING_PHASE_ORDER_.filter(function (k) { return tap.phases[k]; }) : phaseKeys;
-    var worstDeviation = null, worstStatus = 'APROBADO', anyNota = false;
-    orderedKeys.forEach(function (k) {
-      var p = tap.phases[k];
-      if (p.nota) anyNota = true;
-      if (worstDeviation === null || Math.abs(p.deviationFromAvgPercent) > Math.abs(worstDeviation)) worstDeviation = p.deviationFromAvgPercent;
-      if (p.status === 'RECHAZADO') worstStatus = 'RECHAZADO';
-    });
-    var row = [String(tap.tapPosition) + (anyNota ? ' †' : '')];
-    orderedKeys.forEach(function (k) { row.push(tap.phases[k].resistanceOhm.toFixed(4)); });
-    row.push(worstDeviation.toFixed(2) + ' %');
-    row.push(worstStatus);
-    rows.push(row);
+    var orderedKeys = phaseKeys.length > 1 ? phaseOrder.filter(function (k) { return tap.phases[k]; }) : phaseKeys;
+    var esUnaFase = orderedKeys.length === 1;
+    var anyNota = false;
+    orderedKeys.forEach(function (k) { if (tap.phases[k].nota) anyNota = true; });
+
+    var desviacion, estado;
+    if (esUnaFase) {
+      desviacion = '—';
+      estado = 'REGISTRADO';
+    } else {
+      var worstDeviation = null, worstStatus = 'APROBADO';
+      orderedKeys.forEach(function (k) {
+        var p = tap.phases[k];
+        if (worstDeviation === null || Math.abs(p.deviationFromAvgPercent) > Math.abs(worstDeviation)) worstDeviation = p.deviationFromAvgPercent;
+        if (p.status === 'RECHAZADO') worstStatus = 'RECHAZADO';
+      });
+      desviacion = worstDeviation.toFixed(2) + ' %';
+      estado = worstStatus;
+    }
+    if (anyNota) estado += ' †';
+
+    var cells = new Array(UNIFIED_TABLE_COLS_).fill('');
+    cells[0] = tap.tapPosition != null ? String(tap.tapPosition) : '—';
+    if (esMonofasico) {
+      cells[1] = tap.phases[orderedKeys[0]].resistanceOhm.toFixed(4);
+    } else {
+      orderedKeys.forEach(function (k, i) { cells[1 + i] = tap.phases[k].resistanceOhm.toFixed(4); });
+    }
+    cells[4] = tap.averageResistanceOhm.toFixed(4);
+    cells[5] = desviacion;
+    cells[6] = estado;
+    rows.push(unifiedRow_(cells, 'data', merges));
   });
+
   return rows;
 }
 
-/** Punto 8: el secundario no tiene TAP — es una sola medición, así que la
- *  tabla compacta queda en 1 sola fila con "SECUNDARIO" (+ "†" si hubo
- *  lectura repetida) en la columna DEVANADO. */
-function computeWindingSecondaryCompactRows_(calculated) {
-  var phaseKeys = Object.keys(calculated.secondary.phases);
-  var orderedKeys = phaseKeys.length > 1 ? WINDING_SECONDARY_PHASE_ORDER_.filter(function (k) { return calculated.secondary.phases[k]; }) : phaseKeys;
-  var worstDeviation = null, worstStatus = 'APROBADO', anyNota = false;
-  orderedKeys.forEach(function (k) {
-    var p = calculated.secondary.phases[k];
-    if (p.nota) anyNota = true;
-    if (worstDeviation === null || Math.abs(p.deviationFromAvgPercent) > Math.abs(worstDeviation)) worstDeviation = p.deviationFromAvgPercent;
-    if (p.status === 'RECHAZADO') worstStatus = 'RECHAZADO';
-  });
-  var row = ['SECUNDARIO' + (anyNota ? ' †' : '')];
-  orderedKeys.forEach(function (k) { row.push(calculated.secondary.phases[k].resistanceOhm.toFixed(4)); });
-  row.push(worstDeviation.toFixed(2) + ' %');
-  row.push(worstStatus);
-  return [row];
-}
-function collectWindingNotes_(calculated) {
+function collectWindingSideUnifiedNotes_(sideLabel, tapEntries) {
   var notes = [];
-  calculated.taps.forEach(function (tap) {
+  tapEntries.forEach(function (tap) {
     Object.keys(tap.phases).forEach(function (phaseKey) {
       var p = tap.phases[phaseKey];
-      if (p.nota) notes.push('TAP ' + tap.tapPosition + ' – Fase ' + phaseKey + ': ' + p.nota);
+      if (p.nota) notes.push(sideLabel + ' — TAP ' + (tap.tapPosition != null ? tap.tapPosition : '—') + ' – Fase ' + phaseKey + ': ' + p.nota);
     });
   });
   return notes;
 }
-function collectWindingSecondaryNotes_(calculated) {
+
+/** Aislamiento — Completo (DAR/IP: 5 columnas lógicas repartidas en 7
+ *  físicas, CALIF. IP fusionada sobre las últimas 3) o Simple
+ *  (COMBINACIÓN/RESISTENCIA: 2 columnas lógicas, cada una fusionando
+ *  varias físicas). No hay columna ESTADO aquí (nunca la hubo, es
+ *  DAR/IP+calificación o solo un valor) — el marcador "†" de lectura
+ *  repetida va en la última celda lógica de cada fila (CALIF. IP o
+ *  RESISTENCIA según el método). */
+function buildInsulationUnifiedRows_(calc, instrumentoLine, tensionPruebaText) {
+  var esSimple = calc.metodo === 'simple';
+  var bannerText = 'RESULTADOS — RESISTENCIA DE AISLAMIENTO' +
+    (tensionPruebaText ? ' (Tensión de prueba: ' + tensionPruebaText + ')' : '');
+  var extras = [];
+  if (instrumentoLine) extras.push(instrumentoLine);
+  extras.push('Método: ' + (esSimple ? 'Simple (lectura al minuto)' : 'Completo (DAR/IP)'));
+  bannerText += '   ·   ' + extras.join('   ·   ');
+
+  var rows = [unifiedBannerRow_(bannerText)];
+
+  if (esSimple) {
+    var simpleMerges = [{ startColumnIndex: 0, columnSpan: 2 }, { startColumnIndex: 2, columnSpan: 5 }];
+    rows.push(unifiedRow_(['COMBINACIÓN', '', 'RESISTENCIA', '', '', '', ''], 'header', simpleMerges));
+    Object.keys(calc.measurements).forEach(function (key) {
+      var m = calc.measurements[key];
+      var cells = new Array(UNIFIED_TABLE_COLS_).fill('');
+      cells[0] = key;
+      cells[2] = m.resistenciaValor + ' ' + m.resistenciaUnidad + (m.nota ? ' †' : '');
+      rows.push(unifiedRow_(cells, 'data', simpleMerges));
+    });
+  } else {
+    var completoMerges = [{ startColumnIndex: 4, columnSpan: 3 }];
+    rows.push(unifiedRow_(['COMBINACIÓN', 'DAR', 'CALIF. DAR', 'IP', 'CALIF. IP', '', ''], 'header', completoMerges));
+    Object.keys(calc.measurements).forEach(function (key) {
+      var m = calc.measurements[key];
+      var cells = new Array(UNIFIED_TABLE_COLS_).fill('');
+      cells[0] = key;
+      cells[1] = m.dar.toFixed(2);
+      cells[2] = m.darRating;
+      cells[3] = m.ip.toFixed(2);
+      cells[4] = m.ipRating + (m.nota ? ' †' : '');
+      rows.push(unifiedRow_(cells, 'data', completoMerges));
+    });
+  }
+
+  return rows;
+}
+
+function collectInsulationUnifiedNotes_(calc) {
   var notes = [];
-  Object.keys(calculated.secondary.phases).forEach(function (phaseKey) {
-    var p = calculated.secondary.phases[phaseKey];
-    if (p.nota) notes.push('Secundario – Fase ' + phaseKey + ': ' + p.nota);
+  Object.keys(calc.measurements).forEach(function (key) {
+    var m = calc.measurements[key];
+    if (m.nota) notes.push('Aislamiento — ' + key + ': ' + m.nota);
   });
   return notes;
 }
 
-function computeInsulationRows_(calculated) {
-  var rows = [];
-  Object.keys(calculated.measurements).forEach(function (key) {
-    var m = calculated.measurements[key];
-    rows.push([key + (m.nota ? ' †' : ''), m.dar.toFixed(2), m.darRating, m.ip.toFixed(2), m.ipRating]);
+/** Inserta la tabla unificada completa en `body`, justo ANTES de
+ *  `beforeChild` (el marcador de posición `<<TABLA_RESULTADOS_ELECTRICOS>>`
+ *  que trae la plantilla — nunca "Área de Control de Calidad" en sí, que
+ *  debe quedar siempre después, como tabla aparte, sin tocar). Construye
+ *  con DocumentApp una tabla NORMAL de 7 columnas (nunca fusiona nada —
+ *  eso lo hace applyUnifiedTableMerges_ después, sobre el documento ya
+ *  guardado). Devuelve las instrucciones de fusión para que
+ *  regenerateElectricalCombinedReport_ se las pase a finalizeReportPdf_. */
+function insertUnifiedResultsTable_(body, beforeChild, sections) {
+  var allRows = [];
+  sections.forEach(function (section) { allRows = allRows.concat(section); });
+  if (allRows.length === 0) return { table: null, mergeSpecs: [], bannerText: null };
+
+  var insertIndex = body.getChildIndex(beforeChild);
+  var table = body.insertTable(insertIndex, allRows.map(function (r) { return r.cells; }));
+  table.setBorderColor(PDF_COLORS_.BORDER);
+
+  var mergeSpecs = [];
+  allRows.forEach(function (r, rowIndex) {
+    var row = table.getRow(rowIndex);
+    for (var c = 0; c < UNIFIED_TABLE_COLS_; c++) {
+      var cell = row.getCell(c);
+      cell.setPaddingTop(UNIFIED_CELL_PADDING_).setPaddingBottom(UNIFIED_CELL_PADDING_)
+        .setPaddingLeft(UNIFIED_CELL_PADDING_).setPaddingRight(UNIFIED_CELL_PADDING_);
+      if (r.role === 'banner') {
+        cell.setBackgroundColor(PDF_COLORS_.ACCENT);
+        cell.editAsText().setBold(true).setFontSize(UNIFIED_FONT_BANNER_).setForegroundColor('#ffffff');
+      } else if (r.role === 'header') {
+        cell.setBackgroundColor(PDF_COLORS_.ACCENT);
+        cell.editAsText().setBold(true).setFontSize(UNIFIED_FONT_DATA_).setForegroundColor('#ffffff');
+      } else if (r.role === 'verdict') {
+        var vcolors = verdictColor_(r.verdictValue);
+        cell.setBackgroundColor(vcolors.bg);
+        cell.editAsText().setBold(true).setFontSize(UNIFIED_FONT_VERDICT_).setForegroundColor(vcolors.text);
+      } else if (r.role === 'labelvalue') {
+        var isLabel = r.labelCols.indexOf(c) !== -1;
+        if (isLabel) {
+          cell.setBackgroundColor(PDF_COLORS_.NEUTRAL_BG);
+          cell.editAsText().setBold(true).setFontSize(UNIFIED_FONT_DATA_).setForegroundColor(PDF_COLORS_.TEXT);
+        } else {
+          cell.editAsText().setBold(false).setFontSize(UNIFIED_FONT_DATA_).setForegroundColor(PDF_COLORS_.TEXT);
+        }
+      } else {
+        cell.editAsText().setFontSize(UNIFIED_FONT_DATA_).setBold(false).setForegroundColor(PDF_COLORS_.TEXT);
+      }
+    }
+    r.merges.forEach(function (m) {
+      mergeSpecs.push({ rowIndex: rowIndex, startColumnIndex: m.startColumnIndex, columnSpan: m.columnSpan });
+    });
   });
-  return rows;
+
+  return { table: table, mergeSpecs: mergeSpecs, bannerText: allRows[0].cells[0] };
 }
 
-/** Punto 5 (2026-09-13) — modo Simple. */
-function computeInsulationSimpleRows_(calculated) {
-  var rows = [];
-  Object.keys(calculated.measurements).forEach(function (key) {
-    var m = calculated.measurements[key];
-    rows.push([key + (m.nota ? ' †' : ''), m.resistenciaValor + ' ' + m.resistenciaUnidad]);
-  });
-  return rows;
-}
-function collectInsulationNotes_(calculated) {
-  var notes = [];
-  Object.keys(calculated.measurements).forEach(function (key) {
-    var m = calculated.measurements[key];
-    if (m.nota) notes.push(key + ': ' + m.nota);
-  });
-  return notes;
-}
-
-/** Punto 6 (2026-09-13): imprime, justo debajo de la tabla de resultados,
- *  un pie de nota pequeño con el motivo de cada lectura repetida — el
- *  técnico repite UNA lectura puntual (no toda la tabla) y el PDF solo
- *  muestra el valor final (la segunda lectura), marcado con "†" en la
- *  celda, con este pie explicando por qué. No requiere placeholder nuevo
- *  en la plantilla: se inserta como párrafo directo justo después de la
- *  tabla ya localizada, mismo criterio que el resto de tablas dinámicas. */
-function appendRepeatedNoteFootnote_(body, table, notes) {
-  if (!notes || notes.length === 0) return;
+/** Punto 6 (2026-09-13): un solo pie de nota para TODA la tabla unificada
+ *  (antes había uno por tabla separada) — cada línea ya viene prefijada
+ *  con la sección (TTR/AT/BT/Aislamiento) desde collect*UnifiedNotes_,
+ *  así se distinguen aunque estén todas juntas. */
+function appendUnifiedNoteFootnote_(body, table, notes) {
+  if (!table || !notes || notes.length === 0) return;
   var idx = body.getChildIndex(table);
   var p = body.insertParagraph(idx + 1, '† Lectura repetida — ' + notes.join('  ·  '));
   p.editAsText().setFontSize(7).setItalic(true).setForegroundColor(PDF_COLORS_.TEXT_MUTED);
   p.setSpacingBefore(2).setSpacingAfter(6);
+}
+
+/** Fusiona celdas de la tabla única de resultados eléctricos — el único
+ *  paso que DocumentApp no puede hacer, así que se hace vía
+ *  Docs.Documents.batchUpdate sobre el documento YA guardado (mismo
+ *  patrón que pinResultsTableHeaders_: ubicar por CONTENIDO, nunca por
+ *  índice adivinado). Ubica la tabla buscando cuál tiene, en su fila 0
+ *  celda 0, el texto EXACTO del primer banner (único por informe, ya que
+ *  incluye cliente/fecha/instrumento). Nunca lanza — si por lo que sea no
+ *  encuentra la tabla, el PDF igual se genera, solo sin fusionar. */
+function applyUnifiedTableMerges_(docId, bannerText, mergeSpecs) {
+  if (!bannerText || !mergeSpecs || mergeSpecs.length === 0) return;
+  var doc = Docs.Documents.get(docId);
+  var tableStartIndex = null;
+  (doc.body.content || []).forEach(function (el) {
+    if (tableStartIndex !== null || !el.table) return;
+    var row0 = el.table.tableRows[0];
+    var cell0 = row0 && row0.tableCells[0];
+    if (cell0 && docsApiCellText_(cell0) === bannerText) tableStartIndex = el.startIndex;
+  });
+  if (tableStartIndex === null) return;
+
+  var requests = mergeSpecs.map(function (spec) {
+    return {
+      mergeTableCells: {
+        tableRange: {
+          tableCellLocation: {
+            tableStartLocation: { index: tableStartIndex },
+            rowIndex: spec.rowIndex,
+            columnIndex: spec.startColumnIndex
+          },
+          rowSpan: 1,
+          columnSpan: spec.columnSpan
+        }
+      }
+    };
+  });
+  Docs.Documents.batchUpdate({ requests: requests }, docId);
 }
 
 /** `iso` puede llegar como string o como Date real (autoconversión de
@@ -2423,12 +2658,16 @@ function fmtTimestampForFilename_(date) {
 // Dos problemas que NO resuelve un simple "reemplazar texto", ambos
 // señalados explícitamente al usuario antes de escribir esto:
 //
-// 1. TABLAS DE FILAS VARIABLES (TTR, Devanados primario/secundario,
-//    Aislamiento): la plantilla solo trae la fila de encabezado
-//    (TTR_COMPACT_TRIFASICO_HEADER_ etc.) — el informe real localiza esa tabla por su
-//    forma (findResultsTableByHeader_) y le agrega las filas reales
-//    (appendDataRowsToTable_), igual que antes pero sobre una tabla que ya
-//    existe en vez de crearla desde cero.
+// 1. TABLAS DE FILAS VARIABLES: para Aceite (Fisicoquímico/DGA/PCB), la
+//    plantilla trae la fila de encabezado y el informe real le agrega las
+//    filas reales sobre la tabla que ya existe. **TTR/Devanados/
+//    Aislamiento ya no funcionan así (2026-09-13)**: desde que se
+//    fusionaron en una sola tabla de resultados (ver "Tabla única de
+//    resultados eléctricos"), la plantilla ni siquiera trae esa tabla —
+//    solo un marcador de posición (`<<TABLA_RESULTADOS_ELECTRICOS>>`). El
+//    informe real construye la tabla COMPLETA (banner+encabezado+datos+
+//    veredicto de cada sección presente) y la inserta entera donde estaba
+//    el marcador — ver insertUnifiedResultsTable_/regenerateElectricalCombinedReport_.
 //
 // 2. SECCIONES ENTERAS QUE PUEDEN NO ESTAR PRESENTES: desde la
 //    certificación por alcance ofertado, el eléctrico puede traer TTR
@@ -2543,43 +2782,6 @@ function setVerdictBannerColor_(body, placeholderText, verdict) {
   cell.editAsText().setForegroundColor(colors.text);
 }
 
-/** Ubica una tabla de filas variables dentro del documento ya copiado, por
- *  la FORMA de su fila de encabezado (cantidad de celdas + texto de la
- *  primera) — igual criterio que pinResultsTableHeaders_, pero operando
- *  directo sobre el objeto `Table` de DocumentApp en vez de la Docs API,
- *  porque acá el documento ya está abierto para edición. */
-function findResultsTableByHeader_(body, cellCount, firstCellText) {
-  var tables = body.getTables();
-  for (var i = 0; i < tables.length; i++) {
-    var header = tables[i].getRow(0);
-    if (header.getNumCells() === cellCount && header.getCell(0).getText().trim() === firstCellText) {
-      return tables[i];
-    }
-  }
-  return null;
-}
-
-/** Agrega filas de datos a una tabla que YA existe (con su encabezado ya
- *  puesto por la plantilla) — mismo estilo de celda (fuente 9) que antes
- *  aplicaba appendResultsTable_ a sus filas de datos. */
-function appendDataRowsToTable_(table, rows) {
-  rows.forEach(function (rowValues) {
-    var row = table.appendTableRow();
-    rowValues.forEach(function (val) {
-      var cell = row.appendTableCell(String(val));
-      // `appendTableRow()` hereda el formato de TEXTO de la fila de
-      // encabezado (blanco, negrita) — sin fijarlo, las filas de datos
-      // quedan con texto blanco invisible sobre fondo sin color. Fijar SOLO
-      // el texto, nunca el fondo: un `setBackgroundColor` explícito aquí
-      // (probado y descartado el mismo día) pinta blanco OPACO, tapando la
-      // marca de agua de la plantilla en esa zona de la página — el fondo
-      // sin fijar es transparente y deja verla, igual que el resto de la
-      // página.
-      cell.editAsText().setFontSize(7).setBold(false).setForegroundColor(PDF_COLORS_.TEXT);
-    });
-  });
-}
-
 /** Mueve un archivo recién creado (DocumentApp.create() siempre lo deja en
  *  la raíz del Drive del ejecutor) a la carpeta de plantillas — patrón
  *  estándar de DriveApp: agregar a la carpeta destino y quitar de todos los
@@ -2599,77 +2801,35 @@ function getOilTemplateFileId_() {
   return PropertiesService.getScriptProperties().getProperty('TEMPLATE_ACEITE_FILE_ID');
 }
 
-/** Arma la plantilla del informe Eléctrico — misma estructura que el
- *  informe real de siempre (encabezado, datos del cliente/equipo, un
- *  bloque por cada tipo TTR/Devanados/Aislamiento, firmas), con
- *  placeholders donde antes había datos reales, y marcadores de bloque
- *  alrededor de todo lo que puede no estar presente en un informe real
- *  concreto (cada tipo completo, el aviso teórico de TTR, la tabla
- *  Secundario de Devanados). */
+/** Arma la plantilla del informe Eléctrico — encabezado, datos del
+ *  cliente/equipo, datos generales de la prueba, y firmas, con
+ *  placeholders donde antes había datos reales. A diferencia de antes
+ *  (2026-09-13): TTR/Devanados/Aislamiento YA NO tienen ninguna tabla
+ *  horneada en la plantilla — desde la reestructura a tabla única
+ *  (ver "Tabla única de resultados eléctricos" más arriba), esas 3
+ *  secciones se calculan y arman por completo en tiempo de generación
+ *  real, porque qué se fusiona (monofásico/trifásico, Simple/Completo,
+ *  cuántos TAPs) solo se conoce ahí. La plantilla solo trae un marcador
+ *  de posición (`<<TABLA_RESULTADOS_ELECTRICOS>>`, párrafo invisible
+ *  igual que los marcadores de bloque) donde regenerateElectricalCombinedReport_
+ *  inserta esa tabla, siempre antes de "Área de Control de Calidad". */
 function buildElectricalTemplateDoc_() {
   var doc = DocumentApp.create('PLANTILLA_INFORME_ELECTRICO_' + Date.now());
   var body = doc.getBody();
   body.setMarginTop(36).setMarginBottom(36).setMarginLeft(50).setMarginRight(50);
 
   appendPageHeader_(doc);
-  appendReportHeader_(body, TEMPLATE_SITE_, TEMPLATE_TRANSFORMER_, 'PROTOCOLO DE PRUEBAS ELÉCTRICAS');
-  appendSharedTestMetaSection_(body);
+  // A diferencia de Aceite (que sí usa appendReportHeader_ completo, con
+  // la grilla "Datos del cliente y del equipo" aparte), acá solo va el
+  // título del protocolo — la grilla de cliente/equipo, la de "Datos
+  // generales de la prueba" y las 4 secciones de resultados quedan TODAS
+  // dentro de la misma tabla única (ver buildClientEquipoUnifiedRows_ y
+  // regenerateElectricalCombinedReport_), sin ningún espacio entre ellas
+  // — a pedido explícito del cliente.
+  appendProtocolTitle_(body, 'PROTOCOLO DE PRUEBAS ELÉCTRICAS');
 
-  appendBlockStart_(body, 'TTR');
-  appendSectionTitle_(body, 'Resultados — TTR (Relación de Transformación)');
-  appendInstrumentLine_(body, '<<INSTRUMENTO_TTR>>');
-  appendBlockStart_(body, 'TTR_TEORICO');
-  appendPlaceholderWarningBanner_(body, '<<AVISO_TEORICO_TTR>>');
-  appendBlockEnd_(body, 'TTR_TEORICO');
-  appendBlockStart_(body, 'TTR_TRIFASICO');
-  appendResultsTable_(body, [TTR_COMPACT_TRIFASICO_HEADER_]);
-  appendBlockEnd_(body, 'TTR_TRIFASICO');
-  appendBlockStart_(body, 'TTR_MONOFASICO');
-  appendResultsTable_(body, [TTR_COMPACT_MONOFASICO_HEADER_]);
-  appendBlockEnd_(body, 'TTR_MONOFASICO');
-  appendVerdictBanner_(body, 'Veredicto', '<<VEREDICTO_TTR>>');
-  body.appendParagraph('');
-  appendBlockEnd_(body, 'TTR');
-
-  appendBlockStart_(body, 'DEVANADOS');
-  appendInstrumentLine_(body, '<<INSTRUMENTO_DEVANADOS>>');
-  appendBlockStart_(body, 'DEVANADOS_PRIMARIO');
-  appendSectionTitle_(body, 'Resultados — Resistencia de Devanados');
-  appendBlockStart_(body, 'DEVANADOS_PRIMARIO_TRIFASICO');
-  appendResultsTable_(body, [WINDING_COMPACT_TRIFASICO_HEADER_]);
-  appendBlockEnd_(body, 'DEVANADOS_PRIMARIO_TRIFASICO');
-  appendBlockStart_(body, 'DEVANADOS_PRIMARIO_MONOFASICO');
-  appendResultsTable_(body, [WINDING_COMPACT_MONOFASICO_HEADER_]);
-  appendBlockEnd_(body, 'DEVANADOS_PRIMARIO_MONOFASICO');
-  appendBlockEnd_(body, 'DEVANADOS_PRIMARIO');
-  appendBlockStart_(body, 'DEVANADOS_SECUNDARIO');
-  var secTitle = body.appendParagraph('SECUNDARIO');
-  secTitle.editAsText().setBold(true).setFontSize(8);
-  appendBlockStart_(body, 'DEVANADOS_SECUNDARIO_TRIFASICO');
-  appendResultsTable_(body, [WINDING_SECONDARY_COMPACT_TRIFASICO_HEADER_]);
-  appendBlockEnd_(body, 'DEVANADOS_SECUNDARIO_TRIFASICO');
-  appendBlockStart_(body, 'DEVANADOS_SECUNDARIO_MONOFASICO');
-  appendResultsTable_(body, [WINDING_SECONDARY_COMPACT_MONOFASICO_HEADER_]);
-  appendBlockEnd_(body, 'DEVANADOS_SECUNDARIO_MONOFASICO');
-  appendBlockEnd_(body, 'DEVANADOS_SECUNDARIO');
-  appendVerdictBanner_(body, 'Veredicto', '<<VEREDICTO_DEVANADOS>>');
-  body.appendParagraph('');
-  appendBlockEnd_(body, 'DEVANADOS');
-
-  appendBlockStart_(body, 'AISLAMIENTO');
-  appendInstrumentLine_(body, '<<INSTRUMENTO_AISLAMIENTO>>',
-    'Método: <<METODO_AISLAMIENTO>>   ·   Tensión de prueba: <<TENSION_PRUEBA_AISLAMIENTO>>');
-  appendBlockStart_(body, 'AISLAMIENTO_COMPLETO');
-  appendSectionTitle_(body, 'Resultados — Resistencia de Aislamiento (DAR/IP)');
-  appendResultsTable_(body, [INSULATION_TABLE_HEADER_]);
-  appendBlockEnd_(body, 'AISLAMIENTO_COMPLETO');
-  appendBlockStart_(body, 'AISLAMIENTO_SIMPLE');
-  appendSectionTitle_(body, 'Resultados — Resistencia de Aislamiento');
-  appendResultsTable_(body, [INSULATION_SIMPLE_TABLE_HEADER_]);
-  appendBlockEnd_(body, 'AISLAMIENTO_SIMPLE');
-  appendVerdictBanner_(body, 'Veredicto', '<<VEREDICTO_AISLAMIENTO>>');
-  body.appendParagraph('');
-  appendBlockEnd_(body, 'AISLAMIENTO');
+  var tablePlaceholder = body.appendParagraph('<<TABLA_RESULTADOS_ELECTRICOS>>');
+  tablePlaceholder.editAsText().setFontSize(1);
 
   appendSignatureSection_(body,
     { nombre: '<<PROBADO_POR_NOMBRE>>', fecha: '<<PROBADO_POR_FECHA>>' },
@@ -2799,14 +2959,16 @@ function crearPlantillasInformes_(params, auth) {
  * explícita "Certificar Pruebas Eléctricas" (certifyElectricalReport_),
  * nunca automáticamente al certificar una prueba individual.
  *
- * Reescrita (2026-09-12) sobre el cambio de arquitectura de plantillas:
- * en vez de armar el documento desde cero con DocumentApp, copia la
- * plantilla (`makeCopy()`), reemplaza los placeholders de texto con
- * `body.replaceText()`, resuelve qué bloques opcionales sobreviven
- * (`resolveTemplateBlock_`, según `includeTypes` + si hay aviso teórico de
- * TTR + si Devanados trae Secundario), y agrega las filas reales a las
- * tablas variables que ya trae la plantilla
- * (`findResultsTableByHeader_`/`appendDataRowsToTable_`).
+ * Reescrita por segunda vez (2026-09-13) para la tabla única de
+ * resultados: en vez de resolver bloques de plantilla por tipo y agregar
+ * filas a tablas ya existentes, arma cada sección (TTR/AT/BT/Aislamiento)
+ * como un arreglo de filas (`build*UnifiedRows_`), las concatena TODAS y
+ * las inserta de una vez como una sola tabla de 7 columnas
+ * (`insertUnifiedResultsTable_`) justo antes del marcador
+ * `<<TABLA_RESULTADOS_ELECTRICOS>>` de la plantilla (nunca antes de
+ * "Área de Control de Calidad", que sigue siendo una tabla aparte, sin
+ * tocar). Las fusiones de celdas (monofásico, Aislamiento Simple/
+ * Completo) se aplican después, vía Docs API, en finalizeReportPdf_.
  *
  * Aceite dieléctrico NO entra aquí — sigue con un informe por envío
  * (generateOilTestReportPdf_): es un análisis de una muestra puntual con
@@ -2835,132 +2997,84 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
   var doc = DocumentApp.openById(copy.getId());
   var body = doc.getBody();
 
-  body.replaceText('<<CLIENTE>>', site.client_name || '—');
-  body.replaceText('<<NIT>>', site.nit || '—');
-  body.replaceText('<<CIUDAD>>', site.ciudad || '—');
-  body.replaceText('<<PROYECTO>>', site.project_name || '—');
-  body.replaceText('<<FABRICANTE>>', transformer.manufacturer || '—');
-  body.replaceText('<<NUMERO_SERIE>>', transformer.serial_number || '—');
-  body.replaceText('<<GRUPO_CONEXION>>', transformer.vector_group || '—');
-  body.replaceText('<<POTENCIA_NOMINAL>>', transformer.rated_power_kva ? String(transformer.rated_power_kva) : '—');
-  body.replaceText('<<TENSION_PRIMARIA>>', transformer.hv_nominal_voltage ? String(transformer.hv_nominal_voltage) : '—');
-  body.replaceText('<<TENSION_SECUNDARIA>>', transformer.lv_nominal_voltage ? String(transformer.lv_nominal_voltage) : '—');
-  body.replaceText('<<REFRIGERACION>>', transformer.cooling_type || '—');
-  body.replaceText('<<ANO_FABRICACION>>', transformer.manufacture_year ? String(transformer.manufacture_year) : '—');
-
-  var typeConfig = {
-    TTR: { blockName: 'TTR', headerCellCount: 7, headerFirstCell: 'TAP', computeRows: computeTtrCompactRows_, collectNotes: collectTtrNotes_ },
-    RESISTENCIA_DEVANADOS: { blockName: 'DEVANADOS', headerCellCount: 6, headerFirstCell: 'TAP', computeRows: computeWindingCompactRows_, collectNotes: collectWindingNotes_ },
-    AISLAMIENTO: { blockName: 'AISLAMIENTO', headerCellCount: 5, headerFirstCell: 'COMBINACIÓN', computeRows: computeInsulationRows_, collectNotes: collectInsulationNotes_ }
-  };
-
-  order.forEach(function (type) {
-    var cfg = typeConfig[type];
-    var isPresent = present.indexOf(type) !== -1;
-    var testRow = latest[type];
-    var calc = isPresent ? safeParseJson_(testRow.calculated_results_json) : null;
-
-    if (type === 'TTR') {
-      var warningText = null;
-      if (isPresent) {
-        if (calc.theoreticalAvailable === false) {
-          warningText = 'Teórico no disponible — falta voltaje nominal de placa.';
-        } else if (calc.theoreticalReliable === false) {
-          warningText = '⚠ Grupo de conexión no registrado en placa — teórico sin factor de relación trifásica, puede ser impreciso.';
-        }
-      }
-      resolveTemplateBlock_(body, 'TTR_TEORICO', !!warningText);
-      if (warningText) body.replaceText('<<AVISO_TEORICO_TTR>>', warningText);
-
-      // Punto 7 (2026-09-13): tabla compacta con 2 variantes — monofásico
-      // tiene 1 sola columna de valor en vez de U/V/W, así que es otro
-      // bloque de plantilla (mismo criterio que Aislamiento Simple/Completo).
-      var esMonofasico = transformer.phase_type === 'MONOFASICO';
-      resolveTemplateBlock_(body, 'TTR_TRIFASICO', isPresent && !esMonofasico);
-      resolveTemplateBlock_(body, 'TTR_MONOFASICO', isPresent && esMonofasico);
-      if (isPresent) {
-        cfg = esMonofasico
-          ? { blockName: 'TTR', headerCellCount: 5, headerFirstCell: 'TAP', computeRows: computeTtrCompactRows_, collectNotes: collectTtrNotes_ }
-          : { blockName: 'TTR', headerCellCount: 7, headerFirstCell: 'TAP', computeRows: computeTtrCompactRows_, collectNotes: collectTtrNotes_ };
-      }
-    }
-
-    if (type === 'RESISTENCIA_DEVANADOS') {
-      // Punto 4 (2026-09-13): primario y secundario ahora son cada uno
-      // opcional — se prueba solo primario, solo secundario, o ambos.
-      var primarioPresent = isPresent && !!(calc.taps && calc.taps.length > 0);
-      var secundarioPresent = isPresent && !!calc.secondary;
-      // Punto 8 (2026-09-13): tabla compacta con 2 variantes, igual
-      // criterio que TTR (punto 7) — monofásico tiene 1 sola columna de
-      // valor en vez de U/V/W, tanto en el primario como en el secundario.
-      var esMonofasicoDevanados = transformer.phase_type === 'MONOFASICO';
-      resolveTemplateBlock_(body, 'DEVANADOS_PRIMARIO_TRIFASICO', primarioPresent && !esMonofasicoDevanados);
-      resolveTemplateBlock_(body, 'DEVANADOS_PRIMARIO_MONOFASICO', primarioPresent && esMonofasicoDevanados);
-      resolveTemplateBlock_(body, 'DEVANADOS_SECUNDARIO_TRIFASICO', secundarioPresent && !esMonofasicoDevanados);
-      resolveTemplateBlock_(body, 'DEVANADOS_SECUNDARIO_MONOFASICO', secundarioPresent && esMonofasicoDevanados);
-      resolveTemplateBlock_(body, 'DEVANADOS_PRIMARIO', primarioPresent);
-      resolveTemplateBlock_(body, 'DEVANADOS_SECUNDARIO', secundarioPresent);
-      if (isPresent) {
-        cfg = esMonofasicoDevanados
-          ? { blockName: 'DEVANADOS', headerCellCount: 4, headerFirstCell: 'TAP', computeRows: computeWindingCompactRows_, collectNotes: collectWindingNotes_ }
-          : { blockName: 'DEVANADOS', headerCellCount: 6, headerFirstCell: 'TAP', computeRows: computeWindingCompactRows_, collectNotes: collectWindingNotes_ };
-      }
-    }
-
-    if (type === 'AISLAMIENTO') {
-      // Punto 5 (2026-09-13): método Completo (DAR/IP, tabla de 5 columnas)
-      // o Simple (solo resistencia, tabla de 2 columnas) — mutuamente
-      // excluyentes, cada uno en su propio bloque removible de plantilla.
-      var esSimple = isPresent && calc.metodo === 'simple';
-      resolveTemplateBlock_(body, 'AISLAMIENTO_SIMPLE', esSimple);
-      resolveTemplateBlock_(body, 'AISLAMIENTO_COMPLETO', isPresent && !esSimple);
-      if (isPresent) {
-        cfg = esSimple
-          ? { blockName: 'AISLAMIENTO', headerCellCount: 2, headerFirstCell: 'COMBINACIÓN', computeRows: computeInsulationSimpleRows_, collectNotes: collectInsulationNotes_ }
-          : { blockName: 'AISLAMIENTO', headerCellCount: 5, headerFirstCell: 'COMBINACIÓN', computeRows: computeInsulationRows_, collectNotes: collectInsulationNotes_ };
-        var aislamientoRaw = safeParseJson_(testRow.raw_readings_json);
-        body.replaceText('<<METODO_AISLAMIENTO>>', esSimple ? 'Simple (lectura al minuto)' : 'Completo (DAR/IP)');
-        body.replaceText('<<TENSION_PRUEBA_AISLAMIENTO>>', aislamientoRaw.tension_prueba_v ? (aislamientoRaw.tension_prueba_v + ' V') : '—');
-      }
-    }
-
-    resolveTemplateBlock_(body, cfg.blockName, isPresent);
-    if (!isPresent) return;
-
-    setVerdictBannerColor_(body, '<<VEREDICTO_' + cfg.blockName + '>>', calc.overallVerdict);
-    body.replaceText('<<VEREDICTO_' + cfg.blockName + '>>', calc.overallVerdict);
-
-    var calMatch = findMatchingCalibracionServer_(testRow.instrument_used);
-    var instrumentoLine = testRow.instrument_used || '—';
-    if (calMatch) instrumentoLine += ' (' + calMatch.estado + ')';
-    body.replaceText('<<INSTRUMENTO_' + cfg.blockName + '>>', instrumentoLine);
-
-    var table = findResultsTableByHeader_(body, cfg.headerCellCount, cfg.headerFirstCell);
-    if (table) {
-      appendDataRowsToTable_(table, cfg.computeRows(calc));
-      appendRepeatedNoteFootnote_(body, table, cfg.collectNotes(calc));
-    }
-
-    if (type === 'RESISTENCIA_DEVANADOS' && calc.secondary) {
-      var secHeaderCellCount = esMonofasicoDevanados ? 4 : 6;
-      var secTable = findResultsTableByHeader_(body, secHeaderCellCount, 'DEVANADO');
-      if (secTable) {
-        appendDataRowsToTable_(secTable, computeWindingSecondaryCompactRows_(calc));
-        appendRepeatedNoteFootnote_(body, secTable, collectWindingSecondaryNotes_(calc));
-      }
-    }
-  });
-
+  // Datos de cliente/equipo/prueba general se calculan ANTES de armar las
+  // secciones (2026-09-13): ya no son placeholders <<CLIENTE>>/
+  // <<FECHA_GENERAL>>/etc. reemplazados después — ahora son las primeras
+  // filas de la tabla única (ver buildClientEquipoUnifiedRows_/
+  // buildSharedMetaUnifiedRows_), con el valor real ya adentro desde que
+  // se construyen. `signedTest` (antes calculado al final, para "PROBADO
+  // POR") se necesita aquí arriba para eso.
   var mostRecentType = present.reduce(function (a, b) {
     return toComparableDate_(latest[a].created_at) >= toComparableDate_(latest[b].created_at) ? a : b;
   });
   var signedTest = latest[mostRecentType];
 
-  // FECHA/TÉCNICO ahora se muestran UNA sola vez para todo el informe (ver
-  // appendSharedTestMetaSection_) — se usa la prueba más reciente entre
-  // las presentes, mismo criterio que ya usaba "PROBADO POR" abajo.
-  body.replaceText('<<FECHA_GENERAL>>', fmtDatePdf_(signedTest.created_at));
-  body.replaceText('<<TECNICO_GENERAL>>', signedTest.tested_by || '—');
+  var esMonofasico = transformer.phase_type === 'MONOFASICO';
+  var sections = [
+    buildClientEquipoUnifiedRows_(site, transformer),
+    buildSharedMetaUnifiedRows_(fmtDatePdf_(signedTest.created_at), signedTest.tested_by || '—')
+  ];
+  var allNotes = [];
+
+  if (present.indexOf('TTR') !== -1) {
+    var ttrRow = latest.TTR;
+    var ttrCalc = safeParseJson_(ttrRow.calculated_results_json);
+    var ttrWarning = null;
+    if (ttrCalc.theoreticalAvailable === false) {
+      ttrWarning = 'Teórico no disponible — falta voltaje nominal de placa.';
+    } else if (ttrCalc.theoreticalReliable === false) {
+      ttrWarning = '⚠ Grupo de conexión no registrado en placa — teórico sin factor de relación trifásica, puede ser impreciso.';
+    }
+    var ttrCal = findMatchingCalibracionServer_(ttrRow.instrument_used);
+    var ttrInstrumento = 'Instrumento: ' + (ttrRow.instrument_used || '—') + (ttrCal ? ' (' + ttrCal.estado + ')' : '');
+    sections.push(buildTtrUnifiedSection_(ttrCalc, esMonofasico, ttrInstrumento, ttrWarning));
+    sections.push([unifiedVerdictRow_('Veredicto', ttrCalc.overallVerdict)]);
+    allNotes = allNotes.concat(collectTtrUnifiedNotes_(ttrCalc));
+  }
+
+  if (present.indexOf('RESISTENCIA_DEVANADOS') !== -1) {
+    var wrRow = latest.RESISTENCIA_DEVANADOS;
+    var wrCalc = safeParseJson_(wrRow.calculated_results_json);
+    var wrCal = findMatchingCalibracionServer_(wrRow.instrument_used);
+    var wrInstrumento = 'Instrumento: ' + (wrRow.instrument_used || '—') + (wrCal ? ' (' + wrCal.estado + ')' : '');
+
+    // Punto 4 (2026-09-13): primario y secundario ahora son cada uno
+    // opcional — se prueba solo primario (AT), solo secundario (BT), o
+    // ambos. Cada lado con sus propias filas y su propio veredicto —
+    // calculateWindingResistance_ nunca devuelve un "primaryVerdict"
+    // aparte (solo el overallVerdict combinado), así que se re-deriva
+    // aquí con la MISMA fórmula que usa internamente (every tap
+    // APROBADO); el secundario sí trae su propio `verdict` directo.
+    if (wrCalc.taps && wrCalc.taps.length > 0) {
+      sections.push(buildWindingSideUnifiedRows_('ALTA TENSIÓN (AT)', wrCalc.taps, esMonofasico, transformer.at_devanado_material, wrInstrumento, WINDING_PHASE_ORDER_));
+      var atVerdict = wrCalc.taps.every(function (t) { return t.tapVerdict === 'APROBADO'; }) ? 'APROBADO' : 'RECHAZADO';
+      sections.push([unifiedVerdictRow_('Veredicto AT', atVerdict)]);
+      allNotes = allNotes.concat(collectWindingSideUnifiedNotes_('AT', wrCalc.taps));
+    }
+    if (wrCalc.secondary) {
+      sections.push(buildWindingSideUnifiedRows_('BAJA TENSIÓN (BT)', [wrCalc.secondary], esMonofasico, transformer.bt_devanado_material, wrInstrumento, WINDING_SECONDARY_PHASE_ORDER_));
+      sections.push([unifiedVerdictRow_('Veredicto BT', wrCalc.secondary.verdict)]);
+      allNotes = allNotes.concat(collectWindingSideUnifiedNotes_('BT', [wrCalc.secondary]));
+    }
+  }
+
+  if (present.indexOf('AISLAMIENTO') !== -1) {
+    var aisRow = latest.AISLAMIENTO;
+    var aisCalc = safeParseJson_(aisRow.calculated_results_json);
+    var aisRaw = safeParseJson_(aisRow.raw_readings_json);
+    var aisCal = findMatchingCalibracionServer_(aisRow.instrument_used);
+    var aisInstrumento = 'Instrumento: ' + (aisRow.instrument_used || '—') + (aisCal ? ' (' + aisCal.estado + ')' : '');
+    var aisTension = aisRaw && aisRaw.tension_prueba_v ? (aisRaw.tension_prueba_v + ' V') : null;
+    sections.push(buildInsulationUnifiedRows_(aisCalc, aisInstrumento, aisTension));
+    sections.push([unifiedVerdictRow_('Veredicto', aisCalc.overallVerdict)]);
+    allNotes = allNotes.concat(collectInsulationUnifiedNotes_(aisCalc));
+  }
+
+  var tablePlaceholderPar = findMarkerParagraph_(body, '<<TABLA_RESULTADOS_ELECTRICOS>>');
+  if (!tablePlaceholderPar) throw new Error('La plantilla no tiene el marcador de la tabla de resultados — regenera las plantillas desde Administración.');
+  var tableResult = insertUnifiedResultsTable_(body, tablePlaceholderPar, sections);
+  body.removeChild(tablePlaceholderPar);
+  appendUnifiedNoteFootnote_(body, tableResult.table, allNotes);
 
   body.replaceText('<<PROBADO_POR_NOMBRE>>', signedTest.tested_by || '—');
   body.replaceText('<<PROBADO_POR_FECHA>>', fmtDatePdf_(signedTest.created_at));
@@ -2968,7 +3082,7 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
   body.replaceText('<<CERTIFICADO_POR_FECHA>>', fmtDatePdf_(signedTest.revisado_at));
 
   var fileName = 'Informe_Electrico_' + transformer.serial_number + '_' + fmtTimestampForFilename_(new Date());
-  var saved = finalizeReportPdf_(doc, folderId, fileName);
+  var saved = finalizeReportPdf_(doc, folderId, fileName, { bannerText: tableResult.bannerText, mergeSpecs: tableResult.mergeSpecs });
 
   getSheet_('TRANSFORMADORES').getRange(transformer._row, colIndex_('TRANSFORMADORES', 'electrical_report_file_id')).setValue(saved.fileId);
 
@@ -3077,10 +3191,21 @@ function generateOilTestReportPdf_(transformer, site, rawReadings, calculated, t
  *  expone un campo dinámico de número de página en Apps Script, así que
  *  no se intenta un falso "Página X de Y" (decisión de antes, sigue
  *  vigente). */
-function finalizeReportPdf_(doc, folderId, fileName) {
+/** `unifiedTableMerge` (opcional) — {bannerText, mergeSpecs} devuelto por
+ *  insertUnifiedResultsTable_ para el informe eléctrico (ver
+ *  regenerateElectricalCombinedReport_); ausente para Aceite, que no tiene
+ *  tabla unificada. Se aplica DESPUÉS de doc.saveAndClose() (la Docs API
+ *  avanzada solo ve cambios ya guardados) y ANTES de pinResultsTableHeaders_
+ *  — el orden entre ambas no importa para el resultado, pero fusionar
+ *  primero es más natural de leer. */
+function finalizeReportPdf_(doc, folderId, fileName, unifiedTableMerge) {
   var footer = doc.getFooter();
   if (footer) footer.replaceText('<<FECHA_GENERACION>>', fmtDatePdf_(new Date().toISOString()));
   doc.saveAndClose();
+  if (unifiedTableMerge) {
+    try { applyUnifiedTableMerges_(doc.getId(), unifiedTableMerge.bannerText, unifiedTableMerge.mergeSpecs); }
+    catch (mergeErr) { /* No relanzar — el PDF igual se genera, solo sin fusionar celdas. */ }
+  }
   try { pinResultsTableHeaders_(doc.getId()); } catch (pinErr) { /* No relanzar — el PDF igual se genera sin encabezado repetido. */ }
   var docFile = DriveApp.getFileById(doc.getId());
   var pdfBlob = docFile.getAs('application/pdf').setName(fileName + '.pdf');
@@ -3143,6 +3268,18 @@ function docsApiCellText_(cell) {
  * `exactRowHeight`; no existe ningún campo `preventOverflow` ni equivalente
  * en toda la API. Repetir el encabezado es lo único que la Docs API
  * permite automatizar aquí.
+ *
+ * **QUEDÓ INERTE para el informe eléctrico (2026-09-13)**: desde la tabla
+ * única de resultados (ver "Tabla única de resultados eléctricos" más
+ * arriba), la fila 0 de esa tabla es siempre un banner de sección (1 sola
+ * celda fusionada), nunca una de las formas de abajo — así que esta
+ * función deja de encontrar nada que pinear ahí. Es una pérdida de
+ * respaldo aceptada explícitamente por el cliente (equipos con muchos
+ * TAPs que no quepan en 1 página ya no repiten encabezado al cambiar de
+ * página) a cambio de que todo quede en una sola tabla continua. Se deja
+ * la función tal cual (no rompe nada, solo deja de encontrar coincidencias
+ * para el eléctrico) por si algún otro documento futuro sí tiene una tabla
+ * con alguna de estas formas.
  */
 function pinResultsTableHeaders_(docId) {
   var doc = Docs.Documents.get(docId);

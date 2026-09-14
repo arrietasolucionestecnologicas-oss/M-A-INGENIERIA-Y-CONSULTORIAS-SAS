@@ -268,6 +268,22 @@
         </div>
         <div class="field"><label>Impedancia (%)</label><input class="mono" id="editTrfImpedance" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*"></div>
         <div class="field"><label>Tipo de aislamiento</label><input id="editTrfInsulation"></div>
+        <div class="field">
+          <label>Material devanado AT</label>
+          <select id="editTrfMaterialAt">
+            <option value="">&mdash; sin dato &mdash;</option>
+            <option value="Aluminio">Aluminio</option>
+            <option value="Cobre">Cobre</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Material devanado BT</label>
+          <select id="editTrfMaterialBt">
+            <option value="">&mdash; sin dato &mdash;</option>
+            <option value="Aluminio">Aluminio</option>
+            <option value="Cobre">Cobre</option>
+          </select>
+        </div>
         <div class="field"><label>A&ntilde;o de fabricaci&oacute;n</label><input class="mono" id="editTrfYear" type="text" inputmode="numeric" pattern="[0-9]*"></div>
         <div class="field">
           <label>N&uacute;mero de posiciones del cambiador de tomas</label>
@@ -377,6 +393,22 @@
               <div class="field" style="min-width:150px;">
                 <label>Tipo de aislamiento</label>
                 <input id="newTrfInsulation" placeholder="Papel/aceite">
+              </div>
+              <div class="field" style="min-width:150px;">
+                <label>Material devanado AT</label>
+                <select id="newTrfMaterialAt">
+                  <option value="">&mdash; sin dato &mdash;</option>
+                  <option value="Aluminio">Aluminio</option>
+                  <option value="Cobre">Cobre</option>
+                </select>
+              </div>
+              <div class="field" style="min-width:150px;">
+                <label>Material devanado BT</label>
+                <select id="newTrfMaterialBt">
+                  <option value="">&mdash; sin dato &mdash;</option>
+                  <option value="Aluminio">Aluminio</option>
+                  <option value="Cobre">Cobre</option>
+                </select>
               </div>
               <div class="field" style="min-width:110px;">
                 <label>A&ntilde;o de fabricaci&oacute;n</label>

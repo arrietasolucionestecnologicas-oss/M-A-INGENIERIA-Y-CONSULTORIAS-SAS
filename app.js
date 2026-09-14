@@ -960,6 +960,8 @@ function handleCreateTransformerSubmit(e) {
   var cooling = document.getElementById('newTrfCooling').value || null;
   var impedance = parseDecimal_(document.getElementById('newTrfImpedance').value);
   var insulation = document.getElementById('newTrfInsulation').value.trim() || null;
+  var atMaterial = document.getElementById('newTrfMaterialAt').value || null;
+  var btMaterial = document.getElementById('newTrfMaterialBt').value || null;
   var tapPositionsRaw = document.getElementById('newTrfTapPositions').value.trim();
   var tapPositionsCount = tapPositionsRaw ? parseInt(tapPositionsRaw, 10) : null;
   if (tapPositionsCount !== null && (isNaN(tapPositionsCount) || tapPositionsCount < 1)) tapPositionsCount = null;
@@ -1012,6 +1014,8 @@ function handleCreateTransformerSubmit(e) {
         cooling_type: cooling,
         impedance_percent: isNaN(impedance) ? null : impedance,
         insulation_type: insulation,
+        at_devanado_material: atMaterial,
+        bt_devanado_material: btMaterial,
         numero_posiciones_tap: tapPositionsCount,
         posicion_tap_nominal: posTapNominal,
         is_special_design: false,
@@ -1128,6 +1132,8 @@ function openEditTransformerModal_() {
   document.getElementById('editTrfCooling').value = t.cooling_type || '';
   document.getElementById('editTrfImpedance').value = t.impedance_percent || '';
   document.getElementById('editTrfInsulation').value = t.insulation_type || '';
+  document.getElementById('editTrfMaterialAt').value = t.at_devanado_material || '';
+  document.getElementById('editTrfMaterialBt').value = t.bt_devanado_material || '';
   document.getElementById('editTrfYear').value = t.manufacture_year || '';
   document.getElementById('editTrfTapPositions').value = t.numero_posiciones_tap || '';
   document.getElementById('editTrfPosTapNominal').value = t.posicion_tap_nominal || '';
@@ -1168,6 +1174,8 @@ function handleEditTransformerSubmit(e) {
     cooling_type: document.getElementById('editTrfCooling').value || null,
     impedance_percent: isNaN(impedance) ? null : impedance,
     insulation_type: document.getElementById('editTrfInsulation').value.trim() || null,
+    at_devanado_material: document.getElementById('editTrfMaterialAt').value || null,
+    bt_devanado_material: document.getElementById('editTrfMaterialBt').value || null,
     manufacture_year: year || null,
     ttr_ofertado: document.getElementById('editTrfTtrOfertado').checked,
     resistencia_devanados_ofertado: document.getElementById('editTrfDevanadosOfertado').checked,
@@ -1768,6 +1776,8 @@ function renderDetail() {
     ['Refrigeración', t.cooling_type || '—'],
     ['Impedancia', t.impedance_percent ? (t.impedance_percent + ' %') : '—'],
     ['Tipo de aislamiento', escapeHtml_(t.insulation_type || '—')],
+    ['Material devanado AT', escapeHtml_(t.at_devanado_material || '—')],
+    ['Material devanado BT', escapeHtml_(t.bt_devanado_material || '—')],
     ['TAPs configurados', (cfg.positions || []).length],
     ['Posición TAP nominal', t.posicion_tap_nominal || ('Central (' + (cfg.neutralPosition || '—') + ')')],
     ['Paso por TAP', cfg.stepPercentage != null ? (cfg.stepPercentage + ' %') : '—'],
