@@ -968,6 +968,7 @@ function certifyTest_(params, auth) {
         var oilTestMeta = {
           created_at: testObj.created_at,
           tested_by: testObj.tested_by,
+          operador_nombre: testObj.operador_nombre,
           revisado_por: revisadoPor,
           revisado_at: revisadoAt,
           instrument_used: testObj.instrument_used,
@@ -1553,7 +1554,12 @@ function calculateInsulation_(readings) {
     var iRating = ipRating_(ip);
     if (dRating === 'MALO' || iRating === 'MALO') hasMalo = true;
     if (dRating === 'CUESTIONABLE' || iRating === 'CUESTIONABLE') hasCuestionable = true;
-    results[k] = { dar: dar, darRating: dRating, ip: ip, ipRating: iRating, nota: r.nota || null };
+    // r60sMegaohm (2026-09-13, a pedido del cliente) = la lectura de
+    // resistencia AL MINUTO — se sigue calculando DAR/IP igual que
+    // siempre, pero también se imprime este valor crudo en el PDF (ver
+    // buildInsulationUnifiedRows_) porque es el dato convencional que un
+    // protocolo real siempre muestra, no solo los índices derivados.
+    results[k] = { dar: dar, darRating: dRating, ip: ip, ipRating: iRating, r60sMegaohm: r.r60sMegaohm, nota: r.nota || null };
   });
 
   var overallVerdict = hasMalo ? 'RECHAZADO' : (hasCuestionable ? 'OBSERVADO' : 'APROBADO');
@@ -2462,16 +2468,22 @@ function buildInsulationUnifiedRows_(calc, instrumentoLine, tensionPruebaText) {
       rows.push(unifiedRow_(cells, 'data', simpleMerges));
     });
   } else {
-    var completoMerges = [{ startColumnIndex: 4, columnSpan: 3 }];
-    rows.push(unifiedRow_(['COMBINACIÓN', 'DAR', 'CALIF. DAR', 'IP', 'CALIF. IP', '', ''], 'header', completoMerges));
+    // Punto extra (2026-09-13, a pedido del cliente): "R 1 MIN" agrega la
+    // lectura cruda de resistencia al minuto (convencional en cualquier
+    // protocolo real, no solo los índices DAR/IP derivados de ella) — 6
+    // columnas lógicas en las 7 físicas, fusionando solo CALIF. IP sobre
+    // las últimas 2.
+    var completoMerges = [{ startColumnIndex: 5, columnSpan: 2 }];
+    rows.push(unifiedRow_(['COMBINACIÓN', 'R 1 MIN', 'DAR', 'CALIF. DAR', 'IP', 'CALIF. IP', ''], 'header', completoMerges));
     Object.keys(calc.measurements).forEach(function (key) {
       var m = calc.measurements[key];
       var cells = new Array(UNIFIED_TABLE_COLS_).fill('');
       cells[0] = key;
-      cells[1] = m.dar.toFixed(2);
-      cells[2] = m.darRating;
-      cells[3] = m.ip.toFixed(2);
-      cells[4] = m.ipRating + (m.nota ? ' †' : '');
+      cells[1] = m.r60sMegaohm != null ? (m.r60sMegaohm.toFixed(2) + ' MΩ') : '—';
+      cells[2] = m.dar.toFixed(2);
+      cells[3] = m.darRating;
+      cells[4] = m.ip.toFixed(2);
+      cells[5] = m.ipRating + (m.nota ? ' †' : '');
       rows.push(unifiedRow_(cells, 'data', completoMerges));
     });
   }
@@ -3047,9 +3059,16 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
   var signedTest = latest[mostRecentType];
 
   var esMonofasico = transformer.phase_type === 'MONOFASICO';
+  // TÉCNICO RESPONSABLE = operador_nombre (2026-09-13, a pedido del
+  // cliente): `tested_by` es la cuenta de LOGIN compartida (ej.
+  // "admin.mya"), no identifica quién realmente hizo la prueba en campo
+  // — `operador_nombre` sí, es el nombre que la app pide una vez por
+  // dispositivo/navegador (ver "Convenciones de frontend" en CLAUDE.md).
+  // Con fallback a tested_by para pruebas viejas que no tenían este campo.
+  var tecnicoResponsable = signedTest.operador_nombre || signedTest.tested_by || '—';
   var sections = [
     buildClientEquipoUnifiedRows_(site, transformer),
-    buildSharedMetaUnifiedRows_(fmtDatePdf_(signedTest.created_at), signedTest.tested_by || '—')
+    buildSharedMetaUnifiedRows_(fmtDatePdf_(signedTest.created_at), tecnicoResponsable)
   ];
   var allNotes = [];
 
@@ -3118,9 +3137,14 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
   body.removeChild(tablePlaceholderPar);
   appendUnifiedNoteFootnote_(body, tableResult.table, allNotes);
 
-  body.replaceText('<<PROBADO_POR_NOMBRE>>', signedTest.tested_by || '—');
+  // PROBADO POR = mismo criterio que TÉCNICO RESPONSABLE arriba
+  // (operador_nombre, no la cuenta de login compartida). CERTIFICADO POR
+  // (2026-09-13, a pedido del cliente) queda FIJO en el mismo ingeniero
+  // que ya firma "APROBADO POR" — deja de mostrar quién certificó en la
+  // app (revisado_por), la fecha real de certificación sí se conserva.
+  body.replaceText('<<PROBADO_POR_NOMBRE>>', tecnicoResponsable);
   body.replaceText('<<PROBADO_POR_FECHA>>', fmtDatePdf_(signedTest.created_at));
-  body.replaceText('<<CERTIFICADO_POR_NOMBRE>>', signedTest.revisado_por || '—');
+  body.replaceText('<<CERTIFICADO_POR_NOMBRE>>', ENGINEER_SIGNATURE_NAME_);
   body.replaceText('<<CERTIFICADO_POR_FECHA>>', fmtDatePdf_(signedTest.revisado_at));
 
   var fileName = 'Informe_Electrico_' + transformer.serial_number + '_' + fmtTimestampForFilename_(new Date());
@@ -3214,9 +3238,13 @@ function generateOilTestReportPdf_(transformer, site, rawReadings, calculated, t
   setVerdictBannerColor_(body, '<<VEREDICTO_GENERAL>>', calculated.overallVerdict);
   body.replaceText('<<VEREDICTO_GENERAL>>', calculated.overallVerdict);
 
-  body.replaceText('<<PROBADO_POR_NOMBRE>>', testMeta.tested_by || '—');
+  // Mismo criterio que el eléctrico (2026-09-13): PROBADO POR usa
+  // operador_nombre (quien realmente hizo la prueba en campo), no
+  // tested_by (la cuenta de login compartida); CERTIFICADO POR queda
+  // fijo en el ingeniero responsable, igual que APROBADO POR.
+  body.replaceText('<<PROBADO_POR_NOMBRE>>', testMeta.operador_nombre || testMeta.tested_by || '—');
   body.replaceText('<<PROBADO_POR_FECHA>>', fmtDatePdf_(testMeta.created_at));
-  body.replaceText('<<CERTIFICADO_POR_NOMBRE>>', testMeta.revisado_por || '—');
+  body.replaceText('<<CERTIFICADO_POR_NOMBRE>>', ENGINEER_SIGNATURE_NAME_);
   body.replaceText('<<CERTIFICADO_POR_FECHA>>', fmtDatePdf_(testMeta.revisado_at));
 
   return finalizeReportPdf_(doc, folderId, 'Informe_Aceite_' + transformer.serial_number);
