@@ -36,6 +36,11 @@ compacto del PDF) necesitan que 2/3/4/5 ya existan primero.
 9. [x] **Aislamiento — tabla que quepa en una página** (verificado
    2026-09-13, **ya estaba implementado** desde el punto 5 — ver detalle
    abajo).
+10. [x] **Compactación + tabla única de resultados eléctricos**
+    (2026-09-13, extra — ver detalle abajo, "Punto 10").
+11. [ ] **EN CURSO — rediseño a formato corporativo de 2 columnas**
+    (extra, 2026-09-13, validación técnica lista — ver "Punto 11" abajo
+    para qué falta implementar antes de retomar).
 
 **Objetivo general**: que el informe eléctrico completo (TTR + Devanados +
 Aislamiento + firmas) quepa en una sola página para el caso normal
@@ -499,6 +504,98 @@ no calcula DAR/IP, no aplica). Nuevo rol de fila `'legend'` en
 `insertUnifiedResultsTable_` (colores por celda vía `row.coloredCols`,
 no por fila entera como banner/header/verdict/labelvalue). Verificado en
 vivo: sigue cabiendo todo en 1 sola página con la leyenda incluida.
+
+**Otros 2 ajustes chicos del mismo día**:
+- **Aislamiento Completo agrega "R 1 MIN"**: la lectura cruda de
+  resistencia al minuto (`r60sMegaohm`), no solo DAR/IP derivados —
+  convencional en cualquier protocolo real (a pedido del cliente).
+  `calculateInsulation_` ahora incluye ese campo en el resultado
+  calculado (antes solo vivía en `raw_readings_json`, nunca se imprimía).
+  **Con guardia de compatibilidad** (`m.r60sMegaohm != null ? ... : '—'`)
+  para pruebas viejas certificadas antes de este cambio, que no tienen
+  ese campo en su `calculated_results_json` guardado.
+- **Firmas del informe (PROBADO POR / CERTIFICADO POR / TÉCNICO
+  RESPONSABLE)**: `tested_by` (la cuenta de login compartida, ej.
+  "admin.mya") dejó de usarse para estos — ahora usan `operador_nombre`
+  (el nombre real que la app pide una vez por dispositivo/navegador,
+  quien de verdad hizo la prueba en campo). `CERTIFICADO POR` además
+  quedó FIJO en `ENGINEER_SIGNATURE_NAME_` (Michael Peña) — deja de
+  mostrar quién certificó en la app (`revisado_por`), a pedido explícito
+  del cliente; la fecha real de certificación (`revisado_at`) sí se
+  conserva. Mismo criterio aplicado también a Aceite
+  (`generateOilTestReportPdf_`/`oilTestMeta.operador_nombre` nuevo).
+
+### Punto 11 (extra, en curso, 2026-09-13) — Rediseño hacia formato corporativo de 2 columnas
+
+El cliente compartió un protocolo de referencia mucho más elaborado
+(logo/banner con degradado, foto del transformador, secciones
+numeradas 1-12, **tablas de criterios de evaluación al lado de cada
+tabla de resultados** — layout de 2 columnas, no apiladas —, una
+**gráfica de barras** de desviación por fase de TTR, checkboxes de
+conclusión general, control de documento tipo ISO) y pidió acercarse a
+ese nivel ("fidelidad alta"). Decisiones ya tomadas con el cliente antes
+de escribir código:
+
+- **Devanados sigue con el umbral único de 5%** (APROBADO/RECHAZADO,
+  el que ya existe y está verificado) — NO se cambia a los 3 niveles
+  (≤1%/1-3%/>3%) que mostraba la imagen de referencia; esa escala solo
+  se imprime como tabla de referencia visual, no reemplaza el cálculo.
+- **Temperatura ambiente y humedad relativa SÍ se agregan** como campos
+  nuevos — pendiente: tocar `index.html`/`app.js` (formularios) y
+  `Código.gs` (guardarlos, imprimirlos).
+- **CÓDIGO/VERSIÓN de documento**: quedan como placeholders vacíos en la
+  plantilla — el cliente los llena a mano él mismo (mismo criterio que
+  el watermark), decisión explícita ("eso queda pendiente, yo lo pongo
+  en la plantilla").
+- **Banner superior, iconos del pie, foto de transformador**: el cliente
+  los agrega él mismo directo en el documento de la plantilla — NO es
+  algo que el código genere o inserte. Ninguna de las 2 plantillas
+  necesita que yo le pase una imagen de banner.
+
+**Validado en vivo antes de arriesgar la tabla única que ya funciona**:
+el layout de 2 columnas (resultados | criterios) requiere **tablas
+anidadas** (una tabla `DocumentApp` dentro de una celda de otra tabla,
+vía `TableCell.appendTable(...)`) — algo nunca probado en este
+proyecto. Se armó una función temporal de diagnóstico
+(`testNestedTableMerge_`, YA BORRADA del código — no quedó rastro en
+producción) que creó un documento de prueba real con una tabla externa
+de 2 columnas y una tabla anidada distinta en cada celda, y confirmó que
+`Docs.Documents.batchUpdate` con `mergeTableCells` **sí fusiona
+correctamente celdas DENTRO de una tabla anidada** — cada tabla
+(externa o anidada) tiene su propio `startIndex` válido en el mismo
+espacio de índices lineal del documento, direccionable igual que
+cualquier tabla de nivel superior (mismo mecanismo que ya usa
+`applyUnifiedTableMerges_`, solo que ahora hay que ubicar la tabla
+correcta entre varias candidatas anidadas, no solo la de nivel
+superior). Verificado visualmente en el documento de prueba (2 tablas
+anidadas lado a lado, cada una con su fila fusionada correctamente) —
+no solo que la API no lanzara error.
+
+**Estado**: validación técnica completa, plan acordado. **Falta
+implementar** — pendiente al reanudar esta sesión o la siguiente:
+1. Campos nuevos temperatura ambiente/humedad relativa (frontend +
+   backend).
+2. Reestructurar `insertUnifiedResultsTable_`/`build*UnifiedRows_` para
+   que cada sección use una tabla externa de 2 columnas (resultados
+   anidados a la izquierda, criterios de evaluación anidados a la
+   derecha) en vez de filas planas de 7 columnas — cambio de
+   arquitectura real, no incremental.
+3. `buildTtrDeviationChart_`: gráfica de barras de desviación por fase
+   (TTR) vía el servicio `Charts` nativo de Apps Script (sin costo,
+   sin servicio externo) → imagen insertada en el documento.
+4. Tabla de criterios de Devanados (5%, 2 niveles) al lado de las
+   secciones AT/BT; reubicar la leyenda DAR/IP que ya existe al lado de
+   Aislamiento en vez de debajo.
+5. Secciones nuevas Observaciones y Conclusión General (checkbox
+   ☑/☐).
+6. Placeholders vacíos `<<CODIGO_DOCUMENTO>>`/`<<VERSION_DOCUMENTO>>` en
+   la plantilla.
+
+**Costo/infraestructura** (aclarado explícitamente al cliente, que
+preguntó): $0 en servicios externos — todo corre dentro de la misma
+cuenta de Apps Script gratuita ya en uso, incluida la gráfica (servicio
+nativo `Charts`, no una API paga). Lo único fuera del código es diseño
+gráfico (banner/iconos), que el cliente ya dijo que hace él mismo.
 
 ## Arquitectura activa (esta es la que corre en producción)
 
