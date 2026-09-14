@@ -38,9 +38,10 @@ compacto del PDF) necesitan que 2/3/4/5 ya existan primero.
    abajo).
 10. [x] **Compactación + tabla única de resultados eléctricos**
     (2026-09-13, extra — ver detalle abajo, "Punto 10").
-11. [ ] **EN CURSO — rediseño a formato corporativo de 2 columnas**
-    (extra, 2026-09-13, validación técnica lista — ver "Punto 11" abajo
-    para qué falta implementar antes de retomar).
+11. [~] **Rediseño a formato corporativo de 2 columnas — implementado
+    2026-09-14, pendiente verificación en vivo** (extra — ver "Punto 11"
+    abajo para el detalle completo de qué se construyó y qué falta
+    probar).
 
 **Objetivo general**: que el informe eléctrico completo (TTR + Devanados +
 Aislamiento + firmas) quepa en una sola página para el caso normal
@@ -525,7 +526,7 @@ vivo: sigue cabiendo todo en 1 sola página con la leyenda incluida.
   conserva. Mismo criterio aplicado también a Aceite
   (`generateOilTestReportPdf_`/`oilTestMeta.operador_nombre` nuevo).
 
-### Punto 11 (extra, en curso, 2026-09-13) — Rediseño hacia formato corporativo de 2 columnas
+### Punto 11 (extra, implementado 2026-09-14, pendiente verificación en vivo) — Rediseño hacia formato corporativo de 2 columnas
 
 El cliente compartió un protocolo de referencia mucho más elaborado
 (logo/banner con degradado, foto del transformador, secciones
@@ -571,31 +572,156 @@ superior). Verificado visualmente en el documento de prueba (2 tablas
 anidadas lado a lado, cada una con su fila fusionada correctamente) —
 no solo que la API no lanzara error.
 
-**Estado**: validación técnica completa, plan acordado. **Falta
-implementar** — pendiente al reanudar esta sesión o la siguiente:
-1. Campos nuevos temperatura ambiente/humedad relativa (frontend +
-   backend).
-2. Reestructurar `insertUnifiedResultsTable_`/`build*UnifiedRows_` para
-   que cada sección use una tabla externa de 2 columnas (resultados
-   anidados a la izquierda, criterios de evaluación anidados a la
-   derecha) en vez de filas planas de 7 columnas — cambio de
-   arquitectura real, no incremental.
-3. `buildTtrDeviationChart_`: gráfica de barras de desviación por fase
-   (TTR) vía el servicio `Charts` nativo de Apps Script (sin costo,
-   sin servicio externo) → imagen insertada en el documento.
-4. Tabla de criterios de Devanados (5%, 2 niveles) al lado de las
-   secciones AT/BT; reubicar la leyenda DAR/IP que ya existe al lado de
-   Aislamiento en vez de debajo.
-5. Secciones nuevas Observaciones y Conclusión General (checkbox
-   ☑/☐).
-6. Placeholders vacíos `<<CODIGO_DOCUMENTO>>`/`<<VERSION_DOCUMENTO>>` en
-   la plantilla.
+**Estado 2026-09-14: implementado y desplegado (`clasp push` + `clasp
+deploy` @57), pendiente verificación en vivo con datos reales.** El
+cliente ya agregó encabezado/pie de página a la plantilla real
+(imagen de referencia) y pidió ver el resultado — importante: **la
+plantilla NO se regeneró ni hizo falta regenerarla** (ver más abajo,
+"Por qué no hizo falta tocar la plantilla"), así que ese trabajo manual
+del cliente sigue intacto.
+
+**1. Campos nuevos temperatura ambiente / humedad relativa** — un valor
+por envío de prueba, mismo criterio que `instrument_used`:
+- `HEADERS.PRUEBAS` ganó `temperatura_ambiente`/`humedad_relativa` al
+  final (migración automática vía `ensureAllSheets_`, no rompe filas
+  viejas).
+- `persistTest_` los guarda desde `params.temperatura_ambiente`/
+  `params.humedad_relativa` (default `''`).
+- `index.html`: 2 inputs nuevos en CADA uno de los 3 formularios (TTR:
+  `ttrTempAmbiente`/`ttrHumedad`; Devanados: `wrTempAmbiente`/
+  `wrHumedad`; Aislamiento: `insulationTempAmbiente`/`insulationHumedad`
+  — con ese nombre para no chocar con `insulationTemp`, que es la
+  temperatura de DEVANADO, un dato distinto que ya existía).
+- `app.js`: los 3 `build*RequestBody()` los leen y los mandan en el
+  payload top-level (igual que `instrument_used`/`operador_nombre`).
+- Se imprimen en la fila "DATOS GENERALES DE LA PRUEBA" (ver
+  `buildSharedMetaUnifiedRows_`), tomados de `signedTest` — la MISMA
+  prueba (la más reciente entre las presentes) que ya da FECHA/TÉCNICO.
+
+**2. Arquitectura de 2 columnas — tabla EXTERNA de 2 columnas + tablas
+ANIDADAS** (el cambio real, ver "Tabla EXTERNA de 2 columnas" en el
+código, justo antes de `insertOuterResultsTable_`). Decisión de diseño
+clave para no repetir el problema que forzó el Punto 10 (2 tablas de
+nivel superior consecutivas siempre dejan un espacio visible entre
+ellas, sin importar su layout interno — nunca se pudo arreglar solo con
+espaciado de párrafo): la tabla completa del informe sigue siendo **UNA
+SOLA tabla `DocumentApp` de nivel superior**, siempre de 2 columnas
+físicas.
+- La mayoría del contenido (banners, veredictos, la grilla de
+  cliente/equipo, datos generales, Observaciones, Conclusión) ocupa las
+  2 columnas FUSIONADAS como una fila ancha de una tabla ANIDADA (o,
+  para los veredictos, texto plano directo en la celda fusionada, sin
+  anidar — más liviano).
+- Solo las filas "resultados | criterios" (TTR, AT, BT, Aislamiento)
+  usan las 2 columnas de verdad, SIN fusionar: cada una con su propia
+  tabla anidada distinta (`TableCell.appendTable()` + `appendTableRow`/
+  `appendTableCell`, el mecanismo ya validado con el prototipo borrado
+  `testNestedTableMerge_`).
+- `unifiedRow_`/`unifiedBannerRow_`/`unifiedLabelRow_`/`build*UnifiedRows_`
+  (TTR/AT/BT/Aislamiento/cliente-equipo/datos-generales/leyenda DAR-IP)
+  **no cambiaron nada por dentro** — siguen devolviendo filas de 7
+  columnas lógicas, exactamente igual que en el Punto 10. Lo que cambió
+  es que esas filas ahora son el CONTENIDO de una tabla anidada, no de
+  la tabla de nivel superior.
+- Nuevos descriptores de fila EXTERNA: `outerNestedFullRow_` (tabla
+  anidada a todo lo ancho), `outerNestedPairRow_` (2 tablas anidadas
+  lado a lado), `outerPlainRow_` (texto plano fusionado, para
+  veredictos), `outerImageRow_` (la gráfica de TTR).
+- `insertOuterResultsTable_` (reemplaza a `insertUnifiedResultsTable_`)
+  arma la tabla externa y, por cada fila, construye las tablas anidadas
+  que le correspondan — devuelve `nestedRegistry` (una entrada por tabla
+  anidada, con su `bannerText` único y sus propias fusiones pendientes).
+- `styleUnifiedCell_` — el switch de estilos por rol (banner/header/
+  verdict/labelvalue/legend/data + el nuevo `blankline`) se sacó de
+  adentro de la función de armado para poder reusarlo tanto en celdas de
+  la tabla externa como de cualquier tabla anidada.
+
+**Fusión de celdas — ahora tiene que ubicar tablas ANIDADAS, no solo la
+de nivel superior**: `applyUnifiedTableMerges_` se reemplazó por
+`applyOuterAndNestedMerges_` + `collectAllTables_` (recorrido recursivo:
+baja a `tableCell.content` de cada celda para encontrar tablas dentro de
+tablas — la Docs API avanzada no las expone en el nivel superior de
+`doc.body.content`). Cada tabla (externa o anidada) sigue teniendo su
+propio `startIndex` válido, direccionable igual que antes; la tabla
+externa ya no se puede ubicar por su propio texto (su fila 0/celda 0
+está vacía — el contenido real vive en la tabla anidada de adentro), así
+que se ubica indirectamente: se busca la tabla anidada
+`'DATOS DEL CLIENTE Y DEL EQUIPO'` (única, siempre la primera) y su
+`rootStartIndex` (el ancestro de nivel superior que la contiene) ES el
+`startIndex` de la tabla externa.
+
+**Bono no pedido pero necesario**: `pinResultsTableHeaders_` solo miraba
+`doc.body.content` (nivel superior) — con TTR/Devanados/Aislamiento
+ahora ANIDADOS, se había vuelto inerte para el eléctrico (regresión real
+que se detectó escribiendo esto, no en producción). Se corrigió
+reusando `collectAllTables_` — ahora SÍ repite el encabezado de una
+tabla anidada larga en cada página donde Google Docs decida partirla,
+algo que con el Punto 10 (tabla única sin anidar) funcionaba solo porque
+todo era de nivel superior.
+
+**3. `buildTtrDeviationChart_`** — gráfica de barras (servicio `Charts`
+nativo de Apps Script, sin costo) de desviación de TTR por fase, una
+serie por fase (H1H2-X1X2/H2H3-X2X3/H3H1-X3X1), un TAP por columna.
+`null` si es monofásico (no hay 2+ fases que comparar) o si no hay TAPs
+— nunca lanza, envuelto en try/catch interno. Se inserta como imagen
+(`outerImageRow_`, `TableCell.appendImage`) justo después del panel
+TTR|criterios, antes del veredicto de TTR.
+
+**4. Paneles de criterios** al lado de cada sección de resultados:
+- `buildTtrCriteriaRows_`: referencia fija (± 0.5 % error, IEEE
+  C57.12.90).
+- `buildWindingCriteriaRows_(sideLabel)`: el umbral REAL de 5% que ya
+  usa `computePhaseUnbalance_` (2 niveles: ≤5%/>5%) — NO los 3 niveles
+  del protocolo de referencia, decisión ya confirmada. `sideLabel`
+  ('AT'/'BT') solo para que el texto del banner sea único por informe.
+- `buildInsulationCriteriaRows_(esSimple)`: reutiliza
+  `buildDarIpLegendRows_` (la leyenda DAR/IP que ya existía) cuando el
+  método es Completo — ahora AL LADO de los resultados en vez de debajo,
+  como pedía el checklist. Simple no calcula DAR/IP: panel corto
+  explicando por qué no aplica, en vez de dejarlo vacío.
+
+**5. Observaciones + Conclusión General**: `buildObservacionesRows_`
+son 3 filas en blanco con más padding (para escribir a mano sobre el
+PDF impreso) — no existe todavía un campo "observaciones" en el modelo
+de datos, así que no hay contenido dinámico que imprimir ahí.
+`buildConclusionRows_(overallVerdict)` — checkbox ☑/☐ "EQUIPO APROBADO"
+/ "EQUIPO NO APROBADO"; `overallVerdict` se calcula en
+`regenerateElectricalCombinedReport_` como el Y lógico de TODOS los
+veredictos de sección presentes (TTR, AT, BT, Aislamiento) — no
+reemplaza ningún veredicto individual, solo los combina para esta
+casilla final.
+
+**6. CÓDIGO/VERSIÓN de documento**: sin cambios de código, tal como se
+acordó con el cliente — él los agrega directo en la plantilla, mismo
+criterio que el watermark/banner/fotos.
+
+**Por qué no hizo falta tocar la plantilla (`buildElectricalTemplateDoc_`)**:
+la plantilla del eléctrico nunca tuvo la tabla de resultados horneada
+desde el Punto 10 — solo trae el marcador de posición
+`<<TABLA_RESULTADOS_ELECTRICOS>>`, un párrafo invisible donde
+`regenerateElectricalCombinedReport_` inserta lo que sea que arme en ese
+momento. El cambio de arquitectura de este punto (tabla externa de 2
+columnas con tablas anidadas, en vez de una tabla plana de 7 columnas)
+vive ENTERO en qué se inserta ahí — la plantilla no necesitó ningún
+cambio, así que el encabezado/pie de página que el cliente ya agregó a
+mano en la plantilla real **no se pierde ni hay que regenerar nada**.
+
+**Pendiente real**: verificación en vivo (generar un informe combinado
+real con TAPs/Aislamiento reales y confirmar visualmente que el layout
+de 2 columnas, la gráfica, los paneles de criterios y la Conclusión se
+ven bien y que sigue cabiendo en 1 sola página — el layout de 2 columnas
+probablemente YA NO quepa en 1 sola hoja con letra a 5pt como el Punto
+10, dado que ahora cada sección ocupa más alto (tabla de resultados +
+tabla de criterios en paralelo, cada una con su propio banner/encabezado)
+en vez de compartir una sola tabla continua — esto hay que verlo en
+vivo, no se puede afirmar de antemano).
 
 **Costo/infraestructura** (aclarado explícitamente al cliente, que
 preguntó): $0 en servicios externos — todo corre dentro de la misma
 cuenta de Apps Script gratuita ya en uso, incluida la gráfica (servicio
 nativo `Charts`, no una API paga). Lo único fuera del código es diseño
-gráfico (banner/iconos), que el cliente ya dijo que hace él mismo.
+gráfico (banner/iconos/fotos), que el cliente ya dijo que hace él mismo
+directo en la plantilla.
 
 ## Arquitectura activa (esta es la que corre en producción)
 

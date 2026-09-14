@@ -112,7 +112,8 @@ var HEADERS = {
     'id', 'transformer_id', 'test_type', 'raw_readings_json',
     'calculated_results_json', 'verdict', 'instrument_used', 'tested_by',
     'attachment_file_id', 'created_at', 'report_file_id',
-    'estado_certificacion', 'revisado_por', 'revisado_at', 'operador_nombre'
+    'estado_certificacion', 'revisado_por', 'revisado_at', 'operador_nombre',
+    'temperatura_ambiente', 'humedad_relativa'
   ],
   /** Índice de documentos subidos a Drive (certificados automáticos + subida manual) —
    *  existe porque "Documentos e Informes" necesita listar/filtrar por cliente, tipo y
@@ -898,7 +899,9 @@ function persistTest_(transformer, testType, rawReadings, calculated, params, au
     estado_certificacion: 'Borrador',
     revisado_por: '',
     revisado_at: '',
-    operador_nombre: params.operador_nombre || ''
+    operador_nombre: params.operador_nombre || '',
+    temperatura_ambiente: params.temperatura_ambiente || '',
+    humedad_relativa: params.humedad_relativa || ''
   });
 
   return { id: id, calculated_results: calculated, report_url: null, estado_certificacion: 'Borrador' };
@@ -1976,7 +1979,7 @@ function appendDenseInfoGrid_(body, rows) {
  *  (Fisicoquímico/DGA/PCB — filas fijas, con celdas de VALOR en
  *  placeholder); TTR/Devanados/Aislamiento ya no tienen ninguna tabla
  *  horneada en la plantilla, se insertan enteras en tiempo de generación
- *  real (ver insertUnifiedResultsTable_). Nunca se usa en el armado del
+ *  real (ver insertOuterResultsTable_). Nunca se usa en el armado del
  *  informe REAL de Aceite tampoco, que solo copia la plantilla. */
 function appendResultsTable_(body, rows) {
   var table = body.appendTable(rows);
@@ -2210,20 +2213,6 @@ function unifiedBannerRow_(text) {
   cells[0] = text;
   return unifiedRow_(cells, 'banner', [{ startColumnIndex: 0, columnSpan: UNIFIED_TABLE_COLS_ }]);
 }
-/** Fila de veredicto — mismo color que ya usaba appendVerdictBanner_
- *  (verdictColor_), ahora como una fila fusionada más dentro de la misma
- *  tabla en vez de una tabla aparte debajo de cada sección. Cada sección
- *  (TTR, AT, BT, Aislamiento) trae la suya — el cliente pidió
- *  explícitamente mantener el veredicto por sección, no uno solo al
- *  final. */
-function unifiedVerdictRow_(label, verdict) {
-  var cells = new Array(UNIFIED_TABLE_COLS_).fill('');
-  cells[0] = label + ': ' + verdict;
-  var row = unifiedRow_(cells, 'verdict', [{ startColumnIndex: 0, columnSpan: UNIFIED_TABLE_COLS_ }]);
-  row.verdictValue = verdict;
-  return row;
-}
-
 /** Fila tipo "grilla densa" etiqueta/valor (fondo gris + negrita en la
  *  etiqueta, texto normal en el valor) DENTRO de la tabla única — usada
  *  por "Datos del cliente y del equipo" y "Datos generales de la prueba"
@@ -2272,13 +2261,24 @@ function buildClientEquipoUnifiedRows_(site, transformer) {
  *  ANTES de armar esta fila, no después como antes), así que no hace
  *  falta ningún placeholder ni body.replaceText() para esto. NORMA es
  *  literal, nunca cambia. */
-function buildSharedMetaUnifiedRows_(fechaText, tecnicoText) {
+function buildSharedMetaUnifiedRows_(fechaText, tecnicoText, tempText, humedadText) {
   var cells = new Array(UNIFIED_TABLE_COLS_).fill('');
   cells[0] = 'FECHA'; cells[1] = fechaText;
   cells[2] = 'TÉCNICO RESPONSABLE'; cells[3] = tecnicoText;
   cells[4] = 'NORMA DE REFERENCIA'; cells[5] = 'IEEE C57.12.90';
   var merges = [{ startColumnIndex: 5, columnSpan: 2 }];
-  return [unifiedBannerRow_('DATOS GENERALES DE LA PRUEBA'), unifiedLabelRow_(cells, [0, 2, 4], merges)];
+  var rows = [unifiedBannerRow_('DATOS GENERALES DE LA PRUEBA'), unifiedLabelRow_(cells, [0, 2, 4], merges)];
+
+  // Punto 11 (2026-09-14): temperatura ambiente / humedad relativa — campos
+  // nuevos, acordados explícitamente con el cliente (ver CLAUDE.md). Se
+  // toman de la MISMA prueba (`signedTest`) que ya da FECHA/TÉCNICO arriba
+  // — un valor por envío, igual que instrument_used.
+  var ambCells = new Array(UNIFIED_TABLE_COLS_).fill('');
+  ambCells[0] = 'TEMP. AMBIENTE'; ambCells[1] = tempText || '—';
+  ambCells[3] = 'HUMEDAD RELATIVA'; ambCells[4] = humedadText || '—';
+  var ambMerges = [{ startColumnIndex: 1, columnSpan: 2 }, { startColumnIndex: 4, columnSpan: 3 }];
+  rows.push(unifiedLabelRow_(ambCells, [0, 3], ambMerges));
+  return rows;
 }
 
 /** TTR — banner + encabezado + 1 fila por TAP. Mismo criterio de
@@ -2529,6 +2529,129 @@ function buildDarIpLegendRows_() {
   return rows;
 }
 
+/** Punto 11 (2026-09-14) — panel de criterios de TTR, para el lado derecho
+ *  del layout de 2 columnas (resultados | criterios). El umbral real que
+ *  decide RECHAZADO ya vive en calculateTtr_/lo que llegue en
+ *  `calc.taps[].phases[].status` — esto solo IMPRIME esa referencia, no
+ *  inventa una nueva. */
+function buildTtrCriteriaRows_() {
+  var rows = [unifiedBannerRow_('CRITERIO DE ACEPTACIÓN — TTR')];
+  var fullMerge = [{ startColumnIndex: 0, columnSpan: UNIFIED_TABLE_COLS_ }];
+  var c1 = new Array(UNIFIED_TABLE_COLS_).fill('');
+  c1[0] = 'Error ≤ ± 0.5 % respecto a la relación teórica → APROBADO';
+  rows.push(unifiedRow_(c1, 'data', fullMerge));
+  var c2 = new Array(UNIFIED_TABLE_COLS_).fill('');
+  c2[0] = 'Referencia: IEEE C57.12.90';
+  rows.push(unifiedRow_(c2, 'data', fullMerge));
+  return rows;
+}
+
+/** Panel de criterios de Devanados — el umbral sigue siendo el único de 5%
+ *  ya verificado (ver Punto 4/8), NO los 3 niveles (≤1%/1-3%/>3%) del
+ *  protocolo de referencia que compartió el cliente — decisión explícita
+ *  del 2026-09-13, esto solo imprime el criterio real que ya usa
+ *  computePhaseUnbalance_, no una escala nueva. `sideLabel` (AT/BT) entra
+ *  en el banner solo para que el texto sea único dentro del documento (lo
+ *  necesita applyOuterAndNestedMerges_ para ubicar esta tabla anidada). */
+function buildWindingCriteriaRows_(sideLabel) {
+  var rows = [unifiedBannerRow_('CRITERIO DE ACEPTACIÓN — DEVANADOS (' + sideLabel + ')')];
+  var merges = [{ startColumnIndex: 0, columnSpan: UNIFIED_TABLE_COLS_ }];
+  var aprobadoCells = new Array(UNIFIED_TABLE_COLS_).fill('');
+  aprobadoCells[0] = 'Desviación ≤ 5 % respecto al promedio de fases';
+  var aprobadoRow = unifiedRow_(aprobadoCells, 'legend', merges);
+  aprobadoRow.coloredCols = [{ col: 0, bg: PDF_COLORS_.SUCCESS_BG, fg: PDF_COLORS_.SUCCESS }];
+  rows.push(aprobadoRow);
+  var rechazadoCells = new Array(UNIFIED_TABLE_COLS_).fill('');
+  rechazadoCells[0] = 'Desviación > 5 % respecto al promedio de fases';
+  var rechazadoRow = unifiedRow_(rechazadoCells, 'legend', merges);
+  rechazadoRow.coloredCols = [{ col: 0, bg: PDF_COLORS_.DANGER_BG, fg: PDF_COLORS_.DANGER }];
+  rows.push(rechazadoRow);
+  return rows;
+}
+
+/** Panel de criterios de Aislamiento — Completo reutiliza la leyenda DAR/IP
+ *  que ya existía (buildDarIpLegendRows_), ahora AL LADO de los resultados
+ *  en vez de debajo (Punto 11, checklist ítem 4). Simple no calcula DAR/IP
+ *  — un panel corto explica por qué no aplica, en vez de dejar el lado
+ *  derecho vacío. */
+function buildInsulationCriteriaRows_(esSimple) {
+  if (!esSimple) return buildDarIpLegendRows_();
+  var rows = [unifiedBannerRow_('MÉTODO SIMPLE — SIN DAR/IP')];
+  var cells = new Array(UNIFIED_TABLE_COLS_).fill('');
+  cells[0] = 'Lectura única de resistencia (ej. al minuto) — sin las lecturas adicionales de tiempo que arman DAR/IP, no aplica calificación por índice.';
+  rows.push(unifiedRow_(cells, 'data', [{ startColumnIndex: 0, columnSpan: UNIFIED_TABLE_COLS_ }]));
+  return rows;
+}
+
+/** Espacio para anotaciones manuales del ingeniero — Punto 11, checklist
+ *  ítem 5. Sin contenido dinámico propio (no existe un campo "observaciones"
+ *  en el modelo de datos todavía): son filas en blanco con un poco más de
+ *  padding para que se pueda escribir a mano sobre el PDF impreso. */
+var OBSERVACIONES_BLANK_LINES_ = 3;
+function buildObservacionesRows_() {
+  var rows = [unifiedBannerRow_('OBSERVACIONES')];
+  var fullMerge = [{ startColumnIndex: 0, columnSpan: UNIFIED_TABLE_COLS_ }];
+  for (var i = 0; i < OBSERVACIONES_BLANK_LINES_; i++) {
+    rows.push(unifiedRow_(new Array(UNIFIED_TABLE_COLS_).fill(''), 'blankline', fullMerge));
+  }
+  return rows;
+}
+
+/** Conclusión General con checkbox — Punto 11, checklist ítem 5.
+ *  `overallVerdict` ya viene combinado (ver regenerateElectricalCombinedReport_:
+ *  APROBADO solo si TODAS las secciones presentes lo están) — esto no
+ *  recalcula nada, solo decide qué casilla marcar. */
+function buildConclusionRows_(overallVerdict) {
+  var aprobado = String(overallVerdict || '').indexOf('APROBADO') === 0;
+  var rows = [unifiedBannerRow_('CONCLUSIÓN GENERAL')];
+  var merges = [{ startColumnIndex: 0, columnSpan: 4 }, { startColumnIndex: 4, columnSpan: 3 }];
+  var cells = new Array(UNIFIED_TABLE_COLS_).fill('');
+  cells[0] = (aprobado ? '☑' : '☐') + ' EQUIPO APROBADO';
+  cells[4] = (!aprobado ? '☑' : '☐') + ' EQUIPO NO APROBADO';
+  var row = unifiedRow_(cells, 'legend', merges);
+  row.coloredCols = [
+    { col: 0, bg: aprobado ? PDF_COLORS_.SUCCESS_BG : PDF_COLORS_.NEUTRAL_BG, fg: aprobado ? PDF_COLORS_.SUCCESS : PDF_COLORS_.TEXT_MUTED },
+    { col: 4, bg: !aprobado ? PDF_COLORS_.DANGER_BG : PDF_COLORS_.NEUTRAL_BG, fg: !aprobado ? PDF_COLORS_.DANGER : PDF_COLORS_.TEXT_MUTED }
+  ];
+  rows.push(row);
+  return rows;
+}
+
+/** Gráfica de barras de desviación de TTR por fase (Punto 11, checklist
+ *  ítem 3) — servicio `Charts` nativo de Apps Script, sin costo ni servicio
+ *  externo (ver aclaración a el cliente en Punto 11 de CLAUDE.md). Nunca
+ *  lanza fuera de aquí: si algo falla (0 TAPs, monofásico sin base de
+ *  comparación entre fases, etc.) devuelve `null` y el llamador simplemente
+ *  no inserta la imagen — no debe bloquear la generación del informe. */
+function buildTtrDeviationChart_(calc, esMonofasico) {
+  if (esMonofasico) return null;
+  var tapNums = Object.keys(calc.taps || {}).map(Number).sort(function (a, b) { return a - b; });
+  if (tapNums.length === 0) return null;
+  try {
+    var dataTable = Charts.newDataTable().addColumn(Charts.ColumnType.STRING, 'TAP');
+    TTR_PHASE_ORDER_.forEach(function (k) { dataTable.addColumn(Charts.ColumnType.NUMBER, k); });
+    tapNums.forEach(function (tapNum) {
+      var tap = calc.taps[String(tapNum)];
+      var row = ['TAP ' + tapNum];
+      TTR_PHASE_ORDER_.forEach(function (k) {
+        var p = tap.phases[k];
+        row.push(p && p.errorPercent != null ? p.errorPercent : 0);
+      });
+      dataTable.addRow(row);
+    });
+    var chart = Charts.newColumnChart()
+      .setDataTable(dataTable)
+      .setTitle('Desviación TTR por fase (%)')
+      .setDimensions(460, 240)
+      .setColors(['#585d63', '#8f2d2d', '#3aaa35'])
+      .setLegendPosition(Charts.Position.BOTTOM)
+      .build();
+    return chart.getAs('image/png');
+  } catch (e) {
+    return null;
+  }
+}
+
 /** Inserta la tabla unificada completa en `body`, justo ANTES de
  *  `beforeChild` (el marcador de posición `<<TABLA_RESULTADOS_ELECTRICOS>>`
  *  que trae la plantilla — nunca "Área de Control de Calidad" en sí, que
@@ -2537,58 +2660,160 @@ function buildDarIpLegendRows_() {
  *  eso lo hace applyUnifiedTableMerges_ después, sobre el documento ya
  *  guardado). Devuelve las instrucciones de fusión para que
  *  regenerateElectricalCombinedReport_ se las pase a finalizeReportPdf_. */
-function insertUnifiedResultsTable_(body, beforeChild, sections) {
-  var allRows = [];
-  sections.forEach(function (section) { allRows = allRows.concat(section); });
-  if (allRows.length === 0) return { table: null, mergeSpecs: [], bannerText: null };
+/** Aplica el estilo de una fila lógica (banner/header/verdict/labelvalue/
+ *  legend/blankline/data) a UNA celda — extraído (Punto 11, 2026-09-14) del
+ *  loop que antes vivía dentro de insertUnifiedResultsTable_, para poder
+ *  reusarlo tanto en celdas de la tabla EXTERNA (banner/verdict a todo lo
+ *  ancho) como en celdas de cada tabla ANIDADA (resultados/criterios) — el
+ *  criterio visual de cada rol no cambió, solo dejó de estar atado a una
+ *  sola tabla. */
+function styleUnifiedCell_(cell, r, c, padding) {
+  cell.setPaddingTop(padding).setPaddingBottom(padding)
+    .setPaddingLeft(padding).setPaddingRight(padding);
+  if (r.role === 'banner') {
+    cell.setBackgroundColor(PDF_COLORS_.ACCENT);
+    cell.editAsText().setBold(true).setFontSize(UNIFIED_FONT_BANNER_).setForegroundColor('#ffffff');
+  } else if (r.role === 'header') {
+    cell.setBackgroundColor(PDF_COLORS_.ACCENT);
+    cell.editAsText().setBold(true).setFontSize(UNIFIED_FONT_DATA_).setForegroundColor('#ffffff');
+  } else if (r.role === 'verdict') {
+    var vcolors = verdictColor_(r.verdictValue);
+    cell.setBackgroundColor(vcolors.bg);
+    cell.editAsText().setBold(true).setFontSize(UNIFIED_FONT_VERDICT_).setForegroundColor(vcolors.text);
+  } else if (r.role === 'labelvalue') {
+    var isLabel = r.labelCols.indexOf(c) !== -1;
+    if (isLabel) {
+      cell.setBackgroundColor(PDF_COLORS_.NEUTRAL_BG);
+      cell.editAsText().setBold(true).setFontSize(UNIFIED_FONT_DATA_).setForegroundColor(PDF_COLORS_.TEXT);
+    } else {
+      cell.editAsText().setBold(false).setFontSize(UNIFIED_FONT_DATA_).setForegroundColor(PDF_COLORS_.TEXT);
+    }
+  } else if (r.role === 'legend') {
+    var colorSpec = (r.coloredCols || []).filter(function (cc) { return cc.col === c; })[0];
+    if (colorSpec) {
+      cell.setBackgroundColor(colorSpec.bg);
+      cell.editAsText().setBold(true).setFontSize(UNIFIED_FONT_DATA_).setForegroundColor(colorSpec.fg);
+    } else {
+      cell.editAsText().setBold(false).setFontSize(UNIFIED_FONT_DATA_).setForegroundColor(PDF_COLORS_.TEXT_MUTED);
+    }
+  } else if (r.role === 'blankline') {
+    cell.setPaddingTop(6).setPaddingBottom(6);
+    cell.editAsText().setFontSize(UNIFIED_FONT_DATA_);
+  } else {
+    cell.editAsText().setFontSize(UNIFIED_FONT_DATA_).setBold(false).setForegroundColor(PDF_COLORS_.TEXT);
+  }
+}
 
-  var insertIndex = body.getChildIndex(beforeChild);
-  var table = body.insertTable(insertIndex, allRows.map(function (r) { return r.cells; }));
-  table.setBorderColor(PDF_COLORS_.BORDER);
-
+/** Construye una tabla ANIDADA (Punto 11) dentro de una celda de la tabla
+ *  externa — `TableCell.appendTable()` (sin argumentos) crea una tabla
+ *  vacía ya insertada en esa celda; se llena fila por fila con
+ *  appendTableRow_()/appendTableCell(texto), igual que si fuera la tabla de
+ *  nivel superior de antes. Validado en vivo (prototipo `testNestedTableMerge_`,
+ *  ya borrado — ver Punto 11 en CLAUDE.md) que `Docs.Documents.batchUpdate`
+ *  sí puede fusionar celdas de una tabla anidada, direccionándola por su
+ *  propio `startIndex` — por eso esta función también devuelve
+ *  `bannerText` (el texto de su propia fila 0 / celda 0), que
+ *  applyOuterAndNestedMerges_ usa para ubicarla entre varias candidatas. */
+function appendNestedTable_(parentCell, rows) {
+  parentCell.setPaddingTop(0).setPaddingBottom(0).setPaddingLeft(0).setPaddingRight(0);
+  var nestedTable = parentCell.appendTable();
+  nestedTable.setBorderColor(PDF_COLORS_.BORDER);
   var mergeSpecs = [];
-  allRows.forEach(function (r, rowIndex) {
-    var row = table.getRow(rowIndex);
-    for (var c = 0; c < UNIFIED_TABLE_COLS_; c++) {
-      var cell = row.getCell(c);
-      cell.setPaddingTop(UNIFIED_CELL_PADDING_).setPaddingBottom(UNIFIED_CELL_PADDING_)
-        .setPaddingLeft(UNIFIED_CELL_PADDING_).setPaddingRight(UNIFIED_CELL_PADDING_);
-      if (r.role === 'banner') {
-        cell.setBackgroundColor(PDF_COLORS_.ACCENT);
-        cell.editAsText().setBold(true).setFontSize(UNIFIED_FONT_BANNER_).setForegroundColor('#ffffff');
-      } else if (r.role === 'header') {
-        cell.setBackgroundColor(PDF_COLORS_.ACCENT);
-        cell.editAsText().setBold(true).setFontSize(UNIFIED_FONT_DATA_).setForegroundColor('#ffffff');
-      } else if (r.role === 'verdict') {
-        var vcolors = verdictColor_(r.verdictValue);
-        cell.setBackgroundColor(vcolors.bg);
-        cell.editAsText().setBold(true).setFontSize(UNIFIED_FONT_VERDICT_).setForegroundColor(vcolors.text);
-      } else if (r.role === 'labelvalue') {
-        var isLabel = r.labelCols.indexOf(c) !== -1;
-        if (isLabel) {
-          cell.setBackgroundColor(PDF_COLORS_.NEUTRAL_BG);
-          cell.editAsText().setBold(true).setFontSize(UNIFIED_FONT_DATA_).setForegroundColor(PDF_COLORS_.TEXT);
-        } else {
-          cell.editAsText().setBold(false).setFontSize(UNIFIED_FONT_DATA_).setForegroundColor(PDF_COLORS_.TEXT);
-        }
-      } else if (r.role === 'legend') {
-        var colorSpec = (r.coloredCols || []).filter(function (cc) { return cc.col === c; })[0];
-        if (colorSpec) {
-          cell.setBackgroundColor(colorSpec.bg);
-          cell.editAsText().setBold(true).setFontSize(UNIFIED_FONT_DATA_).setForegroundColor(colorSpec.fg);
-        } else {
-          cell.editAsText().setBold(false).setFontSize(UNIFIED_FONT_DATA_).setForegroundColor(PDF_COLORS_.TEXT_MUTED);
-        }
-      } else {
-        cell.editAsText().setFontSize(UNIFIED_FONT_DATA_).setBold(false).setForegroundColor(PDF_COLORS_.TEXT);
-      }
+  rows.forEach(function (r, rowIndex) {
+    var tr = nestedTable.appendTableRow();
+    r.cells.forEach(function (text) { tr.appendTableCell(text); });
+    for (var c = 0; c < r.cells.length; c++) {
+      styleUnifiedCell_(tr.getCell(c), r, c, UNIFIED_CELL_PADDING_);
     }
     r.merges.forEach(function (m) {
       mergeSpecs.push({ rowIndex: rowIndex, startColumnIndex: m.startColumnIndex, columnSpan: m.columnSpan });
     });
   });
+  return { table: nestedTable, mergeSpecs: mergeSpecs, bannerText: rows[0].cells[0] };
+}
 
-  return { table: table, mergeSpecs: mergeSpecs, bannerText: allRows[0].cells[0] };
+/** Ancho de la tabla EXTERNA (Punto 11) — siempre 2 columnas: casi todo el
+ *  contenido (banners, veredictos, las grillas densas de cliente/equipo y
+ *  datos generales, Observaciones, Conclusión) ocupa las 2 fusionadas como
+ *  una sola fila ancha; solo las filas "resultados | criterios" de cada
+ *  sección (TTR/AT/BT/Aislamiento) usan las 2 columnas de verdad, una
+ *  tabla anidada distinta en cada una — así la tabla completa sigue siendo
+ *  UNA SOLA tabla de DocumentApp (mismo motivo que forzó la tabla única del
+ *  Punto 10: 2 tablas de nivel superior consecutivas siempre dejan un
+ *  espacio visible entre ellas, sin importar el layout de cada una). */
+var OUTER_TABLE_COLS_ = 2;
+
+/** Fila externa que ocupa las 2 columnas fusionadas con una tabla anidada
+ *  adentro (client/equipo, datos generales, Observaciones, Conclusión). */
+function outerNestedFullRow_(nestedRows) {
+  return { kind: 'nested-full', nestedRows: nestedRows };
+}
+/** Fila externa "resultados | criterios" — 2 tablas anidadas lado a lado,
+ *  SIN fusionar (esta es la fila que de verdad necesita las 2 columnas). */
+function outerNestedPairRow_(leftRows, rightRows) {
+  return { kind: 'nested-pair', leftRows: leftRows, rightRows: rightRows };
+}
+/** Fila externa de una sola línea de texto (veredicto de sección) —
+ *  fusionada a lo ancho, sin tabla anidada, igual que antes vivía
+ *  unifiedVerdictRow_ dentro de la tabla única. */
+function outerPlainRow_(text, role, verdictValue) {
+  return { kind: 'plain', text: text, role: role, verdictValue: verdictValue };
+}
+/** Fila externa con una imagen (gráfica de TTR) — fusionada a lo ancho. */
+function outerImageRow_(blob, widthPt, heightPt) {
+  return { kind: 'image', blob: blob, widthPt: widthPt, heightPt: heightPt };
+}
+
+/** Inserta la tabla EXTERNA de 2 columnas en `body`, justo ANTES de
+ *  `beforeChild` (el marcador `<<TABLA_RESULTADOS_ELECTRICOS>>` de la
+ *  plantilla — sin cambios en la plantilla misma, ver Punto 11 en
+ *  CLAUDE.md: el marcador ya soportaba insertar cualquier contenido ahí).
+ *  `outerRows` es un arreglo de descriptores outerNestedFullRow_/
+ *  outerNestedPairRow_/outerPlainRow_/outerImageRow_. Devuelve, además de
+ *  la tabla externa, un `nestedRegistry` (una entrada por tabla anidada
+ *  creada, con su `bannerText` único y sus propias `mergeSpecs`) para que
+ *  finalizeReportPdf_ se lo pase a applyOuterAndNestedMerges_. */
+function insertOuterResultsTable_(body, beforeChild, outerRows) {
+  if (outerRows.length === 0) return { table: null, outerMergeSpecs: [], nestedRegistry: [], outerMarkerText: null };
+
+  var insertIndex = body.getChildIndex(beforeChild);
+  var initialCells = outerRows.map(function (r) { return r.kind === 'plain' ? [r.text, ''] : ['', '']; });
+  var table = body.insertTable(insertIndex, initialCells);
+  table.setBorderColor(PDF_COLORS_.BORDER);
+
+  var outerMergeSpecs = [];
+  var nestedRegistry = [];
+
+  outerRows.forEach(function (r, rowIndex) {
+    var row = table.getRow(rowIndex);
+    if (r.kind === 'plain') {
+      styleUnifiedCell_(row.getCell(0), { role: r.role, verdictValue: r.verdictValue, labelCols: [0] }, 0, UNIFIED_CELL_PADDING_);
+      row.getCell(1).setPaddingTop(0).setPaddingBottom(0).setPaddingLeft(0).setPaddingRight(0);
+      outerMergeSpecs.push({ rowIndex: rowIndex, startColumnIndex: 0, columnSpan: OUTER_TABLE_COLS_ });
+    } else if (r.kind === 'image') {
+      var cell = row.getCell(0);
+      cell.setPaddingTop(2).setPaddingBottom(2).setPaddingLeft(2).setPaddingRight(2);
+      if (r.blob) {
+        var img = cell.appendImage(r.blob);
+        if (r.widthPt) img.setWidth(r.widthPt);
+        if (r.heightPt) img.setHeight(r.heightPt);
+      }
+      row.getCell(1).setPaddingTop(0).setPaddingBottom(0).setPaddingLeft(0).setPaddingRight(0);
+      outerMergeSpecs.push({ rowIndex: rowIndex, startColumnIndex: 0, columnSpan: OUTER_TABLE_COLS_ });
+    } else if (r.kind === 'nested-full') {
+      var nested = appendNestedTable_(row.getCell(0), r.nestedRows);
+      row.getCell(1).setPaddingTop(0).setPaddingBottom(0).setPaddingLeft(0).setPaddingRight(0);
+      nestedRegistry.push({ bannerText: nested.bannerText, mergeSpecs: nested.mergeSpecs });
+      outerMergeSpecs.push({ rowIndex: rowIndex, startColumnIndex: 0, columnSpan: OUTER_TABLE_COLS_ });
+    } else if (r.kind === 'nested-pair') {
+      var left = appendNestedTable_(row.getCell(0), r.leftRows);
+      var right = appendNestedTable_(row.getCell(1), r.rightRows);
+      nestedRegistry.push({ bannerText: left.bannerText, mergeSpecs: left.mergeSpecs });
+      nestedRegistry.push({ bannerText: right.bannerText, mergeSpecs: right.mergeSpecs });
+    }
+  });
+
+  return { table: table, outerMergeSpecs: outerMergeSpecs, nestedRegistry: nestedRegistry, outerMarkerText: nestedRegistry.length ? nestedRegistry[0].bannerText : null };
 }
 
 /** Punto 6 (2026-09-13): un solo pie de nota para TODA la tabla unificada
@@ -2603,42 +2828,96 @@ function appendUnifiedNoteFootnote_(body, table, notes) {
   p.setSpacingBefore(2).setSpacingAfter(6);
 }
 
-/** Fusiona celdas de la tabla única de resultados eléctricos — el único
- *  paso que DocumentApp no puede hacer, así que se hace vía
- *  Docs.Documents.batchUpdate sobre el documento YA guardado (mismo
- *  patrón que pinResultsTableHeaders_: ubicar por CONTENIDO, nunca por
- *  índice adivinado). Ubica la tabla buscando cuál tiene, en su fila 0
- *  celda 0, el texto EXACTO del primer banner (único por informe, ya que
- *  incluye cliente/fecha/instrumento). Nunca lanza — si por lo que sea no
- *  encuentra la tabla, el PDF igual se genera, solo sin fusionar. */
-function applyUnifiedTableMerges_(docId, bannerText, mergeSpecs) {
-  if (!bannerText || !mergeSpecs || mergeSpecs.length === 0) return;
-  var doc = Docs.Documents.get(docId);
-  var tableStartIndex = null;
-  (doc.body.content || []).forEach(function (el) {
-    if (tableStartIndex !== null || !el.table) return;
+/** Recorre TODO el contenido de un documento (Docs API avanzada) buscando
+ *  tablas, incluidas las ANIDADAS dentro de celdas de otra tabla — a
+ *  diferencia de antes (un solo nivel, `doc.body.content`), el layout de 2
+ *  columnas del Punto 11 mete tablas dentro de celdas de la tabla externa,
+ *  y `Docs.Documents.get` no las expone en el nivel superior: hay que bajar
+ *  a `tableCell.content` (que tiene la MISMA forma que `body.content`) para
+ *  encontrarlas — validado en vivo con el prototipo `testNestedTableMerge_`
+ *  (ya borrado, ver Punto 11 en CLAUDE.md). Cada tabla encontrada guarda su
+ *  propio `startIndex` (necesario para direccionarla en mergeTableCells) Y
+ *  `rootStartIndex` — el `startIndex` de la tabla de NIVEL SUPERIOR que la
+ *  contiene (si la tabla misma es de nivel superior, `rootStartIndex` es
+ *  igual a su propio `startIndex`) — así se puede ubicar la tabla externa
+ *  completa a partir de CUALQUIER tabla anidada que reconozcamos por texto,
+ *  sin depender de que la celda 0/fila 0 de la tabla externa tenga texto
+ *  (ya no lo tiene: ahora vive dentro de una tabla anidada). */
+function collectAllTables_(content, rootStartIndex, out) {
+  (content || []).forEach(function (el) {
+    if (!el.table) return;
+    var thisRoot = rootStartIndex === null ? el.startIndex : rootStartIndex;
     var row0 = el.table.tableRows[0];
     var cell0 = row0 && row0.tableCells[0];
-    if (cell0 && docsApiCellText_(cell0) === bannerText) tableStartIndex = el.startIndex;
+    out.push({
+      startIndex: el.startIndex,
+      rootStartIndex: thisRoot,
+      row0cell0Text: cell0 ? docsApiCellText_(cell0) : '',
+      row0cellCount: row0 ? row0.tableCells.length : 0
+    });
+    (el.table.tableRows || []).forEach(function (tr) {
+      (tr.tableCells || []).forEach(function (cell) {
+        collectAllTables_(cell.content, thisRoot, out);
+      });
+    });
   });
-  if (tableStartIndex === null) return;
+}
 
-  var requests = mergeSpecs.map(function (spec) {
-    return {
-      mergeTableCells: {
-        tableRange: {
-          tableCellLocation: {
-            tableStartLocation: { index: tableStartIndex },
-            rowIndex: spec.rowIndex,
-            columnIndex: spec.startColumnIndex
-          },
-          rowSpan: 1,
-          columnSpan: spec.columnSpan
-        }
-      }
-    };
+/** Fusiona celdas de la tabla EXTERNA de resultados eléctricos Y de cada
+ *  tabla ANIDADA dentro de ella (Punto 11) — DocumentApp no puede fusionar
+ *  ninguna de las dos, así que ambas se resuelven en el mismo
+ *  Docs.Documents.batchUpdate sobre el documento YA guardado (mismo patrón
+ *  que ya usaba applyUnifiedTableMerges_/pinResultsTableHeaders_: ubicar por
+ *  CONTENIDO, nunca por índice adivinado).
+ *
+ *  `outerMarkerText` es el `bannerText` de la PRIMERA tabla anidada
+ *  ('DATOS DEL CLIENTE Y DEL EQUIPO', única en el documento) — sirve para
+ *  ubicar la tabla externa indirectamente: se busca esa tabla anidada por
+ *  su texto, y su `rootStartIndex` ES el `startIndex` de la tabla externa
+ *  que la contiene. Cada entrada de `nestedRegistry` se ubica igual, por su
+ *  propio `bannerText` único. Nunca lanza — si por lo que sea no encuentra
+ *  alguna tabla, esa fusión en particular se omite, el PDF igual se genera. */
+function applyOuterAndNestedMerges_(docId, outerMarkerText, outerMergeSpecs, nestedRegistry) {
+  if (!outerMarkerText) return;
+  var doc = Docs.Documents.get(docId);
+  var allTables = [];
+  collectAllTables_(doc.body.content, null, allTables);
+
+  var requests = [];
+  var outerCandidate = allTables.filter(function (t) { return t.row0cell0Text === outerMarkerText; })[0];
+  if (outerCandidate && outerMergeSpecs && outerMergeSpecs.length) {
+    outerMergeSpecs.forEach(function (spec) {
+      requests.push(mergeTableCellsRequest_(outerCandidate.rootStartIndex, spec));
+    });
+  }
+
+  (nestedRegistry || []).forEach(function (entry) {
+    if (!entry.mergeSpecs || entry.mergeSpecs.length === 0) return;
+    var match = allTables.filter(function (t) { return t.row0cell0Text === entry.bannerText; })[0];
+    if (!match) return;
+    entry.mergeSpecs.forEach(function (spec) {
+      requests.push(mergeTableCellsRequest_(match.startIndex, spec));
+    });
   });
+
+  if (requests.length === 0) return;
   Docs.Documents.batchUpdate({ requests: requests }, docId);
+}
+
+function mergeTableCellsRequest_(tableStartIndex, spec) {
+  return {
+    mergeTableCells: {
+      tableRange: {
+        tableCellLocation: {
+          tableStartLocation: { index: tableStartIndex },
+          rowIndex: spec.rowIndex,
+          columnIndex: spec.startColumnIndex
+        },
+        rowSpan: 1,
+        columnSpan: spec.columnSpan
+      }
+    }
+  };
 }
 
 /** `iso` puede llegar como string o como Date real (autoconversión de
@@ -3066,11 +3345,18 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
   // dispositivo/navegador (ver "Convenciones de frontend" en CLAUDE.md).
   // Con fallback a tested_by para pruebas viejas que no tenían este campo.
   var tecnicoResponsable = signedTest.operador_nombre || signedTest.tested_by || '—';
-  var sections = [
-    buildClientEquipoUnifiedRows_(site, transformer),
-    buildSharedMetaUnifiedRows_(fmtDatePdf_(signedTest.created_at), tecnicoResponsable)
+  var ambienteTempText = signedTest.temperatura_ambiente ? (signedTest.temperatura_ambiente + ' °C') : null;
+  var ambienteHumedadText = signedTest.humedad_relativa ? (signedTest.humedad_relativa + ' %') : null;
+  var outerRows = [
+    outerNestedFullRow_(buildClientEquipoUnifiedRows_(site, transformer)),
+    outerNestedFullRow_(buildSharedMetaUnifiedRows_(fmtDatePdf_(signedTest.created_at), tecnicoResponsable, ambienteTempText, ambienteHumedadText))
   ];
   var allNotes = [];
+  // Punto 11 (2026-09-14): APROBADO general = TODAS las secciones
+  // presentes APROBADAS — alimenta la Conclusión General con checkbox al
+  // final de la tabla (buildConclusionRows_), no reemplaza ningún
+  // veredicto individual, solo los combina.
+  var allVerdicts = [];
 
   if (present.indexOf('TTR') !== -1) {
     var ttrRow = latest.TTR;
@@ -3083,8 +3369,11 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
     }
     var ttrCal = findMatchingCalibracionServer_(ttrRow.instrument_used);
     var ttrInstrumento = 'Instrumento: ' + (ttrRow.instrument_used || '—') + (ttrCal ? ' (' + ttrCal.estado + ')' : '');
-    sections.push(buildTtrUnifiedSection_(ttrCalc, esMonofasico, ttrInstrumento, ttrWarning));
-    sections.push([unifiedVerdictRow_('Veredicto', ttrCalc.overallVerdict)]);
+    outerRows.push(outerNestedPairRow_(buildTtrUnifiedSection_(ttrCalc, esMonofasico, ttrInstrumento, ttrWarning), buildTtrCriteriaRows_()));
+    var ttrChartBlob = buildTtrDeviationChart_(ttrCalc, esMonofasico);
+    if (ttrChartBlob) outerRows.push(outerImageRow_(ttrChartBlob, 340, 177));
+    outerRows.push(outerPlainRow_('Veredicto: ' + ttrCalc.overallVerdict, 'verdict', ttrCalc.overallVerdict));
+    allVerdicts.push(ttrCalc.overallVerdict);
     allNotes = allNotes.concat(collectTtrUnifiedNotes_(ttrCalc));
   }
 
@@ -3102,14 +3391,22 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
     // aquí con la MISMA fórmula que usa internamente (every tap
     // APROBADO); el secundario sí trae su propio `verdict` directo.
     if (wrCalc.taps && wrCalc.taps.length > 0) {
-      sections.push(buildWindingSideUnifiedRows_('ALTA TENSIÓN (AT)', wrCalc.taps, esMonofasico, transformer.at_devanado_material, wrInstrumento, WINDING_PHASE_ORDER_));
+      outerRows.push(outerNestedPairRow_(
+        buildWindingSideUnifiedRows_('ALTA TENSIÓN (AT)', wrCalc.taps, esMonofasico, transformer.at_devanado_material, wrInstrumento, WINDING_PHASE_ORDER_),
+        buildWindingCriteriaRows_('AT')
+      ));
       var atVerdict = wrCalc.taps.every(function (t) { return t.tapVerdict === 'APROBADO'; }) ? 'APROBADO' : 'RECHAZADO';
-      sections.push([unifiedVerdictRow_('Veredicto AT', atVerdict)]);
+      outerRows.push(outerPlainRow_('Veredicto AT: ' + atVerdict, 'verdict', atVerdict));
+      allVerdicts.push(atVerdict);
       allNotes = allNotes.concat(collectWindingSideUnifiedNotes_('AT', wrCalc.taps));
     }
     if (wrCalc.secondary) {
-      sections.push(buildWindingSideUnifiedRows_('BAJA TENSIÓN (BT)', [wrCalc.secondary], esMonofasico, transformer.bt_devanado_material, wrInstrumento, WINDING_SECONDARY_PHASE_ORDER_));
-      sections.push([unifiedVerdictRow_('Veredicto BT', wrCalc.secondary.verdict)]);
+      outerRows.push(outerNestedPairRow_(
+        buildWindingSideUnifiedRows_('BAJA TENSIÓN (BT)', [wrCalc.secondary], esMonofasico, transformer.bt_devanado_material, wrInstrumento, WINDING_SECONDARY_PHASE_ORDER_),
+        buildWindingCriteriaRows_('BT')
+      ));
+      outerRows.push(outerPlainRow_('Veredicto BT: ' + wrCalc.secondary.verdict, 'verdict', wrCalc.secondary.verdict));
+      allVerdicts.push(wrCalc.secondary.verdict);
       allNotes = allNotes.concat(collectWindingSideUnifiedNotes_('BT', [wrCalc.secondary]));
     }
   }
@@ -3121,19 +3418,20 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
     var aisCal = findMatchingCalibracionServer_(aisRow.instrument_used);
     var aisInstrumento = 'Instrumento: ' + (aisRow.instrument_used || '—') + (aisCal ? ' (' + aisCal.estado + ')' : '');
     var aisTension = aisRaw && aisRaw.tension_prueba_v ? (aisRaw.tension_prueba_v + ' V') : null;
-    sections.push(buildInsulationUnifiedRows_(aisCalc, aisInstrumento, aisTension));
-    sections.push([unifiedVerdictRow_('Veredicto', aisCalc.overallVerdict)]);
-    // Leyenda de rangos DAR/IP (2026-09-13) — solo aplica al método
-    // Completo, Simple no calcula DAR/IP.
-    if (aisCalc.metodo !== 'simple') {
-      sections.push(buildDarIpLegendRows_());
-    }
+    var aisEsSimple = aisCalc.metodo === 'simple';
+    outerRows.push(outerNestedPairRow_(buildInsulationUnifiedRows_(aisCalc, aisInstrumento, aisTension), buildInsulationCriteriaRows_(aisEsSimple)));
+    outerRows.push(outerPlainRow_('Veredicto: ' + aisCalc.overallVerdict, 'verdict', aisCalc.overallVerdict));
+    allVerdicts.push(aisCalc.overallVerdict);
     allNotes = allNotes.concat(collectInsulationUnifiedNotes_(aisCalc));
   }
 
+  outerRows.push(outerNestedFullRow_(buildObservacionesRows_()));
+  var conclusionVerdict = allVerdicts.length && allVerdicts.every(function (v) { return String(v).indexOf('APROBADO') === 0; }) ? 'APROBADO' : 'RECHAZADO';
+  outerRows.push(outerNestedFullRow_(buildConclusionRows_(conclusionVerdict)));
+
   var tablePlaceholderPar = findMarkerParagraph_(body, '<<TABLA_RESULTADOS_ELECTRICOS>>');
   if (!tablePlaceholderPar) throw new Error('La plantilla no tiene el marcador de la tabla de resultados — regenera las plantillas desde Administración.');
-  var tableResult = insertUnifiedResultsTable_(body, tablePlaceholderPar, sections);
+  var tableResult = insertOuterResultsTable_(body, tablePlaceholderPar, outerRows);
   body.removeChild(tablePlaceholderPar);
   appendUnifiedNoteFootnote_(body, tableResult.table, allNotes);
 
@@ -3148,7 +3446,7 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
   body.replaceText('<<CERTIFICADO_POR_FECHA>>', fmtDatePdf_(signedTest.revisado_at));
 
   var fileName = 'Informe_Electrico_' + transformer.serial_number + '_' + fmtTimestampForFilename_(new Date());
-  var saved = finalizeReportPdf_(doc, folderId, fileName, { bannerText: tableResult.bannerText, mergeSpecs: tableResult.mergeSpecs });
+  var saved = finalizeReportPdf_(doc, folderId, fileName, { outerMarkerText: tableResult.outerMarkerText, outerMergeSpecs: tableResult.outerMergeSpecs, nestedRegistry: tableResult.nestedRegistry });
 
   getSheet_('TRANSFORMADORES').getRange(transformer._row, colIndex_('TRANSFORMADORES', 'electrical_report_file_id')).setValue(saved.fileId);
 
@@ -3273,7 +3571,7 @@ function finalizeReportPdf_(doc, folderId, fileName, unifiedTableMerge) {
   if (footer) footer.replaceText('<<FECHA_GENERACION>>', fmtDatePdf_(new Date().toISOString()));
   doc.saveAndClose();
   if (unifiedTableMerge) {
-    try { applyUnifiedTableMerges_(doc.getId(), unifiedTableMerge.bannerText, unifiedTableMerge.mergeSpecs); }
+    try { applyOuterAndNestedMerges_(doc.getId(), unifiedTableMerge.outerMarkerText, unifiedTableMerge.outerMergeSpecs, unifiedTableMerge.nestedRegistry); }
     catch (mergeErr) { /* No relanzar — el PDF igual se genera, solo sin fusionar celdas. */ }
   }
   try { pinResultsTableHeaders_(doc.getId()); } catch (pinErr) { /* No relanzar — el PDF igual se genera sin encabezado repetido. */ }
@@ -3351,15 +3649,24 @@ function docsApiCellText_(cell) {
  * para el eléctrico) por si algún otro documento futuro sí tiene una tabla
  * con alguna de estas formas.
  */
+/** Punto 11 (2026-09-14): desde el layout de 2 columnas, TTR/Devanados/
+ *  Aislamiento ya NO son tablas de nivel superior — son tablas ANIDADAS
+ *  dentro de la tabla externa (ver "Tabla EXTERNA de 2 columnas" más
+ *  arriba). `pinTableHeaderRows` sigue funcionando igual sobre una tabla
+ *  anidada (se direcciona por su propio `startIndex`, mismo mecanismo que
+ *  las fusiones — ver applyOuterAndNestedMerges_), pero HAY que buscarlas
+ *  con collectAllTables_ (recursivo) en vez de solo `doc.body.content`
+ *  (antes alcanzaba porque todas eran de nivel superior) — si no, esta
+ *  función queda inerte para el eléctrico (regresión real: se detectó al
+ *  extender esto al layout de 2 columnas, corregida en el mismo cambio). */
 function pinResultsTableHeaders_(docId) {
   var doc = Docs.Documents.get(docId);
+  var allTables = [];
+  collectAllTables_(doc.body.content, null, allTables);
   var requests = [];
-  (doc.body.content || []).forEach(function (el) {
-    if (!el.table) return;
-    var headerRow = el.table.tableRows[0];
-    if (!headerRow) return;
-    var cellCount = headerRow.tableCells.length;
-    var firstCellText = docsApiCellText_(headerRow.tableCells[0]);
+  allTables.forEach(function (t) {
+    var cellCount = t.row0cellCount;
+    var firstCellText = t.row0cell0Text;
     // Punto 7 (2026-09-13): TTR compacto agrega las formas de 7 columnas
     // (trifásico) y 5 columnas (monofásico) con 'TAP'. Punto 8: Devanados
     // compacto agrega 6 columnas (trifásico, primario) y 4 columnas
@@ -3379,7 +3686,7 @@ function pinResultsTableHeaders_(docId) {
     if (!isResultsHeader) return;
     requests.push({
       pinTableHeaderRows: {
-        tableStartLocation: { index: el.startIndex },
+        tableStartLocation: { index: t.startIndex },
         pinnedHeaderRowsCount: 1
       }
     });

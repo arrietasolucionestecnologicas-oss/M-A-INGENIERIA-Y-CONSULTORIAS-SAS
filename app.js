@@ -2694,6 +2694,8 @@ function buildTtrRequestBody() {
     transformer_id: state.currentTransformerId,
     instrument_used: document.getElementById('ttrInstrument').value,
     operador_nombre: getOperatorName_(),
+    temperatura_ambiente: document.getElementById('ttrTempAmbiente').value,
+    humedad_relativa: document.getElementById('ttrHumedad').value,
     readings: { testVoltageV: parseDecimal_(document.getElementById('ttrVoltage').value) || null, measurements: measurements }
   };
 }
@@ -3028,6 +3030,8 @@ function buildWindingRequestBody() {
     transformer_id: state.currentTransformerId,
     instrument_used: document.getElementById('wrInstrument').value,
     operador_nombre: getOperatorName_(),
+    temperatura_ambiente: document.getElementById('wrTempAmbiente').value,
+    humedad_relativa: document.getElementById('wrHumedad').value,
     readings: {
       measurements: state.wr.primario_realizado !== false ? taps.map(function (p) {
         var tap = state.wr.readings[p];
@@ -3602,6 +3606,8 @@ function buildInsulationRequestBody() {
     transformer_id: state.currentTransformerId,
     instrument_used: document.getElementById('insulationInstrument').value,
     operador_nombre: getOperatorName_(),
+    temperatura_ambiente: document.getElementById('insulationTempAmbiente').value,
+    humedad_relativa: document.getElementById('insulationHumedad').value,
     readings: {
       metodo: state.insulation.metodo,
       tension_prueba_v: state.insulation.tension_prueba_v,
