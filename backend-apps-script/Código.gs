@@ -2488,6 +2488,35 @@ function collectInsulationUnifiedNotes_(calc) {
   return notes;
 }
 
+/** Leyenda de rangos DAR/IP (2026-09-13, a pedido explícito del cliente
+ *  tras compartir el formato de otra empresa que sí la muestra) — para
+ *  que quien lea el PDF entienda de dónde sale CALIF. DAR/CALIF. IP sin
+ *  tener que preguntar. Solo se agrega cuando el método es Completo
+ *  (Simple no calcula DAR/IP, no aplica). Los umbrales son EXACTAMENTE
+ *  los mismos que ya usan `darRating_`/`ipRating_` para decidir el
+ *  resultado real — esto solo los imprime, no inventa una escala nueva. */
+function buildDarIpLegendRows_() {
+  var rows = [unifiedBannerRow_('CALIFICACIÓN DAR / IP — RANGOS DE REFERENCIA')];
+  var merges = [{ startColumnIndex: 0, columnSpan: 2 }, { startColumnIndex: 4, columnSpan: 2 }];
+  var tiers = [
+    { darRange: '< 1.0', ipRange: '< 1.0', label: 'MALO', bg: PDF_COLORS_.DANGER_BG, fg: PDF_COLORS_.DANGER },
+    { darRange: '1.0 – 1.25', ipRange: '1.0 – 2.0', label: 'CUESTIONABLE', bg: PDF_COLORS_.WARNING_BG, fg: PDF_COLORS_.WARNING },
+    { darRange: '1.25 – 1.6', ipRange: '2.0 – 4.0', label: 'BUENO', bg: PDF_COLORS_.SUCCESS_BG, fg: PDF_COLORS_.SUCCESS },
+    { darRange: '≥ 1.6', ipRange: '≥ 4.0', label: 'EXCELENTE', bg: PDF_COLORS_.SUCCESS_BG, fg: PDF_COLORS_.SUCCESS }
+  ];
+  tiers.forEach(function (t) {
+    var cells = new Array(UNIFIED_TABLE_COLS_).fill('');
+    cells[0] = 'DAR ' + t.darRange;
+    cells[2] = t.label;
+    cells[4] = 'IP ' + t.ipRange;
+    cells[6] = t.label;
+    var row = unifiedRow_(cells, 'legend', merges);
+    row.coloredCols = [{ col: 2, bg: t.bg, fg: t.fg }, { col: 6, bg: t.bg, fg: t.fg }];
+    rows.push(row);
+  });
+  return rows;
+}
+
 /** Inserta la tabla unificada completa en `body`, justo ANTES de
  *  `beforeChild` (el marcador de posición `<<TABLA_RESULTADOS_ELECTRICOS>>`
  *  que trae la plantilla — nunca "Área de Control de Calidad" en sí, que
@@ -2529,6 +2558,14 @@ function insertUnifiedResultsTable_(body, beforeChild, sections) {
           cell.editAsText().setBold(true).setFontSize(UNIFIED_FONT_DATA_).setForegroundColor(PDF_COLORS_.TEXT);
         } else {
           cell.editAsText().setBold(false).setFontSize(UNIFIED_FONT_DATA_).setForegroundColor(PDF_COLORS_.TEXT);
+        }
+      } else if (r.role === 'legend') {
+        var colorSpec = (r.coloredCols || []).filter(function (cc) { return cc.col === c; })[0];
+        if (colorSpec) {
+          cell.setBackgroundColor(colorSpec.bg);
+          cell.editAsText().setBold(true).setFontSize(UNIFIED_FONT_DATA_).setForegroundColor(colorSpec.fg);
+        } else {
+          cell.editAsText().setBold(false).setFontSize(UNIFIED_FONT_DATA_).setForegroundColor(PDF_COLORS_.TEXT_MUTED);
         }
       } else {
         cell.editAsText().setFontSize(UNIFIED_FONT_DATA_).setBold(false).setForegroundColor(PDF_COLORS_.TEXT);
@@ -3067,6 +3104,11 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
     var aisTension = aisRaw && aisRaw.tension_prueba_v ? (aisRaw.tension_prueba_v + ' V') : null;
     sections.push(buildInsulationUnifiedRows_(aisCalc, aisInstrumento, aisTension));
     sections.push([unifiedVerdictRow_('Veredicto', aisCalc.overallVerdict)]);
+    // Leyenda de rangos DAR/IP (2026-09-13) — solo aplica al método
+    // Completo, Simple no calcula DAR/IP.
+    if (aisCalc.metodo !== 'simple') {
+      sections.push(buildDarIpLegendRows_());
+    }
     allNotes = allNotes.concat(collectInsulationUnifiedNotes_(aisCalc));
   }
 
