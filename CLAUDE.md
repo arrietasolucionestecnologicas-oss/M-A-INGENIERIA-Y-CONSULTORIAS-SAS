@@ -38,9 +38,10 @@ compacto del PDF) necesitan que 2/3/4/5 ya existan primero.
    abajo).
 10. [x] **Compactación + tabla única de resultados eléctricos**
     (2026-09-13, extra — ver detalle abajo, "Punto 10").
-11. [~] **Rediseño a formato corporativo de 2 columnas — implementado
-    2026-09-14, pendiente verificación en vivo** (extra — ver "Punto 11"
-    abajo para el detalle completo de qué se construyó y qué falta
+11. [x] **Rediseño a formato corporativo de 2 columnas — verificado en
+    vivo 2026-09-14, coincide con la referencia real del cliente**
+    (extra — ver "Punto 11" abajo para el detalle completo de qué se
+    construyó y qué falta
     probar).
 
 **Objetivo general**: que el informe eléctrico completo (TTR + Devanados +
@@ -706,15 +707,92 @@ vive ENTERO en qué se inserta ahí — la plantilla no necesitó ningún
 cambio, así que el encabezado/pie de página que el cliente ya agregó a
 mano en la plantilla real **no se pierde ni hay que regenerar nada**.
 
-**Pendiente real**: verificación en vivo (generar un informe combinado
-real con TAPs/Aislamiento reales y confirmar visualmente que el layout
-de 2 columnas, la gráfica, los paneles de criterios y la Conclusión se
-ven bien y que sigue cabiendo en 1 sola página — el layout de 2 columnas
-probablemente YA NO quepa en 1 sola hoja con letra a 5pt como el Punto
-10, dado que ahora cada sección ocupa más alto (tabla de resultados +
-tabla de criterios en paralelo, cada una con su propio banner/encabezado)
-en vez de compartir una sola tabla continua — esto hay que verlo en
-vivo, no se puede afirmar de antemano).
+**Verificado en vivo 2026-09-14** (equipo `DEMO-COMPLETO-01`, TTR +
+Devanados + Aislamiento): el informe combinado real quedó en **2
+páginas, no 1** — confirmado el riesgo que se había anticipado antes de
+probar (cada sección ocupa más alto en 2 columnas que en la tabla plana
+del Punto 10). El cliente vio ese resultado y no pidió volver a 1 sola
+página — lo aceptó a cambio del layout corporativo — así que **2
+páginas queda como el resultado final, no un pendiente**.
+
+**Ronda 2 (2026-09-14) — ajustada sobre una referencia real que compartió
+el cliente**, no la imagen genérica original. Cambios reales sobre la
+primera versión de este punto (que sí llegó a probarse en vivo, ver
+arriba, pero el cliente pidió acercarla más a un protocolo real de otra
+empresa):
+
+- **Secciones numeradas 1-12**, sin huecos aunque falte TTR/Devanados/
+  Aislamiento — contador simple (`numberSection_`) que prefija el número
+  al banner de cada sección en tiempo de generación, nunca fijo en las
+  funciones `build*_` (esas siguen sin saber su propio número).
+- **TTR ahora empareja con su gráfica** (`outerPairTableImageRow_`), NO
+  con un panel de criterios — se quitó `buildTtrCriteriaRows_` (ya no
+  se usa, la referencia real no trae un panel de criterios para TTR).
+- **AT y BT ahora van lado a lado ENTRE SÍ** (no cada uno con su propio
+  panel de criterios) — `buildWindingCriteriaRows_` (2 niveles, por
+  lado) se reemplazó por `buildWindingCriteriaTable3Tier_`, una sola
+  tabla de criterios a todo lo ancho DESPUÉS de AT/BT, con la escala de
+  3 niveles (≤1 %/1-3 %/>3 %) de la imagen de referencia original — sigue
+  siendo SOLO visual, el umbral real de 5 % no cambió.
+- **El veredicto de cada sección volvió a vivir DENTRO de su propia
+  tabla anidada** (`nestedVerdictRow_`, el mismo criterio que ya usaba
+  `unifiedVerdictRow_` antes del Punto 11), no como fila aparte de la
+  tabla externa — así queda debajo de los resultados de AT, debajo de
+  BT, debajo de TTR y debajo de Aislamiento, cada uno en su propia
+  columna, igual que la referencia real.
+- **Colores por CELDA, no solo por fila de veredicto** — `verdictCellColor_`
+  detecta el texto de cada celda de datos (APROBADO/RECHAZADO, MALO/
+  CUESTIONABLE/BUENO/EXCELENTE, ACEPTABLE/NO ACEPTABLE) y la colorea
+  igual que ya coloreaba el banner de veredicto — ahora cada fila de
+  ESTADO/CALIF. en las tablas de resultados se ve verde/amarillo/rojo,
+  como en la referencia real.
+- **"2. DATOS GENERALES DE LA PRUEBA" reescrita** (`buildDatosGeneralesUnifiedRows_`,
+  reemplaza a `buildSharedMetaUnifiedRows_`): columna izquierda FECHA/
+  TÉCNICO/TEMP/HUMEDAD/**ESTADO DEL EQUIPO** (este último es
+  `transformer.estado_equipo`, dato que YA existía — Activo/Fuera de
+  servicio/Dado de baja, no hizo falta agregar ningún campo nuevo);
+  columna derecha con una línea POR CADA instrumento realmente usado
+  (`buildInstrumentLine_`: modelo + N° de serie + fecha de última
+  calibración, cruzando con el catálogo de Calibraciones vía
+  `findMatchingCalibracionServer_`, que ahora también devuelve
+  `fecha_ultima_calibracion`) + NORMAS DE REFERENCIA (calculadas: IEEE
+  C57.12.90 si hay TTR o Devanados, IEEE C57.152 si hay Aislamiento).
+- **"10. OBSERVACIONES" con párrafo generado, no líneas en blanco** — la
+  primera versión de este punto dejaba espacio para escribir a mano;
+  la referencia real trae una frase redactada con lo que ya se sabe
+  (qué pruebas se hicieron, estado del equipo, normas, si el resultado
+  combinado fue aceptable) — `buildObservacionesRows_` la arma, no
+  inventa ningún dato nuevo.
+- **"12. ÁREA DE CONTROL DE CALIDAD" numerada sin tocar la plantilla** —
+  el título de esa sección lo arma `appendSignatureSection_` (compartida
+  con Aceite, texto horneado en la plantilla, en MAYÚSCULAS vía
+  `appendSectionTitle_`), así que se numera con un `body.replaceText('ÁREA
+  DE CONTROL DE CALIDAD', n + '. ÁREA DE CONTROL DE CALIDAD')` al final
+  de `regenerateElectricalCombinedReport_` — el número real depende de
+  cuántas secciones vinieron antes en ESE informe, así que no se puede
+  fijar en la plantilla.
+
+**Verificado en vivo 2026-09-14 (ronda 2)**: mismo equipo demo, coincide
+en estructura con la referencia real del cliente — numeración 1-12
+correcta, TTR+gráfica, AT+BT lado a lado con celdas coloreadas,
+criterios de Devanados a 3 niveles, DAR/IP junto a Aislamiento,
+Observaciones con la frase generada, Conclusión con checkbox, y "12."
+numerado correctamente sobre la sección de firmas — sin tocar la
+plantilla, sin regenerarla.
+
+**Pendiente real — no implementado, requiere decisión del cliente**:
+espacio reservado para foto de transformador + caja de control de
+documento (CÓDIGO/VERSIÓN/FECHA/PÁGINA) que se ve en la referencia real,
+arriba a la derecha del título. A diferencia de todo lo demás en esta
+ronda, esto SÍ requeriría tocar la plantilla en sí (`buildElectricalTemplateDoc_`
+arma el título como una sola barra ancha, sin ninguna columna reservada
+para una imagen) — dos caminos: (a) regenerar la plantilla completa
+(pierde el watermark/encabezado/pie que el cliente ya agregó a mano, hay
+que rehacerlos después) o (b) una función puntual que abra la plantilla
+YA EXISTENTE y solo reestructure el título (agregar una celda vacía al
+lado, sin tocar nada más) — más seguro, no se ha escrito todavía porque
+falta confirmar con el cliente si de verdad lo quiere antes de arriesgar
+su plantilla actual.
 
 **Costo/infraestructura** (aclarado explícitamente al cliente, que
 preguntó): $0 en servicios externos — todo corre dentro de la misma

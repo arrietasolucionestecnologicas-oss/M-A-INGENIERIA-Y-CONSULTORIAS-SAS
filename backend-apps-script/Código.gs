@@ -1878,7 +1878,11 @@ function findMatchingCalibracionServer_(instrumentText) {
     var isMatch = (modelo.length >= 3 && (normalized.indexOf(modelo) !== -1 || modelo.indexOf(normalized) !== -1)) ||
                   (serie.length >= 3 && (normalized.indexOf(serie) !== -1 || serie.indexOf(normalized) !== -1));
     if (isMatch) {
-      return { modelo: row.modelo, numero_serie: row.numero_serie, estado: computeCalibracionEstado_(row.fecha_proxima_calibracion) };
+      return {
+        modelo: row.modelo, numero_serie: row.numero_serie,
+        estado: computeCalibracionEstado_(row.fecha_proxima_calibracion),
+        fecha_ultima_calibracion: row.fecha_ultima_calibracion
+      };
     }
   }
   return null;
@@ -2227,6 +2231,34 @@ function unifiedLabelRow_(cells, labelCols, merges) {
   return row;
 }
 
+/** Fila de veredicto — Punto 11, ronda 2 (2026-09-14): el cliente compartió
+ *  una referencia real donde el veredicto de cada sección vive DENTRO de su
+ *  propia tabla (justo debajo de sus datos), no en una fila aparte a lo
+ *  ancho de las 2 columnas externas. Se agrega al FINAL del arreglo de filas
+ *  de cada sección (`build*UnifiedSection_`/`build*UnifiedRows_`) antes de
+ *  pasarlo como contenido de la tabla ANIDADA — mismo rol/color que ya
+ *  usaba `appendVerdictBanner_`, solo que ahora fusionado dentro de las 7
+ *  columnas lógicas de la tabla anidada, no de la tabla externa. */
+function nestedVerdictRow_(label, verdict) {
+  var cells = new Array(UNIFIED_TABLE_COLS_).fill('');
+  cells[0] = label + ': ' + verdict;
+  var row = unifiedRow_(cells, 'verdict', [{ startColumnIndex: 0, columnSpan: UNIFIED_TABLE_COLS_ }]);
+  row.verdictValue = verdict;
+  return row;
+}
+
+/** Prefija el número de sección (1, 2, 3...) al banner de un bloque de filas
+ *  — Punto 11, ronda 2: la referencia real del cliente numera cada sección
+ *  (1-12), pero las secciones eléctricas son condicionales (TTR/Devanados/
+ *  Aislamiento, cada uno puede faltar según lo ofertado), así que el número
+ *  se calcula en tiempo de generación con un contador simple en vez de
+ *  quedar fijo en cada build*_ — un informe con solo Aislamiento numera esa
+ *  sección "3." en vez de dejar huecos "8."/"9." sin usar. */
+function numberSection_(rows, num) {
+  if (rows && rows.length) rows[0].cells[0] = num + '. ' + rows[0].cells[0];
+  return rows;
+}
+
 /** "Datos del cliente y del equipo" como filas de la tabla única — mismos
  *  6 pares etiqueta/valor de siempre (ver appendClientEquipoGrid_, que
  *  sigue existiendo tal cual solo para Aceite), repartidos en las 7
@@ -2261,24 +2293,51 @@ function buildClientEquipoUnifiedRows_(site, transformer) {
  *  ANTES de armar esta fila, no después como antes), así que no hace
  *  falta ningún placeholder ni body.replaceText() para esto. NORMA es
  *  literal, nunca cambia. */
-function buildSharedMetaUnifiedRows_(fechaText, tecnicoText, tempText, humedadText) {
-  var cells = new Array(UNIFIED_TABLE_COLS_).fill('');
-  cells[0] = 'FECHA'; cells[1] = fechaText;
-  cells[2] = 'TÉCNICO RESPONSABLE'; cells[3] = tecnicoText;
-  cells[4] = 'NORMA DE REFERENCIA'; cells[5] = 'IEEE C57.12.90';
-  var merges = [{ startColumnIndex: 5, columnSpan: 2 }];
-  var rows = [unifiedBannerRow_('DATOS GENERALES DE LA PRUEBA'), unifiedLabelRow_(cells, [0, 2, 4], merges)];
-
-  // Punto 11 (2026-09-14): temperatura ambiente / humedad relativa — campos
-  // nuevos, acordados explícitamente con el cliente (ver CLAUDE.md). Se
-  // toman de la MISMA prueba (`signedTest`) que ya da FECHA/TÉCNICO arriba
-  // — un valor por envío, igual que instrument_used.
-  var ambCells = new Array(UNIFIED_TABLE_COLS_).fill('');
-  ambCells[0] = 'TEMP. AMBIENTE'; ambCells[1] = tempText || '—';
-  ambCells[3] = 'HUMEDAD RELATIVA'; ambCells[4] = humedadText || '—';
-  var ambMerges = [{ startColumnIndex: 1, columnSpan: 2 }, { startColumnIndex: 4, columnSpan: 3 }];
-  rows.push(unifiedLabelRow_(ambCells, [0, 3], ambMerges));
+/** "Datos generales de la prueba" — reescrita (Punto 11, ronda 2,
+ *  2026-09-14) sobre la referencia real que compartió el cliente: columna
+ *  izquierda siempre con 5 filas fijas (FECHA/TÉCNICO/TEMP/HUMEDAD/ESTADO
+ *  DEL EQUIPO — este último es `transformer.estado_equipo`, dato que YA
+ *  existía en el modelo, no hizo falta agregarlo); columna derecha con una
+ *  línea POR CADA instrumento realmente usado (`instrumentLines`, ya
+ *  filtrada por el llamador a solo los tipos de prueba presentes) más
+ *  NORMAS DE REFERENCIA al final. N° de serie y fecha de última
+ *  calibración se doblan en el mismo texto de cada línea de instrumento
+ *  (`buildInstrumentLine_`) en vez de columnas propias — la referencia
+ *  traía una fila "FECHA DE CALIBRACIÓN" separada, pero como cada
+ *  instrumento puede tener la suya propia, una sola fila compartida sería
+ *  ambigua con 2-3 instrumentos distintos. */
+function buildDatosGeneralesUnifiedRows_(fechaText, tecnicoText, tempText, humedadText, estadoEquipoText, instrumentLines, normasText) {
+  var leftLabels = [
+    ['FECHA DE PRUEBA', fechaText],
+    ['TÉCNICO RESPONSABLE', tecnicoText],
+    ['TEMPERATURA AMBIENTE', tempText || '—'],
+    ['HUMEDAD RELATIVA', humedadText || '—'],
+    ['ESTADO DEL EQUIPO', estadoEquipoText]
+  ];
+  var rightLabels = instrumentLines.concat([['NORMAS DE REFERENCIA', normasText]]);
+  var rowCount = Math.max(leftLabels.length, rightLabels.length);
+  var pairMerges = [{ startColumnIndex: 1, columnSpan: 2 }, { startColumnIndex: 4, columnSpan: 3 }];
+  var rows = [unifiedBannerRow_('DATOS GENERALES DE LA PRUEBA')];
+  for (var i = 0; i < rowCount; i++) {
+    var cells = new Array(UNIFIED_TABLE_COLS_).fill('');
+    var l = leftLabels[i], rr = rightLabels[i];
+    if (l) { cells[0] = l[0]; cells[1] = l[1]; }
+    if (rr) { cells[3] = rr[0]; cells[4] = rr[1]; }
+    rows.push(unifiedLabelRow_(cells, [0, 3], pairMerges));
+  }
   return rows;
+}
+
+/** Una línea "INSTRUMENTO X: modelo · N° serie · Cal: fecha" — usada por
+ *  las 3 filas condicionales de instrumento en Datos Generales. `cal` es
+ *  el resultado de `findMatchingCalibracionServer_` (o `null` si el texto
+ *  libre de `instrument_used` no cruzó con ningún instrumento del catálogo
+ *  de Calibraciones — pasa igual, solo sin N° serie/fecha). */
+function buildInstrumentLine_(instrumentText, cal) {
+  var parts = [instrumentText || '—'];
+  if (cal && cal.numero_serie) parts.push('N° ' + cal.numero_serie);
+  if (cal && cal.fecha_ultima_calibracion) parts.push('Cal: ' + fmtDatePdf_(cal.fecha_ultima_calibracion));
+  return parts.join(' · ');
 }
 
 /** TTR — banner + encabezado + 1 fila por TAP. Mismo criterio de
@@ -2534,38 +2593,34 @@ function buildDarIpLegendRows_() {
  *  decide RECHAZADO ya vive en calculateTtr_/lo que llegue en
  *  `calc.taps[].phases[].status` — esto solo IMPRIME esa referencia, no
  *  inventa una nueva. */
-function buildTtrCriteriaRows_() {
-  var rows = [unifiedBannerRow_('CRITERIO DE ACEPTACIÓN — TTR')];
-  var fullMerge = [{ startColumnIndex: 0, columnSpan: UNIFIED_TABLE_COLS_ }];
-  var c1 = new Array(UNIFIED_TABLE_COLS_).fill('');
-  c1[0] = 'Error ≤ ± 0.5 % respecto a la relación teórica → APROBADO';
-  rows.push(unifiedRow_(c1, 'data', fullMerge));
-  var c2 = new Array(UNIFIED_TABLE_COLS_).fill('');
-  c2[0] = 'Referencia: IEEE C57.12.90';
-  rows.push(unifiedRow_(c2, 'data', fullMerge));
-  return rows;
-}
-
-/** Panel de criterios de Devanados — el umbral sigue siendo el único de 5%
- *  ya verificado (ver Punto 4/8), NO los 3 niveles (≤1%/1-3%/>3%) del
- *  protocolo de referencia que compartió el cliente — decisión explícita
- *  del 2026-09-13, esto solo imprime el criterio real que ya usa
- *  computePhaseUnbalance_, no una escala nueva. `sideLabel` (AT/BT) entra
- *  en el banner solo para que el texto sea único dentro del documento (lo
- *  necesita applyOuterAndNestedMerges_ para ubicar esta tabla anidada). */
-function buildWindingCriteriaRows_(sideLabel) {
-  var rows = [unifiedBannerRow_('CRITERIO DE ACEPTACIÓN — DEVANADOS (' + sideLabel + ')')];
-  var merges = [{ startColumnIndex: 0, columnSpan: UNIFIED_TABLE_COLS_ }];
-  var aprobadoCells = new Array(UNIFIED_TABLE_COLS_).fill('');
-  aprobadoCells[0] = 'Desviación ≤ 5 % respecto al promedio de fases';
-  var aprobadoRow = unifiedRow_(aprobadoCells, 'legend', merges);
-  aprobadoRow.coloredCols = [{ col: 0, bg: PDF_COLORS_.SUCCESS_BG, fg: PDF_COLORS_.SUCCESS }];
-  rows.push(aprobadoRow);
-  var rechazadoCells = new Array(UNIFIED_TABLE_COLS_).fill('');
-  rechazadoCells[0] = 'Desviación > 5 % respecto al promedio de fases';
-  var rechazadoRow = unifiedRow_(rechazadoCells, 'legend', merges);
-  rechazadoRow.coloredCols = [{ col: 0, bg: PDF_COLORS_.DANGER_BG, fg: PDF_COLORS_.DANGER }];
-  rows.push(rechazadoRow);
+/** Tabla de criterios de Devanados — Punto 11, ronda 2 (2026-09-14): la
+ *  referencia real que compartió el cliente la muestra como SECCIÓN PROPIA
+ *  a todo lo ancho (no al lado de AT/BT), con la escala de 3 niveles
+ *  (≤1 %/1-3 %/>3 %) de la imagen original. El umbral REAL que decide
+ *  APROBADO/RECHAZADO sigue siendo el único de 5 % ya verificado
+ *  (`computePhaseUnbalance_`, sin cambios) — esta tabla es SOLO
+ *  referencia visual, exactamente la misma decisión ya tomada el
+ *  2026-09-13 ("esa escala solo se imprime como tabla de referencia
+ *  visual, no reemplaza el cálculo"), ahora con el layout que de verdad
+ *  pidió el cliente. */
+function buildWindingCriteriaTable3Tier_() {
+  var rows = [unifiedBannerRow_('CRITERIOS DE EVALUACIÓN — RESISTENCIA DE DEVANADOS')];
+  var merges = [{ startColumnIndex: 0, columnSpan: 4 }, { startColumnIndex: 4, columnSpan: 3 }];
+  var header = new Array(UNIFIED_TABLE_COLS_).fill('');
+  header[0] = 'DESVIACIÓN ENTRE FASES'; header[4] = 'ESTADO';
+  rows.push(unifiedRow_(header, 'header', merges));
+  var tiers = [
+    { range: '≤ 1 %', label: 'ACEPTABLE', bg: PDF_COLORS_.SUCCESS_BG, fg: PDF_COLORS_.SUCCESS },
+    { range: '> 1 % y ≤ 3 %', label: 'CUESTIONABLE', bg: PDF_COLORS_.WARNING_BG, fg: PDF_COLORS_.WARNING },
+    { range: '> 3 %', label: 'NO ACEPTABLE', bg: PDF_COLORS_.DANGER_BG, fg: PDF_COLORS_.DANGER }
+  ];
+  tiers.forEach(function (t) {
+    var cells = new Array(UNIFIED_TABLE_COLS_).fill('');
+    cells[0] = t.range; cells[4] = t.label;
+    var row = unifiedRow_(cells, 'legend', merges);
+    row.coloredCols = [{ col: 4, bg: t.bg, fg: t.fg }];
+    rows.push(row);
+  });
   return rows;
 }
 
@@ -2587,13 +2642,33 @@ function buildInsulationCriteriaRows_(esSimple) {
  *  ítem 5. Sin contenido dinámico propio (no existe un campo "observaciones"
  *  en el modelo de datos todavía): son filas en blanco con un poco más de
  *  padding para que se pueda escribir a mano sobre el PDF impreso. */
-var OBSERVACIONES_BLANK_LINES_ = 3;
-function buildObservacionesRows_() {
+/** Une una lista en español con comas y "y" antes del último elemento —
+ *  usado por buildObservacionesRows_ para listar las pruebas presentes. */
+function joinSpanishList_(items) {
+  if (items.length === 0) return '';
+  if (items.length === 1) return items[0];
+  return items.slice(0, -1).join(', ') + ' y ' + items[items.length - 1];
+}
+
+/** Observaciones — Punto 11, ronda 2 (2026-09-14): la referencia real del
+ *  cliente trae un párrafo generado, no líneas en blanco para escribir a
+ *  mano (esa fue la primera versión, antes de ver la referencia). Se arma
+ *  con datos que YA se calculan en regenerateElectricalCombinedReport_
+ *  (qué pruebas están presentes, estado del equipo, normas aplicables, y
+ *  si el resultado combinado fue APROBADO) — no inventa ningún dato nuevo,
+ *  solo redacta una frase con lo que ya se sabe. */
+function buildObservacionesRows_(presentLabels, estadoEquipoText, normasText, aprobado) {
   var rows = [unifiedBannerRow_('OBSERVACIONES')];
   var fullMerge = [{ startColumnIndex: 0, columnSpan: UNIFIED_TABLE_COLS_ }];
-  for (var i = 0; i < OBSERVACIONES_BLANK_LINES_; i++) {
-    rows.push(unifiedRow_(new Array(UNIFIED_TABLE_COLS_).fill(''), 'blankline', fullMerge));
-  }
+  var sentence = 'Las pruebas de ' + joinSpanishList_(presentLabels) +
+    ' se realizaron con el equipo ' + String(estadoEquipoText || '').toLowerCase() +
+    ', de acuerdo con las normas ' + normasText + '. ' +
+    (aprobado
+      ? 'Los resultados obtenidos se encuentran dentro de los rangos aceptables y presentan buen comportamiento.'
+      : 'Los resultados obtenidos presentan valores fuera de los rangos aceptables — se recomienda una revisión adicional del equipo.');
+  var cells = new Array(UNIFIED_TABLE_COLS_).fill('');
+  cells[0] = sentence;
+  rows.push(unifiedRow_(cells, 'data', fullMerge));
   return rows;
 }
 
@@ -2623,7 +2698,7 @@ function buildConclusionRows_(overallVerdict) {
  *  lanza fuera de aquí: si algo falla (0 TAPs, monofásico sin base de
  *  comparación entre fases, etc.) devuelve `null` y el llamador simplemente
  *  no inserta la imagen — no debe bloquear la generación del informe. */
-function buildTtrDeviationChart_(calc, esMonofasico) {
+function buildTtrDeviationChart_(calc, esMonofasico, sectionNum) {
   if (esMonofasico) return null;
   var tapNums = Object.keys(calc.taps || {}).map(Number).sort(function (a, b) { return a - b; });
   if (tapNums.length === 0) return null;
@@ -2641,7 +2716,7 @@ function buildTtrDeviationChart_(calc, esMonofasico) {
     });
     var chart = Charts.newColumnChart()
       .setDataTable(dataTable)
-      .setTitle('Desviación TTR por fase (%)')
+      .setTitle((sectionNum ? sectionNum + '. ' : '') + 'DESVIACIÓN POR FASE (TTR)')
       .setDimensions(460, 240)
       .setColors(['#585d63', '#8f2d2d', '#3aaa35'])
       .setLegendPosition(Charts.Position.BOTTOM)
@@ -2699,9 +2774,47 @@ function styleUnifiedCell_(cell, r, c, padding) {
   } else if (r.role === 'blankline') {
     cell.setPaddingTop(6).setPaddingBottom(6);
     cell.editAsText().setFontSize(UNIFIED_FONT_DATA_);
+  } else if (r.role === 'data') {
+    // Punto 11 (2026-09-14, ronda 2 — referencia real del cliente): cada
+    // celda de ESTADO/CALIF. en las filas de datos se colorea igual que el
+    // banner de veredicto, no solo la fila de veredicto al final — se
+    // detecta por el TEXTO de la celda (verdictCellColor_), no por posición
+    // de columna, porque TTR/Devanados usan la última columna y Aislamiento
+    // Completo tiene 2 columnas de calificación (CALIF. DAR y CALIF. IP).
+    var dataColor = verdictCellColor_(cell.editAsText().getText());
+    if (dataColor) {
+      cell.setBackgroundColor(dataColor.bg);
+      cell.editAsText().setFontSize(UNIFIED_FONT_DATA_).setBold(true).setForegroundColor(dataColor.fg);
+    } else {
+      cell.editAsText().setFontSize(UNIFIED_FONT_DATA_).setBold(false).setForegroundColor(PDF_COLORS_.TEXT);
+    }
   } else {
     cell.editAsText().setFontSize(UNIFIED_FONT_DATA_).setBold(false).setForegroundColor(PDF_COLORS_.TEXT);
   }
+}
+
+/** Detecta si el texto de una celda de datos es un veredicto/calificación
+ *  conocido (APROBADO/RECHAZADO, MALO/CUESTIONABLE/BUENO/EXCELENTE,
+ *  ACEPTABLE/NO ACEPTABLE) y devuelve su color — mismo criterio que
+ *  verdictColor_/las leyendas ya existentes, solo que aplicado celda por
+ *  celda en vez de a toda una fila. `null` para cualquier otro texto (un
+ *  valor numérico, una fecha, '—', 'REGISTRADO'/'PENDIENTE') — esas nunca
+ *  se colorean. El orden de los `indexOf` importa: 'NO ACEPTABLE' y
+ *  'CUESTIONABLE' se revisan ANTES que 'ACEPTABLE'/nada, para no
+ *  confundirlas por substring. */
+function verdictCellColor_(text) {
+  var v = String(text || '').replace(' †', '').trim();
+  if (!v || v === '—') return null;
+  if (v.indexOf('RECHAZADO') === 0 || v.indexOf('MALO') === 0 || v === 'NO ACEPTABLE') {
+    return { bg: PDF_COLORS_.DANGER_BG, fg: PDF_COLORS_.DANGER };
+  }
+  if (v.indexOf('CUESTIONABLE') === 0) {
+    return { bg: PDF_COLORS_.WARNING_BG, fg: PDF_COLORS_.WARNING };
+  }
+  if (v.indexOf('APROBADO') === 0 || v.indexOf('BUENO') === 0 || v.indexOf('EXCELENTE') === 0 || v === 'ACEPTABLE') {
+    return { bg: PDF_COLORS_.SUCCESS_BG, fg: PDF_COLORS_.SUCCESS };
+  }
+  return null;
 }
 
 /** Construye una tabla ANIDADA (Punto 11) dentro de una celda de la tabla
@@ -2753,15 +2866,14 @@ function outerNestedFullRow_(nestedRows) {
 function outerNestedPairRow_(leftRows, rightRows) {
   return { kind: 'nested-pair', leftRows: leftRows, rightRows: rightRows };
 }
-/** Fila externa de una sola línea de texto (veredicto de sección) —
- *  fusionada a lo ancho, sin tabla anidada, igual que antes vivía
- *  unifiedVerdictRow_ dentro de la tabla única. */
-function outerPlainRow_(text, role, verdictValue) {
-  return { kind: 'plain', text: text, role: role, verdictValue: verdictValue };
-}
-/** Fila externa con una imagen (gráfica de TTR) — fusionada a lo ancho. */
-function outerImageRow_(blob, widthPt, heightPt) {
-  return { kind: 'image', blob: blob, widthPt: widthPt, heightPt: heightPt };
+/** Fila externa "resultados | gráfica" — Punto 11, ronda 2 (2026-09-14):
+ *  la referencia real del cliente empareja TTR con su gráfica de
+ *  desviación por fase, NO con un panel de criterios (a diferencia de
+ *  AT/BT/Aislamiento, que sí van con criterios). Izquierda es una tabla
+ *  anidada normal; derecha es una imagen insertada directo en la celda
+ *  externa (una imagen no necesita tabla anidada alrededor). */
+function outerPairTableImageRow_(leftRows, blob, widthPt, heightPt) {
+  return { kind: 'pair-table-image', leftRows: leftRows, blob: blob, widthPt: widthPt, heightPt: heightPt };
 }
 
 /** Inserta la tabla EXTERNA de 2 columnas en `body`, justo ANTES de
@@ -2769,7 +2881,7 @@ function outerImageRow_(blob, widthPt, heightPt) {
  *  plantilla — sin cambios en la plantilla misma, ver Punto 11 en
  *  CLAUDE.md: el marcador ya soportaba insertar cualquier contenido ahí).
  *  `outerRows` es un arreglo de descriptores outerNestedFullRow_/
- *  outerNestedPairRow_/outerPlainRow_/outerImageRow_. Devuelve, además de
+ *  outerNestedPairRow_/outerPairTableImageRow_. Devuelve, además de
  *  la tabla externa, un `nestedRegistry` (una entrada por tabla anidada
  *  creada, con su `bannerText` único y sus propias `mergeSpecs`) para que
  *  finalizeReportPdf_ se lo pase a applyOuterAndNestedMerges_. */
@@ -2777,7 +2889,7 @@ function insertOuterResultsTable_(body, beforeChild, outerRows) {
   if (outerRows.length === 0) return { table: null, outerMergeSpecs: [], nestedRegistry: [], outerMarkerText: null };
 
   var insertIndex = body.getChildIndex(beforeChild);
-  var initialCells = outerRows.map(function (r) { return r.kind === 'plain' ? [r.text, ''] : ['', '']; });
+  var initialCells = outerRows.map(function () { return ['', '']; });
   var table = body.insertTable(insertIndex, initialCells);
   table.setBorderColor(PDF_COLORS_.BORDER);
 
@@ -2786,20 +2898,16 @@ function insertOuterResultsTable_(body, beforeChild, outerRows) {
 
   outerRows.forEach(function (r, rowIndex) {
     var row = table.getRow(rowIndex);
-    if (r.kind === 'plain') {
-      styleUnifiedCell_(row.getCell(0), { role: r.role, verdictValue: r.verdictValue, labelCols: [0] }, 0, UNIFIED_CELL_PADDING_);
-      row.getCell(1).setPaddingTop(0).setPaddingBottom(0).setPaddingLeft(0).setPaddingRight(0);
-      outerMergeSpecs.push({ rowIndex: rowIndex, startColumnIndex: 0, columnSpan: OUTER_TABLE_COLS_ });
-    } else if (r.kind === 'image') {
-      var cell = row.getCell(0);
-      cell.setPaddingTop(2).setPaddingBottom(2).setPaddingLeft(2).setPaddingRight(2);
+    if (r.kind === 'pair-table-image') {
+      var leftNested = appendNestedTable_(row.getCell(0), r.leftRows);
+      nestedRegistry.push({ bannerText: leftNested.bannerText, mergeSpecs: leftNested.mergeSpecs });
+      var imgCell = row.getCell(1);
+      imgCell.setPaddingTop(2).setPaddingBottom(2).setPaddingLeft(2).setPaddingRight(2);
       if (r.blob) {
-        var img = cell.appendImage(r.blob);
+        var img = imgCell.appendImage(r.blob);
         if (r.widthPt) img.setWidth(r.widthPt);
         if (r.heightPt) img.setHeight(r.heightPt);
       }
-      row.getCell(1).setPaddingTop(0).setPaddingBottom(0).setPaddingLeft(0).setPaddingRight(0);
-      outerMergeSpecs.push({ rowIndex: rowIndex, startColumnIndex: 0, columnSpan: OUTER_TABLE_COLS_ });
     } else if (r.kind === 'nested-full') {
       var nested = appendNestedTable_(row.getCell(0), r.nestedRows);
       row.getCell(1).setPaddingTop(0).setPaddingBottom(0).setPaddingLeft(0).setPaddingRight(0);
@@ -3329,9 +3437,9 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
   // secciones (2026-09-13): ya no son placeholders <<CLIENTE>>/
   // <<FECHA_GENERAL>>/etc. reemplazados después — ahora son las primeras
   // filas de la tabla única (ver buildClientEquipoUnifiedRows_/
-  // buildSharedMetaUnifiedRows_), con el valor real ya adentro desde que
-  // se construyen. `signedTest` (antes calculado al final, para "PROBADO
-  // POR") se necesita aquí arriba para eso.
+  // buildDatosGeneralesUnifiedRows_), con el valor real ya adentro desde
+  // que se construyen. `signedTest` (antes calculado al final, para
+  // "PROBADO POR") se necesita aquí arriba para eso.
   var mostRecentType = present.reduce(function (a, b) {
     return toComparableDate_(latest[a].created_at) >= toComparableDate_(latest[b].created_at) ? a : b;
   });
@@ -3347,10 +3455,10 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
   var tecnicoResponsable = signedTest.operador_nombre || signedTest.tested_by || '—';
   var ambienteTempText = signedTest.temperatura_ambiente ? (signedTest.temperatura_ambiente + ' °C') : null;
   var ambienteHumedadText = signedTest.humedad_relativa ? (signedTest.humedad_relativa + ' %') : null;
-  var outerRows = [
-    outerNestedFullRow_(buildClientEquipoUnifiedRows_(site, transformer)),
-    outerNestedFullRow_(buildSharedMetaUnifiedRows_(fmtDatePdf_(signedTest.created_at), tecnicoResponsable, ambienteTempText, ambienteHumedadText))
-  ];
+  // ESTADO DEL EQUIPO — dato que YA existía en TRANSFORMADORES
+  // (estado_equipo, ver normalizeEstadoEquipo_), no hizo falta agregarlo.
+  var estadoEquipoText = normalizeEstadoEquipo_(transformer.estado_equipo);
+
   var allNotes = [];
   // Punto 11 (2026-09-14): APROBADO general = TODAS las secciones
   // presentes APROBADAS — alimenta la Conclusión General con checkbox al
@@ -3358,82 +3466,167 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
   // veredicto individual, solo los combina.
   var allVerdicts = [];
 
+  // Punto 11, ronda 2 (2026-09-14): la referencia real que compartió el
+  // cliente numera cada sección (1-12) y pone TODOS los instrumentos +
+  // normas aplicables en la sección "DATOS GENERALES DE LA PRUEBA" — eso
+  // solo se sabe completo después de mirar qué tipos están presentes, pero
+  // tiene que imprimirse ANTES de los resultados. Por eso el cálculo de
+  // cada tipo (ttrCalc/wrCalc/aisCalc + su línea de instrumento) se separó
+  // de dónde se arma outerRows: primero se calcula todo, después se arma
+  // en el orden final del documento.
+  function pushNormaUnica_(arr, norma) { if (arr.indexOf(norma) === -1) arr.push(norma); }
+  var instrumentLines = [];
+  var normas = [];
+  var presentLabels = [];
+
+  var ttrCalc = null, ttrInstrumento = null, ttrWarning = null;
   if (present.indexOf('TTR') !== -1) {
     var ttrRow = latest.TTR;
-    var ttrCalc = safeParseJson_(ttrRow.calculated_results_json);
-    var ttrWarning = null;
+    ttrCalc = safeParseJson_(ttrRow.calculated_results_json);
     if (ttrCalc.theoreticalAvailable === false) {
       ttrWarning = 'Teórico no disponible — falta voltaje nominal de placa.';
     } else if (ttrCalc.theoreticalReliable === false) {
       ttrWarning = '⚠ Grupo de conexión no registrado en placa — teórico sin factor de relación trifásica, puede ser impreciso.';
     }
     var ttrCal = findMatchingCalibracionServer_(ttrRow.instrument_used);
-    var ttrInstrumento = 'Instrumento: ' + (ttrRow.instrument_used || '—') + (ttrCal ? ' (' + ttrCal.estado + ')' : '');
-    outerRows.push(outerNestedPairRow_(buildTtrUnifiedSection_(ttrCalc, esMonofasico, ttrInstrumento, ttrWarning), buildTtrCriteriaRows_()));
-    var ttrChartBlob = buildTtrDeviationChart_(ttrCalc, esMonofasico);
-    if (ttrChartBlob) outerRows.push(outerImageRow_(ttrChartBlob, 340, 177));
-    outerRows.push(outerPlainRow_('Veredicto: ' + ttrCalc.overallVerdict, 'verdict', ttrCalc.overallVerdict));
+    ttrInstrumento = 'Instrumento: ' + (ttrRow.instrument_used || '—') + (ttrCal ? ' (' + ttrCal.estado + ')' : '');
+    instrumentLines.push(['INSTRUMENTO TTR', buildInstrumentLine_(ttrRow.instrument_used, ttrCal)]);
+    pushNormaUnica_(normas, 'IEEE C57.12.90');
+    presentLabels.push('relación de transformación (TTR)');
+  }
+
+  var wrCalc = null, wrInstrumento = null;
+  if (present.indexOf('RESISTENCIA_DEVANADOS') !== -1) {
+    var wrRow = latest.RESISTENCIA_DEVANADOS;
+    wrCalc = safeParseJson_(wrRow.calculated_results_json);
+    var wrCal = findMatchingCalibracionServer_(wrRow.instrument_used);
+    wrInstrumento = 'Instrumento: ' + (wrRow.instrument_used || '—') + (wrCal ? ' (' + wrCal.estado + ')' : '');
+    instrumentLines.push(['INSTRUMENTO MICRO-ÓHMETRO', buildInstrumentLine_(wrRow.instrument_used, wrCal)]);
+    pushNormaUnica_(normas, 'IEEE C57.12.90');
+    presentLabels.push('resistencia de devanados');
+  }
+
+  var aisCalc = null, aisInstrumento = null, aisTension = null, aisEsSimple = false;
+  if (present.indexOf('AISLAMIENTO') !== -1) {
+    var aisRow = latest.AISLAMIENTO;
+    aisCalc = safeParseJson_(aisRow.calculated_results_json);
+    var aisRaw = safeParseJson_(aisRow.raw_readings_json);
+    var aisCal = findMatchingCalibracionServer_(aisRow.instrument_used);
+    aisInstrumento = 'Instrumento: ' + (aisRow.instrument_used || '—') + (aisCal ? ' (' + aisCal.estado + ')' : '');
+    aisTension = aisRaw && aisRaw.tension_prueba_v ? (aisRaw.tension_prueba_v + ' V') : null;
+    aisEsSimple = aisCalc.metodo === 'simple';
+    instrumentLines.push(['INSTRUMENTO MEGÓHMETRO', buildInstrumentLine_(aisRow.instrument_used, aisCal)]);
+    pushNormaUnica_(normas, 'IEEE C57.152');
+    presentLabels.push('resistencia de aislamiento');
+  }
+
+  // Punto 11, ronda 2: numeración secuencial de secciones (1, 2, 3...) sin
+  // huecos — un informe con solo Aislamiento numera esa sección "3.", no
+  // "8." (el número que tendría si TTR/Devanados estuvieran presentes).
+  var n = 1;
+  var outerRows = [
+    outerNestedFullRow_(numberSection_(buildClientEquipoUnifiedRows_(site, transformer), n++)),
+    outerNestedFullRow_(numberSection_(buildDatosGeneralesUnifiedRows_(
+      fmtDatePdf_(signedTest.created_at), tecnicoResponsable, ambienteTempText, ambienteHumedadText,
+      estadoEquipoText, instrumentLines, normas.join(' / ')
+    ), n++))
+  ];
+
+  // TTR — a diferencia de AT/BT/Aislamiento (que van con un panel de
+  // criterios al lado), la referencia real del cliente empareja TTR con
+  // SU GRÁFICA de desviación por fase (outerPairTableImageRow_). El
+  // veredicto de sección ahora vive DENTRO de la tabla anidada
+  // (nestedVerdictRow_), no en una fila aparte de la tabla externa — otro
+  // ajuste sobre la referencia real.
+  if (ttrCalc) {
+    var ttrRows = buildTtrUnifiedSection_(ttrCalc, esMonofasico, ttrInstrumento, ttrWarning);
+    ttrRows.push(nestedVerdictRow_('Veredicto TTR', ttrCalc.overallVerdict));
+    numberSection_(ttrRows, n++);
+    // Misma condición que usa buildTtrDeviationChart_ internamente
+    // (monofásico o sin TAPs no tiene gráfica) — se verifica ANTES de
+    // pedir la imagen para saber si el número de sección 4 se consume o
+    // no (sin huecos en la numeración si la gráfica no aplica).
+    var willHaveChart = !esMonofasico && ttrCalc.taps && Object.keys(ttrCalc.taps).length > 0;
+    if (willHaveChart) {
+      var ttrChartBlob = buildTtrDeviationChart_(ttrCalc, esMonofasico, n++);
+      outerRows.push(outerPairTableImageRow_(ttrRows, ttrChartBlob, 300, 157));
+    } else {
+      outerRows.push(outerNestedFullRow_(ttrRows));
+    }
     allVerdicts.push(ttrCalc.overallVerdict);
     allNotes = allNotes.concat(collectTtrUnifiedNotes_(ttrCalc));
   }
 
-  if (present.indexOf('RESISTENCIA_DEVANADOS') !== -1) {
-    var wrRow = latest.RESISTENCIA_DEVANADOS;
-    var wrCalc = safeParseJson_(wrRow.calculated_results_json);
-    var wrCal = findMatchingCalibracionServer_(wrRow.instrument_used);
-    var wrInstrumento = 'Instrumento: ' + (wrRow.instrument_used || '—') + (wrCal ? ' (' + wrCal.estado + ')' : '');
-
-    // Punto 4 (2026-09-13): primario y secundario ahora son cada uno
-    // opcional — se prueba solo primario (AT), solo secundario (BT), o
-    // ambos. Cada lado con sus propias filas y su propio veredicto —
-    // calculateWindingResistance_ nunca devuelve un "primaryVerdict"
-    // aparte (solo el overallVerdict combinado), así que se re-deriva
-    // aquí con la MISMA fórmula que usa internamente (every tap
-    // APROBADO); el secundario sí trae su propio `verdict` directo.
+  // AT y BT — Punto 4 (2026-09-13): primario y secundario son cada uno
+  // opcional, se prueba solo AT, solo BT, o ambos.
+  // calculateWindingResistance_ nunca devuelve un "primaryVerdict" aparte
+  // (solo el overallVerdict combinado), así que se re-deriva aquí con la
+  // MISMA fórmula que usa internamente (every tap APROBADO); el
+  // secundario sí trae su propio `verdict` directo.
+  //
+  // Punto 11, ronda 2: AT y BT ahora van LADO A LADO entre sí (no cada uno
+  // con su propio panel de criterios) — la referencia real trae una sola
+  // tabla de criterios de Devanados, a todo lo ancho, DESPUÉS de ambos.
+  if (wrCalc) {
+    var atRows = null, btRows = null, atVerdict = null;
     if (wrCalc.taps && wrCalc.taps.length > 0) {
-      outerRows.push(outerNestedPairRow_(
-        buildWindingSideUnifiedRows_('ALTA TENSIÓN (AT)', wrCalc.taps, esMonofasico, transformer.at_devanado_material, wrInstrumento, WINDING_PHASE_ORDER_),
-        buildWindingCriteriaRows_('AT')
-      ));
-      var atVerdict = wrCalc.taps.every(function (t) { return t.tapVerdict === 'APROBADO'; }) ? 'APROBADO' : 'RECHAZADO';
-      outerRows.push(outerPlainRow_('Veredicto AT: ' + atVerdict, 'verdict', atVerdict));
+      atRows = buildWindingSideUnifiedRows_('ALTA TENSIÓN (AT)', wrCalc.taps, esMonofasico, transformer.at_devanado_material, wrInstrumento, WINDING_PHASE_ORDER_);
+      atVerdict = wrCalc.taps.every(function (t) { return t.tapVerdict === 'APROBADO'; }) ? 'APROBADO' : 'RECHAZADO';
+      atRows.push(nestedVerdictRow_('Veredicto AT', atVerdict));
       allVerdicts.push(atVerdict);
       allNotes = allNotes.concat(collectWindingSideUnifiedNotes_('AT', wrCalc.taps));
     }
     if (wrCalc.secondary) {
-      outerRows.push(outerNestedPairRow_(
-        buildWindingSideUnifiedRows_('BAJA TENSIÓN (BT)', [wrCalc.secondary], esMonofasico, transformer.bt_devanado_material, wrInstrumento, WINDING_SECONDARY_PHASE_ORDER_),
-        buildWindingCriteriaRows_('BT')
-      ));
-      outerRows.push(outerPlainRow_('Veredicto BT: ' + wrCalc.secondary.verdict, 'verdict', wrCalc.secondary.verdict));
+      btRows = buildWindingSideUnifiedRows_('BAJA TENSIÓN (BT)', [wrCalc.secondary], esMonofasico, transformer.bt_devanado_material, wrInstrumento, WINDING_SECONDARY_PHASE_ORDER_);
+      btRows.push(nestedVerdictRow_('Veredicto BT', wrCalc.secondary.verdict));
       allVerdicts.push(wrCalc.secondary.verdict);
       allNotes = allNotes.concat(collectWindingSideUnifiedNotes_('BT', [wrCalc.secondary]));
     }
+    if (atRows && btRows) {
+      numberSection_(atRows, n++);
+      numberSection_(btRows, n++);
+      outerRows.push(outerNestedPairRow_(atRows, btRows));
+    } else if (atRows) {
+      outerRows.push(outerNestedFullRow_(numberSection_(atRows, n++)));
+    } else if (btRows) {
+      outerRows.push(outerNestedFullRow_(numberSection_(btRows, n++)));
+    }
+    if (atRows || btRows) {
+      outerRows.push(outerNestedFullRow_(numberSection_(buildWindingCriteriaTable3Tier_(), n++)));
+    }
   }
 
-  if (present.indexOf('AISLAMIENTO') !== -1) {
-    var aisRow = latest.AISLAMIENTO;
-    var aisCalc = safeParseJson_(aisRow.calculated_results_json);
-    var aisRaw = safeParseJson_(aisRow.raw_readings_json);
-    var aisCal = findMatchingCalibracionServer_(aisRow.instrument_used);
-    var aisInstrumento = 'Instrumento: ' + (aisRow.instrument_used || '—') + (aisCal ? ' (' + aisCal.estado + ')' : '');
-    var aisTension = aisRaw && aisRaw.tension_prueba_v ? (aisRaw.tension_prueba_v + ' V') : null;
-    var aisEsSimple = aisCalc.metodo === 'simple';
-    outerRows.push(outerNestedPairRow_(buildInsulationUnifiedRows_(aisCalc, aisInstrumento, aisTension), buildInsulationCriteriaRows_(aisEsSimple)));
-    outerRows.push(outerPlainRow_('Veredicto: ' + aisCalc.overallVerdict, 'verdict', aisCalc.overallVerdict));
+  // Aislamiento — sigue emparejado con su panel de criterios (leyenda
+  // DAR/IP en Completo, nota corta en Simple), igual que ya estaba.
+  if (aisCalc) {
+    var aisRows = buildInsulationUnifiedRows_(aisCalc, aisInstrumento, aisTension);
+    aisRows.push(nestedVerdictRow_('Veredicto Aislamiento', aisCalc.overallVerdict));
+    numberSection_(aisRows, n++);
+    var aisCriteriaRows = numberSection_(buildInsulationCriteriaRows_(aisEsSimple), n++);
+    outerRows.push(outerNestedPairRow_(aisRows, aisCriteriaRows));
     allVerdicts.push(aisCalc.overallVerdict);
     allNotes = allNotes.concat(collectInsulationUnifiedNotes_(aisCalc));
   }
 
-  outerRows.push(outerNestedFullRow_(buildObservacionesRows_()));
   var conclusionVerdict = allVerdicts.length && allVerdicts.every(function (v) { return String(v).indexOf('APROBADO') === 0; }) ? 'APROBADO' : 'RECHAZADO';
-  outerRows.push(outerNestedFullRow_(buildConclusionRows_(conclusionVerdict)));
+  outerRows.push(outerNestedFullRow_(numberSection_(buildObservacionesRows_(presentLabels, estadoEquipoText, normas.join(' / '), conclusionVerdict === 'APROBADO'), n++)));
+  outerRows.push(outerNestedFullRow_(numberSection_(buildConclusionRows_(conclusionVerdict), n++)));
 
   var tablePlaceholderPar = findMarkerParagraph_(body, '<<TABLA_RESULTADOS_ELECTRICOS>>');
   if (!tablePlaceholderPar) throw new Error('La plantilla no tiene el marcador de la tabla de resultados — regenera las plantillas desde Administración.');
   var tableResult = insertOuterResultsTable_(body, tablePlaceholderPar, outerRows);
   body.removeChild(tablePlaceholderPar);
   appendUnifiedNoteFootnote_(body, tableResult.table, allNotes);
+  // "12. ÁREA DE CONTROL DE CALIDAD" — Punto 11, ronda 2: la sección de
+  // firmas (appendSignatureSection_) se arma UNA VEZ en la plantilla
+  // (buildElectricalTemplateDoc_ → appendSectionTitle_, que además pasa el
+  // texto a MAYÚSCULAS — el replaceText de abajo tiene que buscar el texto
+  // YA en mayúsculas o nunca encuentra nada, sin lanzar error, solo se
+  // queda sin numerar en silencio). No se puede numerar en la plantilla
+  // misma porque el número real depende de cuántas secciones vinieron
+  // antes en ESTE informe — se numera acá con un replaceText simple, sin
+  // tocar la plantilla ni regenerarla.
+  body.replaceText('ÁREA DE CONTROL DE CALIDAD', n + '. ÁREA DE CONTROL DE CALIDAD');
 
   // PROBADO POR = mismo criterio que TÉCNICO RESPONSABLE arriba
   // (operador_nombre, no la cuenta de login compartida). CERTIFICADO POR
