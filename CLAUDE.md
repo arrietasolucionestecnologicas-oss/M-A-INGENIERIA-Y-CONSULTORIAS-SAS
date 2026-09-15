@@ -38,8 +38,10 @@ compacto del PDF) necesitan que 2/3/4/5 ya existan primero.
    abajo).
 10. [x] **Compactación + tabla única de resultados eléctricos**
     (2026-09-13, extra — ver detalle abajo, "Punto 10").
-11. [x] **Rediseño a formato corporativo de 2 columnas — verificado en
-    vivo 2026-09-14, coincide con la referencia real del cliente**
+11. [x] **Rediseño a formato corporativo de 2 columnas — 3 rondas,
+    verificado en vivo 2026-09-14/15, ronda 3 sigue el "prompt maestro"
+    completo del cliente (A4, paleta propia, 14 secciones numeradas,
+    curva de aislamiento)**
     (extra — ver "Punto 11" abajo para el detalle completo de qué se
     construyó y qué falta
     probar).
@@ -823,6 +825,128 @@ cuenta de Apps Script gratuita ya en uso, incluida la gráfica (servicio
 nativo `Charts`, no una API paga). Lo único fuera del código es diseño
 gráfico (banner/iconos/fotos), que el cliente ya dijo que hace él mismo
 directo en la plantilla.
+
+### Ronda 3 (2026-09-15) — "prompt maestro" del cliente, implementado y verificado en vivo
+
+El cliente compartió un documento de especificación muy extenso y
+detallado (probablemente redactado con ayuda de otra IA a partir del
+mismo protocolo de referencia) pidiendo fidelidad total: A4 vertical,
+paleta de colores propia centralizada, tipografía Arial con tamaños
+específicos por rol, 12 secciones numeradas en un orden y agrupación
+exactos, arquitectura de código específica. Antes de tocar nada se
+resolvieron 4 conflictos reales entre ese documento y lo que YA se
+había verificado en vivo con la referencia real del cliente (ver ronda
+2 arriba), con el cliente decidiendo cada uno:
+
+1. **Tamaño de página**: el prompt pedía A4 (210×297mm); minutos antes
+   se había aplicado Oficio (216×330mm) a pedido explícito del mismo
+   cliente. Ganó **A4 + márgenes de 8mm** (más reciente).
+2. **Curva de aislamiento** (sección "gráficos"): el prompt pedía una
+   curva continua tiempo-vs-resistencia con escala logarítmica — la app
+   NUNCA ha guardado más de 3 lecturas por combinación (30s/60s/10min,
+   ver `calculateInsulation_`), nunca puntos intermedios. Se decidió
+   **graficar los 3 puntos reales tal cual**, sin inventar una curva
+   suave con datos que no existen (coincide con la regla 29 del propio
+   prompt: "no inventar mediciones").
+3. **"REVISADO POR" en firmas**: el prompt mostraba 3 firmas (PROBADO/
+   REVISADO/APROBADO); hoy son PROBADO/CERTIFICADO/APROBADO. El cliente
+   confirmó que es el mismo campo — **se mantuvo el nombre actual**, sin
+   agregar ningún rol nuevo.
+4. **Agrupación TTR+AT / BT+Aislamiento**: el prompt emparejaba TTR con
+   AT y BT con Aislamiento; la ronda 2 (ya verificada en vivo contra la
+   referencia REAL, no el prompt) tenía AT+BT juntos con su propia tabla
+   de criterios aparte. El cliente confirmó **mantener AT+BT juntos**
+   (lo ya verificado), ignorando esa parte del prompt.
+
+**Cambios implementados** (todo lo demás del prompt sí se siguió tal
+cual):
+
+- **Paleta centralizada actualizada** — `PDF_COLORS_` cambió de valores
+  (antes grises del 2026-09-13; ahora azul `#00506F`/gris `#AEB7BD`/
+  verde-amarillo-rojo específicos) — como TODO el código de PDF ya leía
+  exclusivamente de esta constante (nunca hubo colores sueltos por
+  función), el cambio se propagó solo, sin tocar ninguna función de
+  armado. Afecta también a Aceite (misma identidad gráfica, a
+  propósito).
+- **Tipografía** — `PROTOCOL_FONT_FAMILY_ = 'Arial'` fijado explícito en
+  cada celda vía `styleUnifiedCell_` (antes dependía del default de
+  Google Docs). Tamaños diferenciados por rol: banner 9pt, encabezados
+  de tabla 7.5pt (nueva constante `UNIFIED_FONT_HEADER_`, antes
+  compartía tamaño con los datos), veredicto 8pt, datos **6pt** (bajó de
+  7pt tras la verificación en vivo — ver más abajo). Encabezados y
+  celdas de estado/calificación ahora van CENTRADOS (`cellAlign_`,
+  helper nuevo), antes todo quedaba a la izquierda por default.
+- **A4 + márgenes 8mm** — `PROTOCOL_PAGE_WIDTH_PT_`/`PROTOCOL_PAGE_HEIGHT_PT_`/
+  `PROTOCOL_MARGIN_PT_` (reemplazan a las constantes Oficio de esa misma
+  mañana), aplicado a las 2 plantillas YA EXISTENTES vía
+  `setReportTemplatesPageSize_` (mismo criterio de siempre: editar el
+  documento real con `DocumentApp.openById`, nunca regenerar — el
+  watermark/encabezado/pie del cliente sigue intacto) y también a
+  `buildElectricalTemplateDoc_`/`buildOilTemplateDoc_` para que una
+  futura regeneración desde cero ya nazca en A4.
+- **14 secciones** (el prompt pedía 12; con Sección 1 ahora fusionando
+  cliente+equipo con datos de la prueba como una sola sección con 2
+  mitades, y contando TTR+su gráfica como 2 números separados como ya
+  hacía la ronda 2, el conteo real con todo presente da 14, no 12 — la
+  numeración es SIEMPRE dinámica vía `numberSection_`, nunca fija, así
+  que un informe con menos secciones numera menos):
+  1. Datos del cliente y del equipo | Datos de la prueba (emparejadas,
+     mismo número "1." para ambas — antes en la ronda 2 eran 2
+     secciones separadas apiladas).
+  2/3. **Objetivo y Alcance** (nueva, `buildObjetivoAlcanceRows_` — texto
+     fijo que sí lista dinámicamente qué pruebas están presentes) |
+     **Equipos Utilizados** (nueva, `buildEquiposUtilizadosRows_` — tabla
+     con Equipo/Marca-Modelo/N° Serie/Fecha Calibración, reemplaza las
+     líneas de instrumento que antes vivían dentro de "Datos
+     generales").
+  4/5. TTR | su gráfica (sin cambios de la ronda 2).
+  6/7. AT | BT (sin cambios de la ronda 2 — decisión explícita del
+     cliente de mantener esto así, ver arriba).
+  8. Criterios de Devanados, 3 niveles (sin cambios).
+  9/10. Aislamiento | leyenda DAR/IP (sin cambios de estructura; sí
+     cambió el ancho de columnas, ver abajo).
+  11. **Curva de aislamiento** (nueva, `buildInsulationCurveChart_` — 3
+     puntos reales, ver decisión #2 arriba; usa `raw_readings_json`, NO
+     `calculated_results_json`, porque `calculateInsulation_` descarta
+     r30sMegaohm/r10minMegaohm después de calcular DAR/IP — solo
+     `r60sMegaohm` sobrevive al resultado calculado).
+  12/13. Observaciones | Conclusión General (ahora EMPAREJADAS lado a
+     lado — antes en la ronda 2 iban apiladas a todo el ancho).
+  14. Área de Control de Calidad (firmas, numerada vía `body.replaceText`
+     sobre el texto YA EN MAYÚSCULAS que deja `appendSectionTitle_`
+     — bug real encontrado en el primer intento: se buscaba el texto en
+     minúsculas/formato original y nunca encontraba nada, fallaba en
+     silencio).
+- **Bug real de legibilidad encontrado en la verificación en vivo**:
+  con las grillas de "Datos del cliente y del equipo"/"Datos de la
+  prueba" ahora corriendo al 50% del ancho (antes ocupaban toda la
+  página), el patrón viejo de "2 pares etiqueta/valor por fila" dejaba
+  la etiqueta en solo 1 de 7 columnas físicas — palabras como "GRUPO DE
+  CONEXIÓN"/"TEMPERATURA AMBIENTE" se partían en 3-4 líneas. Se
+  rediseñaron ambas grillas (`buildClientEquipoUnifiedRows_`/
+  `buildDatosGeneralesUnifiedRows_`) a **1 par por fila**, etiqueta(2
+  columnas)+valor(5 columnas) — coincide además con el ejemplo del
+  propio prompt maestro para la Sección 1. Mismo síntoma con palabras de
+  estado ("APROBADO"/"EXCELENTE"/"CUESTIONABLE") partiéndose en las
+  columnas de resultado ya angostas por el layout de 2 columnas —
+  resuelto bajando `UNIFIED_FONT_DATA_` de 7 a 6pt (el piso que el
+  propio prompt permite: "no usar fuentes menores de 6pt salvo notas
+  muy pequeñas") y, para "CUESTIONABLE" específicamente (la palabra más
+  larga, en la columna más angosta de todas — la leyenda DAR/IP),
+  ensanchando esa columna de 1 a 2 físicas en `buildDarIpLegendRows_`
+  (quitándole una a la columna de rango, que muestra valores más
+  cortos).
+- **`findMatchingCalibracionServer_`** ahora también devuelve
+  `fecha_ultima_calibracion` (antes solo `modelo`/`numero_serie`/
+  `estado`) — la usa "Equipos Utilizados" para la columna FECHA
+  CALIBRACIÓN.
+
+**Verificado en vivo 2026-09-15** (mismo equipo demo, TTR+Devanados+
+Aislamiento): 3 iteraciones de despliegue+prueba real hasta que ambos
+bugs de wrap quedaron resueltos — resultado final coincide con la
+estructura, numeración, colores y proporciones del prompt maestro,
+salvo las 4 excepciones ya acordadas con el cliente. Sigue en 2
+páginas.
 
 ## Arquitectura activa (esta es la que corre en producción)
 

@@ -1729,26 +1729,26 @@ var OIL_DGA_GASES_ = [
   { key: 'c2h6', label: 'Etano (C2H6)' }
 ];
 
-/** ACCENT/ACCENT_SOFT (2026-09-13, a pedido explícito del cliente): ya NO
- *  son el azul de `--accent` en `styles.css` — el documento oficial usa
- *  gris, independiente del azul de la app en pantalla. Antes de este
- *  cambio este bloque decía explícitamente "duplicados a propósito... si
- *  cambian los colores de la app, cambiar aquí también" — eso dejó de ser
- *  cierto a propósito: el pedido fue específicamente sobre las plantillas
- *  de informe, no sobre el tema visual de la app, así que `--accent` en
- *  `styles.css` NO se tocó. El resto de estos colores (`TEXT`/`SUCCESS`/
- *  `WARNING`/`DANGER`/etc.) sigue siendo el mismo que usa la app en
- *  pantalla. */
+/** Paleta del protocolo PDF (2026-09-15, "prompt maestro" del cliente —
+ *  reemplaza la paleta gris del 2026-09-13). Totalmente independiente de
+ *  `--accent`/etc. en `styles.css` (el tema de la app en pantalla) — ya
+ *  venía siendo así desde el cambio del 2026-09-13, esto solo cambia LOS
+ *  VALORES del lado del PDF, no reconecta nada con la app. Centralizada
+ *  acá a propósito (pedido explícito del cliente: "centralizar todos los
+ *  colores en una única constante, no escribir colores diferentes
+ *  manualmente en cada función") — todo el código de generación de PDF ya
+ *  usaba exclusivamente `PDF_COLORS_.*`, así que este cambio de valores
+ *  se propaga solo, sin tocar ninguna función de armado. */
 var PDF_COLORS_ = {
-  ACCENT: '#585d63',
-  ACCENT_SOFT: '#e4e6e8',
-  TEXT: '#152618',
-  TEXT_MUTED: '#5a6983',
-  SUCCESS: '#3aaa35', SUCCESS_BG: '#ebf7eb',
-  WARNING: '#f4c123', WARNING_BG: '#fdf6de',
-  DANGER: '#8f2d2d', DANGER_BG: '#f4eaea',
-  NEUTRAL_BG: '#f2f2f2',
-  BORDER: '#b2b2b2'
+  ACCENT: '#00506F',
+  ACCENT_SOFT: '#DCEAF2',
+  TEXT: '#222222',
+  TEXT_MUTED: '#404040',
+  SUCCESS: '#006100', SUCCESS_BG: '#C6EFCE',
+  WARNING: '#7F6000', WARNING_BG: '#FFF2CC',
+  DANGER: '#9C0006', DANGER_BG: '#F4CCCC',
+  NEUTRAL_BG: '#E5E8EA',
+  BORDER: '#AEB7BD'
 };
 
 /** Título de protocolo — barra prominente bajo el encabezado, formato
@@ -1930,17 +1930,19 @@ function appendSectionTitle_(body, text) {
   return table;
 }
 
-/** Caja de título del protocolo — borde y fondo acento suave, texto acento
- *  en mayúsculas, centrado. Va justo bajo el encabezado (logo + nombre),
- *  antes de cualquier sección de datos. Solo usada al armar plantillas. */
+/** Caja de título del protocolo — fondo acento sólido, texto blanco
+ *  centrado (2026-09-15, "prompt maestro" del cliente — antes era fondo
+ *  claro con texto de color, ver el mismo cambio de paleta en
+ *  PDF_COLORS_). Va justo bajo el encabezado (logo + nombre), antes de
+ *  cualquier sección de datos. Solo usada al armar plantillas. */
 function appendProtocolTitle_(body, text) {
   var table = body.appendTable([[text]]);
   table.setBorderColor(PDF_COLORS_.ACCENT);
   var cell = table.getRow(0).getCell(0);
-  cell.setBackgroundColor(PDF_COLORS_.ACCENT_SOFT);
+  cell.setBackgroundColor(PDF_COLORS_.ACCENT);
   var par = cell.getChild(0).asParagraph();
   par.setAlignment(DocumentApp.HorizontalAlignment.CENTER);
-  cell.editAsText().setBold(true).setFontSize(13).setForegroundColor(PDF_COLORS_.ACCENT);
+  cell.editAsText().setBold(true).setFontSize(15).setFontFamily(PROTOCOL_FONT_FAMILY_).setForegroundColor('#ffffff');
   return table;
 }
 
@@ -2131,7 +2133,8 @@ function appendSignatureSection_(body, probadoPor, certificadoPor) {
   table.setBorderColor(PDF_COLORS_.BORDER);
   for (var c = 0; c < 3; c++) {
     table.getRow(0).getCell(c).setBackgroundColor(PDF_COLORS_.NEUTRAL_BG);
-    table.getRow(0).getCell(c).editAsText().setBold(true).setFontSize(7);
+    table.getRow(0).getCell(c).editAsText().setBold(true).setFontSize(7).setFontFamily(PROTOCOL_FONT_FAMILY_);
+    table.getRow(1).getCell(c).editAsText().setFontFamily(PROTOCOL_FONT_FAMILY_);
   }
   table.getRow(1).getCell(0).editAsText().setFontSize(8);
   table.getRow(1).getCell(1).editAsText().setFontSize(8);
@@ -2188,20 +2191,32 @@ var WINDING_SECONDARY_PHASE_ORDER_ = ['X1-X2', 'X2-X3', 'X3-X1'];
 // ---------------------------------------------------------------------------
 
 var UNIFIED_TABLE_COLS_ = 7;
-/** Tamaños de fuente al mínimo legible (2026-09-13, a pedido explícito
- *  del cliente comparando contra un protocolo real de otra empresa que
- *  cabe en 1 sola hoja con letra diminuta) — el banner/veredicto se dejan
- *  un poco más grandes que el resto porque son el único texto que debe
- *  notarse a simple vista; todo lo demás (encabezados, datos, grillas de
- *  etiqueta/valor) baja a 5pt, el mínimo que pidió el cliente. */
-var UNIFIED_FONT_BANNER_ = 7;
+/** Tamaños de fuente — actualizados 2026-09-15 al "prompt maestro" del
+ *  cliente (antes eran más pequeños, 5pt mínimo, del pedido de
+ *  compactación del 2026-09-13; el cliente ahora prioriza legibilidad
+ *  sobre caber en 1 sola hoja a toda costa — ver Punto 11 en CLAUDE.md,
+ *  "control de desbordamiento": ajustar espaciado ANTES que sacrificar
+ *  tamaño de fuente). */
+var UNIFIED_FONT_BANNER_ = 9;
+var UNIFIED_FONT_HEADER_ = 7.5;
 var UNIFIED_FONT_VERDICT_ = 8;
-var UNIFIED_FONT_DATA_ = 5;
+// UNIFIED_FONT_DATA_ bajó de 7 a 6 (2026-09-15, verificación en vivo de la
+// ronda 3): con 7pt, palabras de estado como "APROBADO"/"EXCELENTE"/
+// "CUESTIONABLE" se partían en 2 líneas dentro de las columnas angostas
+// de las tablas anidadas emparejadas (AT+BT, Aislamiento+DAR-IP, cada una
+// a ~50% del ancho de página) — 6pt sigue dentro del piso que pidió el
+// cliente ("no usar fuentes menores de 6pt salvo notas muy pequeñas").
+var UNIFIED_FONT_DATA_ = 6;
 /** Padding mínimo de celda (en puntos) — DocumentApp lo deja en ~5pt por
  *  defecto en cada lado; bajarlo a esto es lo que de verdad reduce la
  *  altura de cada fila (más que la fuente en sí), igual que pidió el
  *  cliente ("celdas y filas al mínimo"). */
 var UNIFIED_CELL_PADDING_ = 1;
+/** Familia tipográfica única del protocolo — Arial, a pedido explícito
+ *  del "prompt maestro" (punto 5). Google Docs ya usa Arial por defecto
+ *  en documentos nuevos, pero se fija explícito en cada celda para no
+ *  depender de ese default. */
+var PROTOCOL_FONT_FAMILY_ = 'Arial';
 
 /** Una fila "lógica" de la tabla unificada. `cells` siempre tiene 7
  *  strings (relleno con '' donde una fusión posterior los va a tapar).
@@ -2267,19 +2282,34 @@ function numberSection_(rows, num) {
  *  el dato más largo (nombre de cliente, número de serie, etc). */
 function buildClientEquipoUnifiedRows_(site, transformer) {
   var rows = [unifiedBannerRow_('DATOS DEL CLIENTE Y DEL EQUIPO')];
-  var pairMerges = [{ startColumnIndex: 1, columnSpan: 2 }, { startColumnIndex: 4, columnSpan: 3 }];
+  // Punto 11, ronda 3 (2026-09-15): 1 par etiqueta/valor por fila (antes
+  // eran 2 por fila, pensado para cuando esta grilla ocupaba TODO el
+  // ancho de la página — Punto 10). Desde que la Sección 1 empareja esto
+  // con "Datos de la prueba" al 50%, 2 pares por fila dejaba la etiqueta
+  // en solo 1 de 7 columnas físicas y el texto se partía en 3-4 líneas
+  // (“GRUPO DE / CONEXIÓN”, “REFRIGER / ACIÓN”) — detectado en la
+  // verificación en vivo de esta ronda. 1 par por fila con etiqueta(2)+
+  // valor(5) da mucho más espacio a cada uno, a costa de más filas
+  // (11 en vez de 6) — aceptable, la fila es angosta de por sí.
+  var merges = [{ startColumnIndex: 0, columnSpan: 2 }, { startColumnIndex: 2, columnSpan: 5 }];
   var pairs = [
-    ['CLIENTE', site.client_name || '—', 'NIT', site.nit || '—'],
-    ['CIUDAD', site.ciudad || '—', 'PROYECTO', site.project_name || '—'],
-    ['FABRICANTE', transformer.manufacturer || '—', 'N° DE SERIE', transformer.serial_number || '—'],
-    ['GRUPO DE CONEXIÓN', transformer.vector_group || '—', 'POTENCIA NOMINAL', transformer.rated_power_kva ? (String(transformer.rated_power_kva) + ' kVA') : '—'],
-    ['TENSIÓN PRIMARIA', transformer.hv_nominal_voltage ? (String(transformer.hv_nominal_voltage) + ' V') : '—', 'TENSIÓN SECUNDARIA', transformer.lv_nominal_voltage ? (String(transformer.lv_nominal_voltage) + ' V') : '—'],
-    ['REFRIGERACIÓN', transformer.cooling_type || '—', 'AÑO DE FABRICACIÓN', transformer.manufacture_year ? String(transformer.manufacture_year) : '—']
+    ['CLIENTE', site.client_name || '—'],
+    ['PROYECTO', site.project_name || '—'],
+    ['CIUDAD', site.ciudad || '—'],
+    ['NIT', site.nit || '—'],
+    ['FABRICANTE', transformer.manufacturer || '—'],
+    ['N° DE SERIE', transformer.serial_number || '—'],
+    ['GRUPO DE CONEXIÓN', transformer.vector_group || '—'],
+    ['POTENCIA NOMINAL', transformer.rated_power_kva ? (String(transformer.rated_power_kva) + ' kVA') : '—'],
+    ['TENSIÓN PRIMARIA', transformer.hv_nominal_voltage ? (String(transformer.hv_nominal_voltage) + ' V') : '—'],
+    ['TENSIÓN SECUNDARIA', transformer.lv_nominal_voltage ? (String(transformer.lv_nominal_voltage) + ' V') : '—'],
+    ['REFRIGERACIÓN', transformer.cooling_type || '—'],
+    ['AÑO DE FABRICACIÓN', transformer.manufacture_year ? String(transformer.manufacture_year) : '—']
   ];
   pairs.forEach(function (p) {
     var cells = new Array(UNIFIED_TABLE_COLS_).fill('');
-    cells[0] = p[0]; cells[1] = p[1]; cells[3] = p[2]; cells[4] = p[3];
-    rows.push(unifiedLabelRow_(cells, [0, 3], pairMerges));
+    cells[0] = p[0]; cells[2] = p[1];
+    rows.push(unifiedLabelRow_(cells, [0], merges));
   });
   return rows;
 }
@@ -2293,51 +2323,76 @@ function buildClientEquipoUnifiedRows_(site, transformer) {
  *  ANTES de armar esta fila, no después como antes), así que no hace
  *  falta ningún placeholder ni body.replaceText() para esto. NORMA es
  *  literal, nunca cambia. */
-/** "Datos generales de la prueba" — reescrita (Punto 11, ronda 2,
- *  2026-09-14) sobre la referencia real que compartió el cliente: columna
- *  izquierda siempre con 5 filas fijas (FECHA/TÉCNICO/TEMP/HUMEDAD/ESTADO
- *  DEL EQUIPO — este último es `transformer.estado_equipo`, dato que YA
- *  existía en el modelo, no hizo falta agregarlo); columna derecha con una
- *  línea POR CADA instrumento realmente usado (`instrumentLines`, ya
- *  filtrada por el llamador a solo los tipos de prueba presentes) más
- *  NORMAS DE REFERENCIA al final. N° de serie y fecha de última
- *  calibración se doblan en el mismo texto de cada línea de instrumento
- *  (`buildInstrumentLine_`) en vez de columnas propias — la referencia
- *  traía una fila "FECHA DE CALIBRACIÓN" separada, pero como cada
- *  instrumento puede tener la suya propia, una sola fila compartida sería
- *  ambigua con 2-3 instrumentos distintos. */
-function buildDatosGeneralesUnifiedRows_(fechaText, tecnicoText, tempText, humedadText, estadoEquipoText, instrumentLines, normasText) {
-  var leftLabels = [
+/** "Datos de la prueba" — Punto 11, ronda 3 (2026-09-15, "prompt maestro"
+ *  del cliente): reemplaza a la "Datos generales de la prueba" de la
+ *  ronda 2, que traía los instrumentos mezclados adentro — ahora los
+ *  instrumentos son su propia sección aparte ("Equipos utilizados", ver
+ *  `buildEquiposUtilizadosRows_`), así que esta queda una lista simple de
+ *  1 columna: FECHA/TÉCNICO/TEMP/HUMEDAD/ESTADO DEL EQUIPO (dato que YA
+ *  existía en el modelo — `transformer.estado_equipo`) + NORMAS DE
+ *  REFERENCIA. Pensada para ir en la mitad angosta del layout de 2
+ *  columnas (emparejada con "Datos del cliente y del equipo" en la
+ *  Sección 1), por eso ya no reparte 2 pares por fila como antes. */
+function buildDatosGeneralesUnifiedRows_(fechaText, tecnicoText, tempText, humedadText, estadoEquipoText, normasText) {
+  var rows = [unifiedBannerRow_('DATOS DE LA PRUEBA')];
+  // Punto 11, ronda 3: etiqueta(2 cols)+valor(5 cols), no etiqueta(1)+
+  // valor(6) — mismo ajuste que buildClientEquipoUnifiedRows_, encontrado
+  // en la misma verificación en vivo (etiquetas como "TÉCNICO
+  // RESPONSABLE"/"TEMPERATURA AMBIENTE" partiéndose en 3 líneas con solo
+  // 1 columna física).
+  var merges = [{ startColumnIndex: 0, columnSpan: 2 }, { startColumnIndex: 2, columnSpan: 5 }];
+  var pairs = [
     ['FECHA DE PRUEBA', fechaText],
     ['TÉCNICO RESPONSABLE', tecnicoText],
     ['TEMPERATURA AMBIENTE', tempText || '—'],
     ['HUMEDAD RELATIVA', humedadText || '—'],
-    ['ESTADO DEL EQUIPO', estadoEquipoText]
+    ['ESTADO DEL EQUIPO', estadoEquipoText],
+    ['NORMAS DE REFERENCIA', normasText]
   ];
-  var rightLabels = instrumentLines.concat([['NORMAS DE REFERENCIA', normasText]]);
-  var rowCount = Math.max(leftLabels.length, rightLabels.length);
-  var pairMerges = [{ startColumnIndex: 1, columnSpan: 2 }, { startColumnIndex: 4, columnSpan: 3 }];
-  var rows = [unifiedBannerRow_('DATOS GENERALES DE LA PRUEBA')];
-  for (var i = 0; i < rowCount; i++) {
+  pairs.forEach(function (p) {
     var cells = new Array(UNIFIED_TABLE_COLS_).fill('');
-    var l = leftLabels[i], rr = rightLabels[i];
-    if (l) { cells[0] = l[0]; cells[1] = l[1]; }
-    if (rr) { cells[3] = rr[0]; cells[4] = rr[1]; }
-    rows.push(unifiedLabelRow_(cells, [0, 3], pairMerges));
-  }
+    cells[0] = p[0]; cells[2] = p[1];
+    rows.push(unifiedLabelRow_(cells, [0], merges));
+  });
   return rows;
 }
 
-/** Una línea "INSTRUMENTO X: modelo · N° serie · Cal: fecha" — usada por
- *  las 3 filas condicionales de instrumento en Datos Generales. `cal` es
- *  el resultado de `findMatchingCalibracionServer_` (o `null` si el texto
- *  libre de `instrument_used` no cruzó con ningún instrumento del catálogo
- *  de Calibraciones — pasa igual, solo sin N° serie/fecha). */
-function buildInstrumentLine_(instrumentText, cal) {
-  var parts = [instrumentText || '—'];
-  if (cal && cal.numero_serie) parts.push('N° ' + cal.numero_serie);
-  if (cal && cal.fecha_ultima_calibracion) parts.push('Cal: ' + fmtDatePdf_(cal.fecha_ultima_calibracion));
-  return parts.join(' · ');
+/** "Equipos utilizados" — Punto 11, ronda 3 (2026-09-15): sección nueva,
+ *  una fila por instrumento REALMENTE usado (TTR/Micro-óhmetro/
+ *  Megóhmetro, solo los tipos de prueba presentes) con Marca/Modelo, N°
+ *  de Serie y Fecha de calibración — cruzando el catálogo de
+ *  Calibraciones vía `findMatchingCalibracionServer_`, igual fuente que
+ *  ya usaba la línea de instrumento de la ronda 2, ahora en su propia
+ *  tabla con columnas en vez de texto corrido. `equipos` es un arreglo de
+ *  {equipo, marcaModelo, numeroSerie, fechaCalibracion} armado por el
+ *  llamador — esta función no decide qué instrumentos están presentes. */
+function buildEquiposUtilizadosRows_(equipos) {
+  var rows = [unifiedBannerRow_('EQUIPOS UTILIZADOS')];
+  var merges = [{ startColumnIndex: 1, columnSpan: 2 }, { startColumnIndex: 3, columnSpan: 2 }, { startColumnIndex: 5, columnSpan: 2 }];
+  var header = ['EQUIPO', 'MARCA / MODELO', '', 'N° DE SERIE', '', 'FECHA CALIBRACIÓN', ''];
+  rows.push(unifiedRow_(header, 'header', merges));
+  equipos.forEach(function (eq) {
+    var cells = new Array(UNIFIED_TABLE_COLS_).fill('');
+    cells[0] = eq.equipo; cells[1] = eq.marcaModelo; cells[3] = eq.numeroSerie; cells[5] = eq.fechaCalibracion;
+    rows.push(unifiedRow_(cells, 'data', merges));
+  });
+  return rows;
+}
+
+/** "Objetivo y alcance" — Punto 11, ronda 3 (2026-09-15): sección nueva,
+ *  texto descriptivo fijo (no es un dato del equipo, es la misma
+ *  redacción para cualquier informe) pero SÍ lista dinámicamente cuáles
+ *  pruebas se hicieron (`presentLabels`, ya calculado por el llamador
+ *  para Observaciones desde la ronda 2) — nunca dice "TTR" si TTR no se
+ *  hizo en este informe. */
+function buildObjetivoAlcanceRows_(presentLabels) {
+  var rows = [unifiedBannerRow_('OBJETIVO Y ALCANCE')];
+  var fullMerge = [{ startColumnIndex: 0, columnSpan: UNIFIED_TABLE_COLS_ }];
+  var cells = new Array(UNIFIED_TABLE_COLS_).fill('');
+  cells[0] = 'Verificar el estado eléctrico del transformador mediante la medición de ' + joinSpanishList_(presentLabels) +
+    ', con el fin de evaluar su condición operativa y detectar posibles deterioros en el sistema de aislamiento y en los devanados.';
+  rows.push(unifiedRow_(cells, 'data', fullMerge));
+  return rows;
 }
 
 /** TTR — banner + encabezado + 1 fila por TAP. Mismo criterio de
@@ -2568,7 +2623,13 @@ function collectInsulationUnifiedNotes_(calc) {
  *  resultado real — esto solo los imprime, no inventa una escala nueva. */
 function buildDarIpLegendRows_() {
   var rows = [unifiedBannerRow_('CALIFICACIÓN DAR / IP — RANGOS DE REFERENCIA')];
-  var merges = [{ startColumnIndex: 0, columnSpan: 2 }, { startColumnIndex: 4, columnSpan: 2 }];
+  // 2026-09-15: las celdas de calificación (col2/col6) eran de 1 sola
+  // columna física — "CUESTIONABLE" (12 letras) se partía en 2 líneas ahí
+  // aun a 6pt (detectado en la verificación en vivo de la ronda 3). Se
+  // ensanchan a 2 columnas cada una, quitándole 1 a cada rango de
+  // referencia (los valores del rango, tipo "1.0 – 2.0", son más cortos y
+  // caben igual en 1 columna).
+  var merges = [{ startColumnIndex: 0, columnSpan: 2 }, { startColumnIndex: 2, columnSpan: 2 }, { startColumnIndex: 5, columnSpan: 2 }];
   var tiers = [
     { darRange: '< 1.0', ipRange: '< 1.0', label: 'MALO', bg: PDF_COLORS_.DANGER_BG, fg: PDF_COLORS_.DANGER },
     { darRange: '1.0 – 1.25', ipRange: '1.0 – 2.0', label: 'CUESTIONABLE', bg: PDF_COLORS_.WARNING_BG, fg: PDF_COLORS_.WARNING },
@@ -2580,9 +2641,9 @@ function buildDarIpLegendRows_() {
     cells[0] = 'DAR ' + t.darRange;
     cells[2] = t.label;
     cells[4] = 'IP ' + t.ipRange;
-    cells[6] = t.label;
+    cells[5] = t.label;
     var row = unifiedRow_(cells, 'legend', merges);
-    row.coloredCols = [{ col: 2, bg: t.bg, fg: t.fg }, { col: 6, bg: t.bg, fg: t.fg }];
+    row.coloredCols = [{ col: 2, bg: t.bg, fg: t.fg }, { col: 5, bg: t.bg, fg: t.fg }];
     rows.push(row);
   });
   return rows;
@@ -2718,8 +2779,55 @@ function buildTtrDeviationChart_(calc, esMonofasico, sectionNum) {
       .setDataTable(dataTable)
       .setTitle((sectionNum ? sectionNum + '. ' : '') + 'DESVIACIÓN POR FASE (TTR)')
       .setDimensions(460, 240)
-      .setColors(['#585d63', '#8f2d2d', '#3aaa35'])
+      .setColors([PDF_COLORS_.ACCENT, PDF_COLORS_.DANGER, PDF_COLORS_.SUCCESS])
       .setLegendPosition(Charts.Position.BOTTOM)
+      .build();
+    return chart.getAs('image/png');
+  } catch (e) {
+    return null;
+  }
+}
+
+/** Gráfica de curva de aislamiento (Punto 11, ronda 3, 2026-09-15 — a
+ *  pedido del "prompt maestro" del cliente): NO es una curva continua —
+ *  la app solo captura 3 lecturas por combinación (30 s / 60 s / 10 min,
+ *  ver `calculateInsulation_`), nunca puntos intermedios (15 s, 45 s,
+ *  2 min, 3 min...). Decisión explícita del cliente (2026-09-15): mostrar
+ *  esos 3 puntos reales conectados, no inventar una curva suave con datos
+ *  que no existen — ver regla 29 del prompt maestro ("no inventar
+ *  mediciones"). Usa `raw` (raw_readings_json), NO `calc`
+ *  (calculated_results_json) — `calculateInsulation_` guarda `dar`/`ip`/
+ *  `r60sMegaohm` en el resultado, pero NUNCA r30sMegaohm/r10minMegaohm
+ *  (se usan para calcular DAR/IP y se descartan) — esos 2 solo siguen
+ *  existiendo en las lecturas crudas. Solo aplica a método Completo
+ *  (Simple no tiene 3 tiempos, una sola lectura). */
+function buildInsulationCurveChart_(calc, raw, sectionNum) {
+  if (!raw || calc.metodo === 'simple') return null;
+  var keys = Object.keys(raw.measurements || {});
+  if (keys.length === 0) return null;
+  try {
+    var dataTable = Charts.newDataTable().addColumn(Charts.ColumnType.STRING, 'Tiempo');
+    keys.forEach(function (k) { dataTable.addColumn(Charts.ColumnType.NUMBER, k); });
+    var points = [
+      { label: '30 s', field: 'r30sMegaohm' },
+      { label: '60 s', field: 'r60sMegaohm' },
+      { label: '10 min', field: 'r10minMegaohm' }
+    ];
+    points.forEach(function (pt) {
+      var row = [pt.label];
+      keys.forEach(function (k) {
+        var m = raw.measurements[k];
+        row.push(m && m[pt.field] != null ? m[pt.field] : 0);
+      });
+      dataTable.addRow(row);
+    });
+    var chart = Charts.newLineChart()
+      .setDataTable(dataTable)
+      .setTitle((sectionNum ? sectionNum + '. ' : '') + 'CURVA DE AISLAMIENTO (MΩ)')
+      .setDimensions(460, 240)
+      .setColors([PDF_COLORS_.ACCENT, PDF_COLORS_.DANGER, PDF_COLORS_.SUCCESS])
+      .setLegendPosition(Charts.Position.BOTTOM)
+      .setPointStyle(Charts.PointStyle.MEDIUM)
       .build();
     return chart.getAs('image/png');
   } catch (e) {
@@ -2742,15 +2850,23 @@ function buildTtrDeviationChart_(calc, esMonofasico, sectionNum) {
  *  ancho) como en celdas de cada tabla ANIDADA (resultados/criterios) — el
  *  criterio visual de cada rol no cambió, solo dejó de estar atado a una
  *  sola tabla. */
+function cellAlign_(cell, alignment) {
+  if (cell.getNumChildren() > 0 && cell.getChild(0).getType() === DocumentApp.ElementType.PARAGRAPH) {
+    cell.getChild(0).asParagraph().setAlignment(alignment);
+  }
+}
+
 function styleUnifiedCell_(cell, r, c, padding) {
   cell.setPaddingTop(padding).setPaddingBottom(padding)
     .setPaddingLeft(padding).setPaddingRight(padding);
+  cell.editAsText().setFontFamily(PROTOCOL_FONT_FAMILY_);
   if (r.role === 'banner') {
     cell.setBackgroundColor(PDF_COLORS_.ACCENT);
     cell.editAsText().setBold(true).setFontSize(UNIFIED_FONT_BANNER_).setForegroundColor('#ffffff');
   } else if (r.role === 'header') {
     cell.setBackgroundColor(PDF_COLORS_.ACCENT);
-    cell.editAsText().setBold(true).setFontSize(UNIFIED_FONT_DATA_).setForegroundColor('#ffffff');
+    cell.editAsText().setBold(true).setFontSize(UNIFIED_FONT_HEADER_).setForegroundColor('#ffffff');
+    cellAlign_(cell, DocumentApp.HorizontalAlignment.CENTER);
   } else if (r.role === 'verdict') {
     var vcolors = verdictColor_(r.verdictValue);
     cell.setBackgroundColor(vcolors.bg);
@@ -2768,6 +2884,7 @@ function styleUnifiedCell_(cell, r, c, padding) {
     if (colorSpec) {
       cell.setBackgroundColor(colorSpec.bg);
       cell.editAsText().setBold(true).setFontSize(UNIFIED_FONT_DATA_).setForegroundColor(colorSpec.fg);
+      cellAlign_(cell, DocumentApp.HorizontalAlignment.CENTER);
     } else {
       cell.editAsText().setBold(false).setFontSize(UNIFIED_FONT_DATA_).setForegroundColor(PDF_COLORS_.TEXT_MUTED);
     }
@@ -2785,6 +2902,7 @@ function styleUnifiedCell_(cell, r, c, padding) {
     if (dataColor) {
       cell.setBackgroundColor(dataColor.bg);
       cell.editAsText().setFontSize(UNIFIED_FONT_DATA_).setBold(true).setForegroundColor(dataColor.fg);
+      cellAlign_(cell, DocumentApp.HorizontalAlignment.CENTER);
     } else {
       cell.editAsText().setFontSize(UNIFIED_FONT_DATA_).setBold(false).setForegroundColor(PDF_COLORS_.TEXT);
     }
@@ -2875,13 +2993,20 @@ function outerNestedPairRow_(leftRows, rightRows) {
 function outerPairTableImageRow_(leftRows, blob, widthPt, heightPt) {
   return { kind: 'pair-table-image', leftRows: leftRows, blob: blob, widthPt: widthPt, heightPt: heightPt };
 }
+/** Fila externa con una sola imagen a todo el ancho (fusionada) — Punto
+ *  11, ronda 3 (2026-09-15): la curva de aislamiento no empareja con
+ *  nada (Aislamiento ya usa sus 2 columnas con los resultados y la
+ *  leyenda DAR/IP), así que va sola, debajo, a todo lo ancho. */
+function outerImageFullRow_(blob, widthPt, heightPt) {
+  return { kind: 'image-full', blob: blob, widthPt: widthPt, heightPt: heightPt };
+}
 
 /** Inserta la tabla EXTERNA de 2 columnas en `body`, justo ANTES de
  *  `beforeChild` (el marcador `<<TABLA_RESULTADOS_ELECTRICOS>>` de la
  *  plantilla — sin cambios en la plantilla misma, ver Punto 11 en
  *  CLAUDE.md: el marcador ya soportaba insertar cualquier contenido ahí).
  *  `outerRows` es un arreglo de descriptores outerNestedFullRow_/
- *  outerNestedPairRow_/outerPairTableImageRow_. Devuelve, además de
+ *  outerNestedPairRow_/outerPairTableImageRow_/outerImageFullRow_. Devuelve, además de
  *  la tabla externa, un `nestedRegistry` (una entrada por tabla anidada
  *  creada, con su `bannerText` único y sus propias `mergeSpecs`) para que
  *  finalizeReportPdf_ se lo pase a applyOuterAndNestedMerges_. */
@@ -2908,6 +3033,16 @@ function insertOuterResultsTable_(body, beforeChild, outerRows) {
         if (r.widthPt) img.setWidth(r.widthPt);
         if (r.heightPt) img.setHeight(r.heightPt);
       }
+    } else if (r.kind === 'image-full') {
+      var fullImgCell = row.getCell(0);
+      fullImgCell.setPaddingTop(2).setPaddingBottom(2).setPaddingLeft(2).setPaddingRight(2);
+      if (r.blob) {
+        var fullImg = fullImgCell.appendImage(r.blob);
+        if (r.widthPt) fullImg.setWidth(r.widthPt);
+        if (r.heightPt) fullImg.setHeight(r.heightPt);
+      }
+      row.getCell(1).setPaddingTop(0).setPaddingBottom(0).setPaddingLeft(0).setPaddingRight(0);
+      outerMergeSpecs.push({ rowIndex: rowIndex, startColumnIndex: 0, columnSpan: OUTER_TABLE_COLS_ });
     } else if (r.kind === 'nested-full') {
       var nested = appendNestedTable_(row.getCell(0), r.nestedRows);
       row.getCell(1).setPaddingTop(0).setPaddingBottom(0).setPaddingLeft(0).setPaddingRight(0);
@@ -3237,6 +3372,26 @@ function getOilTemplateFileId_() {
   return PropertiesService.getScriptProperties().getProperty('TEMPLATE_ACEITE_FILE_ID');
 }
 
+/** Solo LEE los links de las plantillas ya existentes — a diferencia de
+ *  `crearPlantillasInformes_` (que las REGENERA desde cero cada vez que
+ *  se llama, único punto de la app que hasta ahora exponía el link), esta
+ *  acción (2026-09-15) no toca nada. Hacía falta: antes de esto, la única
+ *  forma de ver el link de la plantilla eléctrica era regenerarla —
+ *  arriesgando perder watermark/encabezado/pie que el cliente agrega a
+ *  mano. Nunca lanza — si nunca se generó una plantilla, `data` viene con
+ *  `null` en el campo correspondiente. */
+function getReportTemplateUrls_(params, auth) {
+  var elecId = getElectricalTemplateFileId_();
+  var oilId = getOilTemplateFileId_();
+  return jsonResponse_({
+    status: 200,
+    data: {
+      electricoUrl: elecId ? 'https://docs.google.com/document/d/' + elecId + '/edit' : null,
+      aceiteUrl: oilId ? 'https://docs.google.com/document/d/' + oilId + '/edit' : null
+    }
+  });
+}
+
 /** Arma la plantilla del informe Eléctrico — encabezado, datos del
  *  cliente/equipo, datos generales de la prueba, y firmas, con
  *  placeholders donde antes había datos reales. A diferencia de antes
@@ -3252,7 +3407,9 @@ function getOilTemplateFileId_() {
 function buildElectricalTemplateDoc_() {
   var doc = DocumentApp.create('PLANTILLA_INFORME_ELECTRICO_' + Date.now());
   var body = doc.getBody();
-  body.setMarginTop(36).setMarginBottom(36).setMarginLeft(50).setMarginRight(50);
+  body.setMarginTop(PROTOCOL_MARGIN_PT_).setMarginBottom(PROTOCOL_MARGIN_PT_)
+    .setMarginLeft(PROTOCOL_MARGIN_PT_).setMarginRight(PROTOCOL_MARGIN_PT_);
+  body.setPageWidth(PROTOCOL_PAGE_WIDTH_PT_).setPageHeight(PROTOCOL_PAGE_HEIGHT_PT_);
 
   appendPageHeader_(doc);
   // A diferencia de Aceite (que sí usa appendReportHeader_ completo, con
@@ -3288,7 +3445,9 @@ function buildElectricalTemplateDoc_() {
 function buildOilTemplateDoc_() {
   var doc = DocumentApp.create('PLANTILLA_INFORME_ACEITE_' + Date.now());
   var body = doc.getBody();
-  body.setMarginTop(36).setMarginBottom(36).setMarginLeft(50).setMarginRight(50);
+  body.setMarginTop(PROTOCOL_MARGIN_PT_).setMarginBottom(PROTOCOL_MARGIN_PT_)
+    .setMarginLeft(PROTOCOL_MARGIN_PT_).setMarginRight(PROTOCOL_MARGIN_PT_);
+  body.setPageWidth(PROTOCOL_PAGE_WIDTH_PT_).setPageHeight(PROTOCOL_PAGE_HEIGHT_PT_);
 
   appendPageHeader_(doc);
   appendReportHeader_(body, TEMPLATE_SITE_, TEMPLATE_TRANSFORMER_, TEST_TYPE_PROTOCOL_TITLE_.ACEITE_DIELECTRICO);
@@ -3474,6 +3633,45 @@ function restructureElectricalTemplateTitle_(params, auth) {
   });
 }
 
+/** Tamaño A4 (210 x 297 mm) y márgenes de 8 mm — reemplaza el Oficio
+ *  (216 x 330 mm) del mismo día (2026-09-15), a pedido del "prompt
+ *  maestro" del cliente: la referencia real tiene densidad alta y
+ *  necesita aprovechar casi todo el ancho de la hoja. 1 mm = 2.834645669
+ *  pt — 210mm=595.28pt, 297mm=841.89pt, 8mm=22.68pt. */
+var PROTOCOL_PAGE_WIDTH_PT_ = 595.28;
+var PROTOCOL_PAGE_HEIGHT_PT_ = 841.89;
+var PROTOCOL_MARGIN_PT_ = 22.68;
+
+/** Punto 11 (2026-09-15, a pedido del cliente) — fija tamaño A4 y
+ *  márgenes de 8 mm en las 2 plantillas YA EXISTENTES, igual criterio que
+ *  restructureElectricalTemplateTitle_: edita los documentos reales con
+ *  DocumentApp.openById (nunca una copia, nunca los regenera), así que el
+ *  watermark/encabezado/pie/título con foto que ya tienen NO se pierde.
+ *  `Body.setPageWidth`/`setPageHeight`/`setMargin*` son los únicos
+ *  métodos que existen para esto — no hay un "tamaño con nombre"
+ *  (Carta/Oficio/A4/Legal) en la API de DocumentApp, solo puntos.
+ *  Cambiar el tamaño/márgenes DESPUÉS de que el cliente ya insertó
+ *  imágenes de encabezado/pie puede correrlas de lugar — por eso es una
+ *  acción aparte, no algo que se aplique solo. */
+function setReportTemplatesPageSize_(params, auth) {
+  if (auth.role !== 'Administrador') {
+    return jsonResponse_({ status: 403, message: 'Solo un Administrador puede modificar las plantillas' });
+  }
+  var results = {};
+  [['electrico', getElectricalTemplateFileId_()], ['aceite', getOilTemplateFileId_()]].forEach(function (pair) {
+    var key = pair[0], fileId = pair[1];
+    if (!fileId) { results[key] = 'no existe'; return; }
+    var doc = DocumentApp.openById(fileId);
+    var body = doc.getBody();
+    body.setPageWidth(PROTOCOL_PAGE_WIDTH_PT_).setPageHeight(PROTOCOL_PAGE_HEIGHT_PT_);
+    body.setMarginTop(PROTOCOL_MARGIN_PT_).setMarginBottom(PROTOCOL_MARGIN_PT_)
+      .setMarginLeft(PROTOCOL_MARGIN_PT_).setMarginRight(PROTOCOL_MARGIN_PT_);
+    doc.saveAndClose();
+    results[key] = 'actualizado a A4 (210 x 297 mm), márgenes 8 mm';
+  });
+  return jsonResponse_({ status: 200, message: 'Tamaño de página y márgenes actualizados.', data: results });
+}
+
 /**
  * Un solo PDF consolidado (TTR/Devanados/Aislamiento, solo los tipos que
  * fueron ofertados para este equipo) — SOLO se genera desde la acción
@@ -3560,7 +3758,11 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
   // de dónde se arma outerRows: primero se calcula todo, después se arma
   // en el orden final del documento.
   function pushNormaUnica_(arr, norma) { if (arr.indexOf(norma) === -1) arr.push(norma); }
-  var instrumentLines = [];
+  // Punto 11, ronda 3 (2026-09-15): `equipos` reemplaza a `instrumentLines`
+  // — ahora es la fuente de la sección "EQUIPOS UTILIZADOS" (tabla propia
+  // con columnas Marca/Modelo, N° Serie, Fecha Calibración), no de texto
+  // corrido dentro de "Datos de la prueba".
+  var equipos = [];
   var normas = [];
   var presentLabels = [];
 
@@ -3575,7 +3777,11 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
     }
     var ttrCal = findMatchingCalibracionServer_(ttrRow.instrument_used);
     ttrInstrumento = 'Instrumento: ' + (ttrRow.instrument_used || '—') + (ttrCal ? ' (' + ttrCal.estado + ')' : '');
-    instrumentLines.push(['INSTRUMENTO TTR', buildInstrumentLine_(ttrRow.instrument_used, ttrCal)]);
+    equipos.push({
+      equipo: 'TTR', marcaModelo: ttrRow.instrument_used || '—',
+      numeroSerie: (ttrCal && ttrCal.numero_serie) || '—',
+      fechaCalibracion: (ttrCal && ttrCal.fecha_ultima_calibracion) ? fmtDatePdf_(ttrCal.fecha_ultima_calibracion) : '—'
+    });
     pushNormaUnica_(normas, 'IEEE C57.12.90');
     presentLabels.push('relación de transformación (TTR)');
   }
@@ -3586,21 +3792,29 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
     wrCalc = safeParseJson_(wrRow.calculated_results_json);
     var wrCal = findMatchingCalibracionServer_(wrRow.instrument_used);
     wrInstrumento = 'Instrumento: ' + (wrRow.instrument_used || '—') + (wrCal ? ' (' + wrCal.estado + ')' : '');
-    instrumentLines.push(['INSTRUMENTO MICRO-ÓHMETRO', buildInstrumentLine_(wrRow.instrument_used, wrCal)]);
+    equipos.push({
+      equipo: 'Micro-óhmetro', marcaModelo: wrRow.instrument_used || '—',
+      numeroSerie: (wrCal && wrCal.numero_serie) || '—',
+      fechaCalibracion: (wrCal && wrCal.fecha_ultima_calibracion) ? fmtDatePdf_(wrCal.fecha_ultima_calibracion) : '—'
+    });
     pushNormaUnica_(normas, 'IEEE C57.12.90');
     presentLabels.push('resistencia de devanados');
   }
 
-  var aisCalc = null, aisInstrumento = null, aisTension = null, aisEsSimple = false;
+  var aisCalc = null, aisRaw = null, aisInstrumento = null, aisTension = null, aisEsSimple = false;
   if (present.indexOf('AISLAMIENTO') !== -1) {
     var aisRow = latest.AISLAMIENTO;
     aisCalc = safeParseJson_(aisRow.calculated_results_json);
-    var aisRaw = safeParseJson_(aisRow.raw_readings_json);
+    aisRaw = safeParseJson_(aisRow.raw_readings_json);
     var aisCal = findMatchingCalibracionServer_(aisRow.instrument_used);
     aisInstrumento = 'Instrumento: ' + (aisRow.instrument_used || '—') + (aisCal ? ' (' + aisCal.estado + ')' : '');
     aisTension = aisRaw && aisRaw.tension_prueba_v ? (aisRaw.tension_prueba_v + ' V') : null;
     aisEsSimple = aisCalc.metodo === 'simple';
-    instrumentLines.push(['INSTRUMENTO MEGÓHMETRO', buildInstrumentLine_(aisRow.instrument_used, aisCal)]);
+    equipos.push({
+      equipo: 'Megóhmetro', marcaModelo: aisRow.instrument_used || '—',
+      numeroSerie: (aisCal && aisCal.numero_serie) || '—',
+      fechaCalibracion: (aisCal && aisCal.fecha_ultima_calibracion) ? fmtDatePdf_(aisCal.fecha_ultima_calibracion) : '—'
+    });
     pushNormaUnica_(normas, 'IEEE C57.152');
     presentLabels.push('resistencia de aislamiento');
   }
@@ -3609,13 +3823,24 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
   // huecos — un informe con solo Aislamiento numera esa sección "3.", no
   // "8." (el número que tendría si TTR/Devanados estuvieran presentes).
   var n = 1;
-  var outerRows = [
-    outerNestedFullRow_(numberSection_(buildClientEquipoUnifiedRows_(site, transformer), n++)),
-    outerNestedFullRow_(numberSection_(buildDatosGeneralesUnifiedRows_(
-      fmtDatePdf_(signedTest.created_at), tecnicoResponsable, ambienteTempText, ambienteHumedadText,
-      estadoEquipoText, instrumentLines, normas.join(' / ')
-    ), n++))
-  ];
+  // Sección 1 (ronda 3): Cliente/Equipo emparejado con Datos de la Prueba,
+  // ambos numerados como UNA sola sección "1." (mismo número para los 2 —
+  // la referencia real los trata como una sola sección con 2 mitades, no
+  // 2 secciones aparte).
+  var clienteEquipoRows = numberSection_(buildClientEquipoUnifiedRows_(site, transformer), n);
+  var datosPruebaRows = buildDatosGeneralesUnifiedRows_(
+    fmtDatePdf_(signedTest.created_at), tecnicoResponsable, ambienteTempText, ambienteHumedadText,
+    estadoEquipoText, normas.join(' / ')
+  );
+  n++;
+  var outerRows = [outerNestedPairRow_(clienteEquipoRows, datosPruebaRows)];
+
+  // Sección 2+3 (ronda 3): Objetivo y Alcance | Equipos Utilizados, lado a
+  // lado — nuevas, a pedido del "prompt maestro" del 2026-09-15.
+  outerRows.push(outerNestedPairRow_(
+    numberSection_(buildObjetivoAlcanceRows_(presentLabels), n++),
+    numberSection_(buildEquiposUtilizadosRows_(equipos), n++)
+  ));
 
   // TTR — a diferencia de AT/BT/Aislamiento (que van con un panel de
   // criterios al lado), la referencia real del cliente empareja TTR con
@@ -3682,7 +3907,9 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
   }
 
   // Aislamiento — sigue emparejado con su panel de criterios (leyenda
-  // DAR/IP en Completo, nota corta en Simple), igual que ya estaba.
+  // DAR/IP en Completo, nota corta en Simple), igual que ya estaba. La
+  // curva de aislamiento (ronda 3, 2026-09-15) va debajo, a todo el
+  // ancho, sin emparejar con nada — Aislamiento ya usa sus 2 columnas.
   if (aisCalc) {
     var aisRows = buildInsulationUnifiedRows_(aisCalc, aisInstrumento, aisTension);
     aisRows.push(nestedVerdictRow_('Veredicto Aislamiento', aisCalc.overallVerdict));
@@ -3691,11 +3918,24 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
     outerRows.push(outerNestedPairRow_(aisRows, aisCriteriaRows));
     allVerdicts.push(aisCalc.overallVerdict);
     allNotes = allNotes.concat(collectInsulationUnifiedNotes_(aisCalc));
+
+    if (!aisEsSimple) {
+      var curveBlob = buildInsulationCurveChart_(aisCalc, aisRaw, n);
+      if (curveBlob) {
+        outerRows.push(outerImageFullRow_(curveBlob, 420, 220));
+        n++;
+      }
+    }
   }
 
+  // Observaciones + Conclusión General — emparejadas lado a lado (ronda
+  // 3, 2026-09-15); antes iban apiladas a todo el ancho, una debajo de
+  // la otra.
   var conclusionVerdict = allVerdicts.length && allVerdicts.every(function (v) { return String(v).indexOf('APROBADO') === 0; }) ? 'APROBADO' : 'RECHAZADO';
-  outerRows.push(outerNestedFullRow_(numberSection_(buildObservacionesRows_(presentLabels, estadoEquipoText, normas.join(' / '), conclusionVerdict === 'APROBADO'), n++)));
-  outerRows.push(outerNestedFullRow_(numberSection_(buildConclusionRows_(conclusionVerdict), n++)));
+  outerRows.push(outerNestedPairRow_(
+    numberSection_(buildObservacionesRows_(presentLabels, estadoEquipoText, normas.join(' / '), conclusionVerdict === 'APROBADO'), n++),
+    numberSection_(buildConclusionRows_(conclusionVerdict), n++)
+  ));
 
   var tablePlaceholderPar = findMarkerParagraph_(body, '<<TABLA_RESULTADOS_ELECTRICOS>>');
   if (!tablePlaceholderPar) throw new Error('La plantilla no tiene el marcador de la tabla de resultados — regenera las plantillas desde Administración.');
@@ -4719,6 +4959,7 @@ var POST_ACTIONS = {
   certifyElectricalReport: certifyElectricalReport_,
   generateReportTemplates: crearPlantillasInformes_,
   restructureElectricalTemplateTitle: restructureElectricalTemplateTitle_,
+  setReportTemplatesPageSize: setReportTemplatesPageSize_,
   rejectTest: rejectTest_,
   updateTestDraft: updateTestDraft_,
   uploadDocument: uploadDocument_,
@@ -4744,5 +4985,6 @@ var GET_ACTIONS = {
   listTests: listTests_,
   listDocuments: listDocuments_,
   listOfertas: listOfertas_,
-  listCalibraciones: listCalibraciones_
+  listCalibraciones: listCalibraciones_,
+  getReportTemplateUrls: getReportTemplateUrls_
 };

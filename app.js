@@ -1376,6 +1376,7 @@ function renderAdminNavAndPanel() {
     '<div class="panel-head"><h2>Plantillas de informes</h2></div>' +
     '<p class="field-note" style="padding:0 18px 12px;">Genera (o regenera) las 2 plantillas de PDF (Eléctrico y Aceite) con la estructura y colores actuales. Después de generarlas, ábrelas desde Drive y agrégales el watermark del logo a mano (Insertar imagen → Detrás del texto → transparencia 85-92% → centrada) — eso no se puede hacer por código. Mientras no exista una plantilla, certificar informes de ese tipo falla.</p>' +
     '<div style="padding:0 18px 18px;">' +
+    '<button class="btn" type="button" id="viewTemplatesBtn" onclick="handleViewReportTemplates_()">Ver plantillas actuales</button> ' +
     '<button class="btn primary" type="button" id="generateTemplatesBtn" onclick="handleGenerateReportTemplates_()">Generar plantillas de informes</button>' +
     '<div id="generateTemplatesLinks" style="margin-top:10px;"></div>' +
     '<span class="status-line" id="generateTemplatesStatus" hidden></span>' +
@@ -1385,6 +1386,36 @@ function renderAdminNavAndPanel() {
   document.querySelector('main').appendChild(section);
   document.getElementById('createUserForm').addEventListener('submit', handleCreateUserSubmit);
   loadAdminUsersAndRender_();
+}
+
+/** Solo LEE los links de las plantillas ya existentes (getReportTemplateUrls_,
+ *  2026-09-15) — a diferencia de "Generar plantillas de informes", esta NO
+ *  regenera nada, así que no hace falta confirm() ni arriesga el
+ *  watermark/encabezado/pie que ya se agregó a mano. Existía un hueco
+ *  real antes de esto: la única forma de ver el link de la plantilla
+ *  eléctrica era regenerarla. */
+function handleViewReportTemplates_() {
+  var btn = document.getElementById('viewTemplatesBtn');
+  var status = document.getElementById('generateTemplatesStatus');
+  var links = document.getElementById('generateTemplatesLinks');
+  btn.disabled = true;
+  setStatus_(status, 'Buscando plantillas…', false);
+
+  callApi('getReportTemplateUrls', 'GET', {})
+    .then(function (data) {
+      if (!data.electricoUrl && !data.aceiteUrl) {
+        setStatus_(status, 'Todavía no existe ninguna plantilla — usa "Generar plantillas de informes".', false, true);
+        return;
+      }
+      setStatus_(status, 'Plantillas actuales:', true);
+      links.innerHTML =
+        (data.electricoUrl ? '<a class="pill success" href="' + data.electricoUrl + '" target="_blank" rel="noopener">Abrir plantilla Eléctrico</a> ' : '') +
+        (data.aceiteUrl ? '<a class="pill success" href="' + data.aceiteUrl + '" target="_blank" rel="noopener">Abrir plantilla Aceite</a>' : '');
+    })
+    .catch(function (err) {
+      setStatus_(status, (err && err.message) || 'No se pudieron buscar las plantillas.', false, true);
+    })
+    .then(function () { btn.disabled = false; });
 }
 
 /** Corre crearPlantillasInformes_ una sola vez (o de nuevo, si hace falta
