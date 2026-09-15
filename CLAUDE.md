@@ -780,19 +780,42 @@ Observaciones con la frase generada, Conclusión con checkbox, y "12."
 numerado correctamente sobre la sección de firmas — sin tocar la
 plantilla, sin regenerarla.
 
-**Pendiente real — no implementado, requiere decisión del cliente**:
-espacio reservado para foto de transformador + caja de control de
-documento (CÓDIGO/VERSIÓN/FECHA/PÁGINA) que se ve en la referencia real,
-arriba a la derecha del título. A diferencia de todo lo demás en esta
-ronda, esto SÍ requeriría tocar la plantilla en sí (`buildElectricalTemplateDoc_`
-arma el título como una sola barra ancha, sin ninguna columna reservada
-para una imagen) — dos caminos: (a) regenerar la plantilla completa
-(pierde el watermark/encabezado/pie que el cliente ya agregó a mano, hay
-que rehacerlos después) o (b) una función puntual que abra la plantilla
-YA EXISTENTE y solo reestructure el título (agregar una celda vacía al
-lado, sin tocar nada más) — más seguro, no se ha escrito todavía porque
-falta confirmar con el cliente si de verdad lo quiere antes de arriesgar
-su plantilla actual.
+**Espacio para foto + control de documento — implementado 2026-09-14,
+verificado en vivo**: el cliente eligió la opción (b) (editar la
+plantilla YA EXISTENTE en el título, sin regenerarla — así no se pierde
+el watermark/encabezado/pie que ya había agregado a mano).
+`restructureElectricalTemplateTitle_` (acción `restructureElectricalTemplateTitle`,
+solo Administrador) abre la plantilla real con `DocumentApp.openById`
+(NO una copia), ubica la tabla del título por forma+contenido exacto (1
+fila, 1 celda, texto `'PROTOCOLO DE PRUEBAS ELÉCTRICAS'` — mismo
+criterio de "ubicar por contenido" que `findMarkerParagraph_`) y la
+reemplaza por una de 2 columnas: título a la izquierda (sin cambios
+visuales) y a la derecha, en la MISMA celda, un párrafo `CÓDIGO:/
+VERSIÓN:/FECHA:/PÁGINA:` (texto de ejemplo, editable a mano en la
+plantilla — igual criterio que el watermark, nunca datos que genere el
+código) seguido de una tabla anidada de 1 celda vacía con borde,
+etiquetada "Foto del equipo", para que el cliente inserte la imagen él
+mismo. Nunca lanza si no encuentra la tabla del título (plantilla ya
+migrada, o título editado a mano) — seguro de correr más de una vez.
+
+Es una acción de UNA SOLA VEZ (mueve la plantilla de un estado a otro),
+no algo que se repita en cada informe — se corrió una vez desde el
+navegador (`callApi('restructureElectricalTemplateTitle', 'POST', {})`)
+y queda en el código por si algún día hace falta rehacer la plantilla
+desde cero y aplicarle esto de nuevo.
+
+**Bug real encontrado en la primera corrida** (2026-09-14):
+`photoCell.setHeight(70)` — `TableCell` no tiene `setHeight()`, la altura
+mínima se fija en la FILA (`TableRow.setMinimumHeight()`), no en la
+celda. La función lanzó a mitad de camino, pero como `DocumentApp` aplica
+los cambios a la plantilla real de forma incremental (no hace falta
+`saveAndClose()` para que un `insertTable`/`appendTable` ya escrito
+persista), la plantilla quedó completa igual (título, caja de control,
+caja de foto, todo con el texto correcto) — solo le faltó la altura
+mínima de la fila de la foto, puramente cosmético. Se corrigió en el
+código (para la próxima vez que se use) pero NO hizo falta reparar la
+plantilla ya migrada — se verificó visualmente generando un informe
+real y se ve correcta tal cual quedó.
 
 **Costo/infraestructura** (aclarado explícitamente al cliente, que
 preguntó): $0 en servicios externos — todo corre dentro de la misma

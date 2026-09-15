@@ -3390,6 +3390,91 @@ function crearPlantillasInformes_(params, auth) {
 }
 
 /**
+ * Punto 11, ronda 2 (2026-09-14) — migración puntual de la plantilla
+ * ELÉCTRICA YA EXISTENTE (no una regeneración): el cliente compartió un
+ * protocolo real donde el título trae, a la derecha, una caja de control
+ * de documento (CÓDIGO/VERSIÓN/FECHA/PÁGINA) y un espacio para la foto
+ * del equipo — ninguno de los dos existía en `appendProtocolTitle_`
+ * (título de una sola celda, a todo lo ancho). Regenerar la plantilla
+ * completa (`crearPlantillasInformes_`) los agregaría, pero BORRARÍA el
+ * encabezado/pie de página/watermark que el cliente ya agregó a mano —
+ * en vez de eso, esta función abre la plantilla YA EXISTENTE con
+ * DocumentApp (no una copia) y reestructura SOLO la tabla del título,
+ * dejando todo lo demás (header/footer/watermark, cuerpo del informe)
+ * intacto.
+ *
+ * Ubica la tabla del título por FORMA + CONTENIDO exacto (1 fila, 1
+ * celda, texto 'PROTOCOLO DE PRUEBAS ELÉCTRICAS' — el mismo criterio de
+ * "ubicar por contenido, nunca por índice adivinado" que ya usa
+ * findMarkerParagraph_/pinResultsTableHeaders_). Si no la encuentra (la
+ * plantilla ya fue migrada antes, o alguien cambió el texto del título a
+ * mano), no hace nada — nunca lanza, es seguro correrla más de una vez.
+ * CÓDIGO/VERSIÓN/FECHA/PÁGINA y la foto quedan como texto/celda vacíos
+ * para que el cliente los llene directo en la plantilla — mismo criterio
+ * que el watermark, nunca datos que el código genere o inserte.
+ */
+function restructureElectricalTemplateTitle_(params, auth) {
+  if (auth.role !== 'Administrador') {
+    return jsonResponse_({ status: 403, message: 'Solo un Administrador puede modificar la plantilla' });
+  }
+  var templateId = getElectricalTemplateFileId_();
+  if (!templateId) {
+    return jsonResponse_({ status: 400, message: 'No existe la plantilla del informe eléctrico — genérala primero desde Administración.' });
+  }
+
+  var doc = DocumentApp.openById(templateId);
+  var body = doc.getBody();
+  var titleTable = null;
+  for (var i = 0; i < body.getNumChildren(); i++) {
+    var child = body.getChild(i);
+    if (child.getType() !== DocumentApp.ElementType.TABLE) continue;
+    var t = child.asTable();
+    if (t.getNumRows() === 1 && t.getRow(0).getNumCells() === 1 && t.getText().trim() === 'PROTOCOLO DE PRUEBAS ELÉCTRICAS') {
+      titleTable = t;
+      break;
+    }
+  }
+  if (!titleTable) {
+    return jsonResponse_({ status: 404, message: 'No se encontró el título del protocolo en la plantilla — puede que ya se haya migrado antes, o que el título se haya editado a mano.' });
+  }
+
+  var idx = body.getChildIndex(titleTable);
+  body.removeChild(titleTable);
+
+  var newTitleTable = body.insertTable(idx, [['PROTOCOLO DE PRUEBAS ELÉCTRICAS', '']]);
+  newTitleTable.setBorderColor(PDF_COLORS_.ACCENT);
+  var titleCell = newTitleTable.getRow(0).getCell(0);
+  titleCell.setBackgroundColor(PDF_COLORS_.ACCENT_SOFT);
+  titleCell.setWidth(380);
+  titleCell.getChild(0).asParagraph().setAlignment(DocumentApp.HorizontalAlignment.CENTER);
+  titleCell.editAsText().setBold(true).setFontSize(13).setForegroundColor(PDF_COLORS_.ACCENT);
+
+  // Caja de control de documento — texto de ejemplo, editable directo en
+  // la plantilla (nunca lo toca regenerateElectricalCombinedReport_).
+  var controlCell = newTitleTable.getRow(0).getCell(1);
+  controlCell.setBackgroundColor('#ffffff');
+  controlCell.editAsText().setText('CÓDIGO:\nVERSIÓN:\nFECHA:\nPÁGINA:');
+  controlCell.editAsText().setBold(false).setFontSize(7).setForegroundColor(PDF_COLORS_.TEXT_MUTED);
+
+  // Espacio para la foto del equipo — caja vacía con borde, el cliente
+  // inserta la imagen directo ahí (Insertar > Imagen > Desde el equipo).
+  var photoTable = controlCell.appendTable();
+  photoTable.setBorderColor(PDF_COLORS_.BORDER);
+  var photoRow = photoTable.appendTableRow();
+  photoRow.setMinimumHeight(70);
+  var photoCell = photoRow.appendTableCell('Foto del equipo');
+  photoCell.getChild(0).asParagraph().setAlignment(DocumentApp.HorizontalAlignment.CENTER);
+  photoCell.editAsText().setItalic(true).setFontSize(7).setForegroundColor(PDF_COLORS_.TEXT_MUTED);
+
+  doc.saveAndClose();
+  return jsonResponse_({
+    status: 200,
+    message: 'Plantilla actualizada — abre el título y agrega la foto del equipo + completa CÓDIGO/VERSIÓN/FECHA/PÁGINA directo ahí.',
+    data: { templateUrl: 'https://docs.google.com/document/d/' + templateId + '/edit' }
+  });
+}
+
+/**
  * Un solo PDF consolidado (TTR/Devanados/Aislamiento, solo los tipos que
  * fueron ofertados para este equipo) — SOLO se genera desde la acción
  * explícita "Certificar Pruebas Eléctricas" (certifyElectricalReport_),
@@ -4633,6 +4718,7 @@ var POST_ACTIONS = {
   certifyTest: certifyTest_,
   certifyElectricalReport: certifyElectricalReport_,
   generateReportTemplates: crearPlantillasInformes_,
+  restructureElectricalTemplateTitle: restructureElectricalTemplateTitle_,
   rejectTest: rejectTest_,
   updateTestDraft: updateTestDraft_,
   uploadDocument: uploadDocument_,
