@@ -1927,6 +1927,13 @@ function appendSectionTitle_(body, text) {
   var cell = table.getRow(0).getCell(0);
   cell.setBackgroundColor(PDF_COLORS_.ACCENT);
   cell.editAsText().setBold(true).setFontSize(9).setForegroundColor('#ffffff');
+  cell.setPaddingTop(1).setPaddingBottom(1).setPaddingLeft(2).setPaddingRight(2);
+  // Punto 11, ronda 6f (2026-09-16): mismo ajuste de espaciado de párrafo
+  // que styleUnifiedCell_ (ver appendSignatureSection_) — esta tabla-título
+  // nunca pasaba por ahí.
+  if (cell.getNumChildren() > 0 && cell.getChild(0).getType() === DocumentApp.ElementType.PARAGRAPH) {
+    cell.getChild(0).asParagraph().setSpacingBefore(0).setSpacingAfter(0).setLineSpacing(1);
+  }
   return table;
 }
 
@@ -2131,26 +2138,52 @@ function appendSignatureSection_(body, probadoPor, certificadoPor) {
     ]
   ]);
   table.setBorderColor(PDF_COLORS_.BORDER);
+  // Punto 11, ronda 6j (2026-09-16): padding 2/3pt -> 1/2pt — con el
+  // informe real ya a SOLO esta tabla (Sección 12) de caber en 1 página
+  // (todo lo demás, 1-11, ya cabe), sigue el mismo criterio de piso
+  // 0.5-2pt que el resto del documento.
   for (var c = 0; c < 3; c++) {
     table.getRow(0).getCell(c).setBackgroundColor(PDF_COLORS_.NEUTRAL_BG);
-    table.getRow(0).getCell(c).editAsText().setBold(true).setFontSize(7).setFontFamily(PROTOCOL_FONT_FAMILY_);
+    table.getRow(0).getCell(c).editAsText().setBold(true).setFontSize(6.5).setFontFamily(PROTOCOL_FONT_FAMILY_);
     table.getRow(1).getCell(c).editAsText().setFontFamily(PROTOCOL_FONT_FAMILY_);
+    table.getRow(0).getCell(c).setPaddingTop(1).setPaddingBottom(1).setPaddingLeft(2).setPaddingRight(2);
+    table.getRow(1).getCell(c).setPaddingTop(1).setPaddingBottom(1).setPaddingLeft(2).setPaddingRight(2);
   }
-  table.getRow(1).getCell(0).editAsText().setFontSize(8);
-  table.getRow(1).getCell(1).editAsText().setFontSize(8);
+  table.getRow(1).getCell(0).editAsText().setFontSize(7);
+  table.getRow(1).getCell(1).editAsText().setFontSize(7);
 
   var aprobadoCell = table.getRow(1).getCell(2);
   var engineerBlob = getEngineerSignatureBlob_();
   if (engineerBlob) {
     var img = aprobadoCell.appendImage(engineerBlob);
     var ratio = img.getHeight() / img.getWidth();
-    img.setWidth(70);
-    img.setHeight(Math.round(70 * ratio));
+    // Punto 11, ronda 6j (2026-09-16): 35 -> 26pt — sigue siendo, con
+    // diferencia, el elemento más alto de la fila; el resto (nombre+cargo)
+    // apenas suma ~14pt.
+    img.setWidth(26);
+    img.setHeight(Math.round(26 * ratio));
   }
   var nameLine = aprobadoCell.appendParagraph(ENGINEER_SIGNATURE_NAME_);
-  nameLine.editAsText().setBold(true).setFontSize(8);
+  nameLine.editAsText().setBold(true).setFontSize(7);
   var titleLine = aprobadoCell.appendParagraph(ENGINEER_SIGNATURE_TITLE_);
-  titleLine.editAsText().setFontSize(7).setForegroundColor(PDF_COLORS_.TEXT_MUTED);
+  titleLine.editAsText().setFontSize(6.5).setForegroundColor(PDF_COLORS_.TEXT_MUTED);
+
+  // Punto 11, ronda 6f (2026-09-16) — esta tabla de firmas NUNCA pasaba por
+  // `styleUnifiedCell_` (es contenido de plantilla armado aparte, no parte
+  // de la tabla unificada), así que ninguno de sus párrafos tenía el
+  // espaciado antes/después ni el interlineado normalizados — el mismo
+  // ajuste que en la ronda 6c sí movió el corte de página real cuando se
+  // aplicó a la tabla unificada. Se replica acá, a las 3 celdas (incluida
+  // `aprobadoCell`, que además tiene 2 párrafos propios de nombre/cargo).
+  [table.getRow(0).getCell(0), table.getRow(0).getCell(1), table.getRow(0).getCell(2),
+   table.getRow(1).getCell(0), table.getRow(1).getCell(1), table.getRow(1).getCell(2)].forEach(function (cell) {
+    for (var pi = 0; pi < cell.getNumChildren(); pi++) {
+      var pchild = cell.getChild(pi);
+      if (pchild.getType() === DocumentApp.ElementType.PARAGRAPH) {
+        pchild.asParagraph().setSpacingBefore(0).setSpacingAfter(0).setLineSpacing(1);
+      }
+    }
+  });
 }
 
 var TEST_TYPE_DISPLAY_LABEL_ = {
@@ -2197,26 +2230,66 @@ var UNIFIED_TABLE_COLS_ = 7;
  *  sobre caber en 1 sola hoja a toda costa — ver Punto 11 en CLAUDE.md,
  *  "control de desbordamiento": ajustar espaciado ANTES que sacrificar
  *  tamaño de fuente). */
-var UNIFIED_FONT_BANNER_ = 9;
-var UNIFIED_FONT_HEADER_ = 7.5;
+// Tamaños bajados otra vez en la ronda 4 (2026-09-16, "una sola página")
+// dentro de los rangos que el cliente pidió esta vez (banner 8-8.5,
+// encabezados de tabla 6.5-7) — el orden que pidió es geometría/espaciado/
+// columnas PRIMERO, tipografía después; esto es el paso de tipografía,
+// aplicado después de los anchos de columna (TTR_WINDING_COL_WIDTHS_PT_/
+// EQUIPOS_COL_WIDTHS_PT_) que ya deberían evitar el wrap sin bajar más la
+// fuente de datos.
+var UNIFIED_FONT_BANNER_ = 8.5;
+var UNIFIED_FONT_HEADER_ = 7;
 var UNIFIED_FONT_VERDICT_ = 8;
-// UNIFIED_FONT_DATA_ bajó de 7 a 6 (2026-09-15, verificación en vivo de la
-// ronda 3): con 7pt, palabras de estado como "APROBADO"/"EXCELENTE"/
-// "CUESTIONABLE" se partían en 2 líneas dentro de las columnas angostas
-// de las tablas anidadas emparejadas (AT+BT, Aislamiento+DAR-IP, cada una
-// a ~50% del ancho de página) — 6pt sigue dentro del piso que pidió el
-// cliente ("no usar fuentes menores de 6pt salvo notas muy pequeñas").
+// UNIFIED_FONT_DATA_ se queda en 6 (no en 6.5-7 como pide esta ronda) —
+// bajó de 7 a 6 en la ronda 3 porque a 7pt palabras como "APROBADO"/
+// "EXCELENTE"/"CUESTIONABLE" se partían en 2 líneas en las columnas
+// angostas de las tablas emparejadas. Con los anchos de columna explícitos
+// de esta ronda eso debería resolverse en la RAÍZ (geometría, no fuente)
+// — pero hasta verificarlo en vivo, se deja en 6 (dentro del piso que la
+// ronda 3 ya había fijado) en vez de arriesgar que vuelva a partirse.
 var UNIFIED_FONT_DATA_ = 6;
 /** Padding mínimo de celda (en puntos) — DocumentApp lo deja en ~5pt por
  *  defecto en cada lado; bajarlo a esto es lo que de verdad reduce la
  *  altura de cada fila (más que la fuente en sí), igual que pidió el
- *  cliente ("celdas y filas al mínimo"). */
-var UNIFIED_CELL_PADDING_ = 1;
+ *  cliente ("celdas y filas al mínimo").
+ *  Punto 11, ronda 6 (2026-09-16): bajado de 1 a 0.5 — con la Sección
+ *  8/9 (Gráficos+Criterios) ya en su piso de compactación (ver
+ *  `buildWindingCriteriaTable3Tier_`/`buildInsulationUnifiedRows_`/
+ *  `buildDarIpLegendRows_`, `rows.cellPadding = 0.5`), el PDF real seguía
+ *  desbordando a una 2ª página por SOLO la última fila de la leyenda
+ *  DAR/IP (confirmado con pdftotext -f 2 -l 2 sobre un informe generado
+ *  en vivo). El diagnóstico esta vez no fue "una sección puntual", sino
+ *  el padding de 1pt acumulado en las ~35-40 filas del resto de
+ *  secciones (1-7, 10, 11) que NO tenían override — bajar el piso
+ *  global a 0.5pt (mismo valor ya validado para 8/9, dentro del rango
+ *  0.5-2pt que pidió el cliente) recupera ~35-40pt, de sobra para la
+ *  ~1 fila que faltaba. */
+var UNIFIED_CELL_PADDING_ = 0.5;
 /** Familia tipográfica única del protocolo — Arial, a pedido explícito
  *  del "prompt maestro" (punto 5). Google Docs ya usa Arial por defecto
  *  en documentos nuevos, pero se fija explícito en cada celda para no
  *  depender de ese default. */
 var PROTOCOL_FONT_FAMILY_ = 'Arial';
+
+// Punto 11, ronda 4 (2026-09-16) — anchos de columna explícitos para las
+// tablas anidadas que SIEMPRE viven en contexto de mitad de página (TTR,
+// AT, BT y Equipos Utilizados van emparejadas de a 2, ver
+// regenerateElectricalCombinedReport_) — sin esto DocumentApp reparte las
+// 7 columnas en partes iguales y las palabras largas de encabezado/estado
+// se parten. 270pt es un ancho conservador para la mitad de página en A4
+// con márgenes de 6mm (columna útil real ≈ 276pt; se deja un margen de
+// seguridad para el borde/padding de la tabla externa).
+var NESTED_HALF_WIDTH_PT_ = 270;
+/** TAP/U/V/W/PROMEDIO-o-TEÓRICA/DESVIACIÓN-o-ERROR/ESTADO — usada por TTR
+ *  Y Devanados (misma forma de 7 columnas en ambas). ESTADO se deja la
+ *  más ancha de las 3 últimas porque ahí caen las palabras más largas
+ *  (CUESTIONABLE en Devanados, aunque en la práctica esa tabla solo
+ *  muestra APROBADO/RECHAZADO/REGISTRADO). */
+var TTR_WINDING_COL_WIDTHS_PT_ = [24, 30, 30, 30, 51, 49, 56];
+/** EQUIPO(1 col)/MARCA-MODELO(2 cols fusionadas)/N° SERIE(2 cols)/FECHA
+ *  CALIBRACIÓN(2 cols) — MARCA/MODELO se deja la más ancha porque ahí van
+ *  los nombres de instrumento más largos ("Micro-ohmmeter DLRO-10"). */
+var EQUIPOS_COL_WIDTHS_PT_ = [41, 54, 54, 27, 27, 34, 33];
 
 /** Una fila "lógica" de la tabla unificada. `cells` siempre tiene 7
  *  strings (relleno con '' donde una fusión posterior los va a tapar).
@@ -2282,34 +2355,34 @@ function numberSection_(rows, num) {
  *  el dato más largo (nombre de cliente, número de serie, etc). */
 function buildClientEquipoUnifiedRows_(site, transformer) {
   var rows = [unifiedBannerRow_('DATOS DEL CLIENTE Y DEL EQUIPO')];
-  // Punto 11, ronda 3 (2026-09-15): 1 par etiqueta/valor por fila (antes
-  // eran 2 por fila, pensado para cuando esta grilla ocupaba TODO el
-  // ancho de la página — Punto 10). Desde que la Sección 1 empareja esto
-  // con "Datos de la prueba" al 50%, 2 pares por fila dejaba la etiqueta
-  // en solo 1 de 7 columnas físicas y el texto se partía en 3-4 líneas
-  // (“GRUPO DE / CONEXIÓN”, “REFRIGER / ACIÓN”) — detectado en la
-  // verificación en vivo de esta ronda. 1 par por fila con etiqueta(2)+
-  // valor(5) da mucho más espacio a cada uno, a costa de más filas
-  // (11 en vez de 6) — aceptable, la fila es angosta de por sí.
-  var merges = [{ startColumnIndex: 0, columnSpan: 2 }, { startColumnIndex: 2, columnSpan: 5 }];
+  // Punto 11, ronda 4 (2026-09-16): VUELVE a 2 pares etiqueta/valor por
+  // fila (6 filas) — la ronda 3 lo había bajado a 1 por fila (12 filas)
+  // porque en ese momento esta grilla vivía emparejada al 50% con "Datos
+  // de la prueba" (solo 6 filas), y 2 pares en esa mitad angosta partía
+  // las etiquetas largas. En la verificación en vivo de ESTA ronda se vio
+  // que ese emparejamiento dejaba media columna de espacio en blanco (12
+  // filas de un lado contra 6 del otro fuerzan la fila externa a la altura
+  // de la más alta) — un desperdicio real de espacio vertical, la
+  // prioridad #1 de esta ronda. La sección volvió a ancho completo (ver
+  // regenerateElectricalCombinedReport_: ya NO se empareja con "Datos de
+  // la prueba", cada una es su propia fila externa de ancho completo) —
+  // a ancho completo, 2 pares por fila SÍ tienen espacio de sobra (ya
+  // verificado así en la ronda 2, antes de que existiera el layout de 2
+  // columnas), así que no hay riesgo de que la etiqueta se vuelva a
+  // partir, y la sección queda a la mitad de alto (6 filas en vez de 12).
+  var pairMerges = [{ startColumnIndex: 1, columnSpan: 2 }, { startColumnIndex: 4, columnSpan: 3 }];
   var pairs = [
-    ['CLIENTE', site.client_name || '—'],
-    ['PROYECTO', site.project_name || '—'],
-    ['CIUDAD', site.ciudad || '—'],
-    ['NIT', site.nit || '—'],
-    ['FABRICANTE', transformer.manufacturer || '—'],
-    ['N° DE SERIE', transformer.serial_number || '—'],
-    ['GRUPO DE CONEXIÓN', transformer.vector_group || '—'],
-    ['POTENCIA NOMINAL', transformer.rated_power_kva ? (String(transformer.rated_power_kva) + ' kVA') : '—'],
-    ['TENSIÓN PRIMARIA', transformer.hv_nominal_voltage ? (String(transformer.hv_nominal_voltage) + ' V') : '—'],
-    ['TENSIÓN SECUNDARIA', transformer.lv_nominal_voltage ? (String(transformer.lv_nominal_voltage) + ' V') : '—'],
-    ['REFRIGERACIÓN', transformer.cooling_type || '—'],
-    ['AÑO DE FABRICACIÓN', transformer.manufacture_year ? String(transformer.manufacture_year) : '—']
+    ['CLIENTE', site.client_name || '—', 'NIT', site.nit || '—'],
+    ['CIUDAD', site.ciudad || '—', 'PROYECTO', site.project_name || '—'],
+    ['FABRICANTE', transformer.manufacturer || '—', 'N° DE SERIE', transformer.serial_number || '—'],
+    ['GRUPO DE CONEXIÓN', transformer.vector_group || '—', 'POTENCIA NOMINAL', transformer.rated_power_kva ? (String(transformer.rated_power_kva) + ' kVA') : '—'],
+    ['TENSIÓN PRIMARIA', transformer.hv_nominal_voltage ? (String(transformer.hv_nominal_voltage) + ' V') : '—', 'TENSIÓN SECUNDARIA', transformer.lv_nominal_voltage ? (String(transformer.lv_nominal_voltage) + ' V') : '—'],
+    ['REFRIGERACIÓN', transformer.cooling_type || '—', 'AÑO DE FABRICACIÓN', transformer.manufacture_year ? String(transformer.manufacture_year) : '—']
   ];
   pairs.forEach(function (p) {
     var cells = new Array(UNIFIED_TABLE_COLS_).fill('');
-    cells[0] = p[0]; cells[2] = p[1];
-    rows.push(unifiedLabelRow_(cells, [0], merges));
+    cells[0] = p[0]; cells[1] = p[1]; cells[3] = p[2]; cells[4] = p[3];
+    rows.push(unifiedLabelRow_(cells, [0, 3], pairMerges));
   });
   return rows;
 }
@@ -2327,32 +2400,28 @@ function buildClientEquipoUnifiedRows_(site, transformer) {
  *  del cliente): reemplaza a la "Datos generales de la prueba" de la
  *  ronda 2, que traía los instrumentos mezclados adentro — ahora los
  *  instrumentos son su propia sección aparte ("Equipos utilizados", ver
- *  `buildEquiposUtilizadosRows_`), así que esta queda una lista simple de
- *  1 columna: FECHA/TÉCNICO/TEMP/HUMEDAD/ESTADO DEL EQUIPO (dato que YA
- *  existía en el modelo — `transformer.estado_equipo`) + NORMAS DE
- *  REFERENCIA. Pensada para ir en la mitad angosta del layout de 2
- *  columnas (emparejada con "Datos del cliente y del equipo" en la
- *  Sección 1), por eso ya no reparte 2 pares por fila como antes. */
+ *  `buildEquiposUtilizadosRows_`), así que esta queda con FECHA/TÉCNICO/
+ *  TEMP/HUMEDAD/ESTADO DEL EQUIPO (dato que YA existía en el modelo —
+ *  `transformer.estado_equipo`) + NORMAS DE REFERENCIA.
+ *
+ *  Punto 11, ronda 4 (2026-09-16): vuelve a 2 pares por fila (3 filas, no
+ *  6) — igual motivo y mismo cambio que `buildClientEquipoUnifiedRows_`:
+ *  esta sección ya NO va emparejada al 50% con "Datos del cliente y del
+ *  equipo" (ver regenerateElectricalCombinedReport_), así que 2 pares por
+ *  fila a ancho completo tiene espacio de sobra, sin riesgo de partir
+ *  "TÉCNICO RESPONSABLE"/"TEMPERATURA AMBIENTE". */
 function buildDatosGeneralesUnifiedRows_(fechaText, tecnicoText, tempText, humedadText, estadoEquipoText, normasText) {
   var rows = [unifiedBannerRow_('DATOS DE LA PRUEBA')];
-  // Punto 11, ronda 3: etiqueta(2 cols)+valor(5 cols), no etiqueta(1)+
-  // valor(6) — mismo ajuste que buildClientEquipoUnifiedRows_, encontrado
-  // en la misma verificación en vivo (etiquetas como "TÉCNICO
-  // RESPONSABLE"/"TEMPERATURA AMBIENTE" partiéndose en 3 líneas con solo
-  // 1 columna física).
-  var merges = [{ startColumnIndex: 0, columnSpan: 2 }, { startColumnIndex: 2, columnSpan: 5 }];
+  var pairMerges = [{ startColumnIndex: 1, columnSpan: 2 }, { startColumnIndex: 4, columnSpan: 3 }];
   var pairs = [
-    ['FECHA DE PRUEBA', fechaText],
-    ['TÉCNICO RESPONSABLE', tecnicoText],
-    ['TEMPERATURA AMBIENTE', tempText || '—'],
-    ['HUMEDAD RELATIVA', humedadText || '—'],
-    ['ESTADO DEL EQUIPO', estadoEquipoText],
-    ['NORMAS DE REFERENCIA', normasText]
+    ['FECHA DE PRUEBA', fechaText, 'TÉCNICO RESPONSABLE', tecnicoText],
+    ['TEMPERATURA AMBIENTE', tempText || '—', 'HUMEDAD RELATIVA', humedadText || '—'],
+    ['ESTADO DEL EQUIPO', estadoEquipoText, 'NORMAS DE REFERENCIA', normasText]
   ];
   pairs.forEach(function (p) {
     var cells = new Array(UNIFIED_TABLE_COLS_).fill('');
-    cells[0] = p[0]; cells[2] = p[1];
-    rows.push(unifiedLabelRow_(cells, [0], merges));
+    cells[0] = p[0]; cells[1] = p[1]; cells[3] = p[2]; cells[4] = p[3];
+    rows.push(unifiedLabelRow_(cells, [0, 3], pairMerges));
   });
   return rows;
 }
@@ -2376,6 +2445,7 @@ function buildEquiposUtilizadosRows_(equipos) {
     cells[0] = eq.equipo; cells[1] = eq.marcaModelo; cells[3] = eq.numeroSerie; cells[5] = eq.fechaCalibracion;
     rows.push(unifiedRow_(cells, 'data', merges));
   });
+  rows.colWidths = EQUIPOS_COL_WIDTHS_PT_;
   return rows;
 }
 
@@ -2450,6 +2520,7 @@ function buildTtrUnifiedSection_(calc, esMonofasico, instrumentoLine, warningTex
     rows.push(unifiedRow_(cells, 'data', merges));
   });
 
+  rows.colWidths = TTR_WINDING_COL_WIDTHS_PT_;
   return rows;
 }
 
@@ -2539,6 +2610,7 @@ function buildWindingSideUnifiedRows_(sideLabel, tapEntries, esMonofasico, mater
     rows.push(unifiedRow_(cells, 'data', merges));
   });
 
+  rows.colWidths = TTR_WINDING_COL_WIDTHS_PT_;
   return rows;
 }
 
@@ -2570,10 +2642,18 @@ function buildInsulationUnifiedRows_(calc, instrumentoLine, tensionPruebaText) {
   bannerText += '   ·   ' + extras.join('   ·   ');
 
   var rows = [unifiedBannerRow_(bannerText)];
+  // Punto 11, ronda 5 (2026-09-16) — misma corrección quirúrgica que
+  // Sección 8 (banner/encabezado más chicos, padding 0.5pt), esta vez
+  // sobre Aislamiento/DAR-IP: con la Sección 8 ya resuelta, esta pasó a
+  // ser la siguiente que no entraba NI UNA FILA en la página 1. Nada
+  // antes de la Sección 8 se tocó otra vez.
+  rows[0].fontSizeOverride = 8;
 
   if (esSimple) {
     var simpleMerges = [{ startColumnIndex: 0, columnSpan: 2 }, { startColumnIndex: 2, columnSpan: 5 }];
-    rows.push(unifiedRow_(['COMBINACIÓN', '', 'RESISTENCIA', '', '', '', ''], 'header', simpleMerges));
+    var simpleHeaderRow = unifiedRow_(['COMBINACIÓN', '', 'RESISTENCIA', '', '', '', ''], 'header', simpleMerges);
+    simpleHeaderRow.fontSizeOverride = 6.5;
+    rows.push(simpleHeaderRow);
     Object.keys(calc.measurements).forEach(function (key) {
       var m = calc.measurements[key];
       var cells = new Array(UNIFIED_TABLE_COLS_).fill('');
@@ -2588,7 +2668,9 @@ function buildInsulationUnifiedRows_(calc, instrumentoLine, tensionPruebaText) {
     // columnas lógicas en las 7 físicas, fusionando solo CALIF. IP sobre
     // las últimas 2.
     var completoMerges = [{ startColumnIndex: 5, columnSpan: 2 }];
-    rows.push(unifiedRow_(['COMBINACIÓN', 'R 1 MIN', 'DAR', 'CALIF. DAR', 'IP', 'CALIF. IP', ''], 'header', completoMerges));
+    var completoHeaderRow = unifiedRow_(['COMBINACIÓN', 'R 1 MIN', 'DAR', 'CALIF. DAR', 'IP', 'CALIF. IP', ''], 'header', completoMerges);
+    completoHeaderRow.fontSizeOverride = 6.5;
+    rows.push(completoHeaderRow);
     Object.keys(calc.measurements).forEach(function (key) {
       var m = calc.measurements[key];
       var cells = new Array(UNIFIED_TABLE_COLS_).fill('');
@@ -2602,6 +2684,7 @@ function buildInsulationUnifiedRows_(calc, instrumentoLine, tensionPruebaText) {
     });
   }
 
+  rows.cellPadding = 0.5;
   return rows;
 }
 
@@ -2623,6 +2706,10 @@ function collectInsulationUnifiedNotes_(calc) {
  *  resultado real — esto solo los imprime, no inventa una escala nueva. */
 function buildDarIpLegendRows_() {
   var rows = [unifiedBannerRow_('CALIFICACIÓN DAR / IP — RANGOS DE REFERENCIA')];
+  // Punto 11, ronda 5 (2026-09-16): banner 8pt + padding 0.5pt, misma
+  // corrección quirúrgica que Sección 8/Aislamiento — ver
+  // buildInsulationUnifiedRows_.
+  rows[0].fontSizeOverride = 8;
   // 2026-09-15: las celdas de calificación (col2/col6) eran de 1 sola
   // columna física — "CUESTIONABLE" (12 letras) se partía en 2 líneas ahí
   // aun a 6pt (detectado en la verificación en vivo de la ronda 3). Se
@@ -2646,6 +2733,7 @@ function buildDarIpLegendRows_() {
     row.coloredCols = [{ col: 2, bg: t.bg, fg: t.fg }, { col: 5, bg: t.bg, fg: t.fg }];
     rows.push(row);
   });
+  rows.cellPadding = 0.5;
   return rows;
 }
 
@@ -2666,10 +2754,23 @@ function buildDarIpLegendRows_() {
  *  pidió el cliente. */
 function buildWindingCriteriaTable3Tier_() {
   var rows = [unifiedBannerRow_('CRITERIOS DE EVALUACIÓN — RESISTENCIA DE DEVANADOS')];
+  // Punto 11, ronda 5 (2026-09-16) — corrección QUIRÚRGICA a pedido
+  // explícito del cliente: esta era, casi sola, la única tabla que
+  // empujaba el informe a una 2ª página (el resto de la Sección 8 ya
+  // cabía en la página 1 — solo faltaban unos pocos puntos de alto para
+  // sus 3 filas de datos). En vez de bajar la tipografía/padding
+  // globales (que el cliente pidió explícitamente NO tocar otra vez),
+  // esta tabla puntual usa `fontSizeOverride`/`cellPadding` — banner 8pt,
+  // encabezado y filas 6.5pt, padding 0.5pt (todo dentro de los rangos
+  // que el propio cliente definió para esta corrección puntual) — el
+  // resto del documento sigue exactamente igual que en la ronda 4.
+  rows[0].fontSizeOverride = 8;
   var merges = [{ startColumnIndex: 0, columnSpan: 4 }, { startColumnIndex: 4, columnSpan: 3 }];
   var header = new Array(UNIFIED_TABLE_COLS_).fill('');
   header[0] = 'DESVIACIÓN ENTRE FASES'; header[4] = 'ESTADO';
-  rows.push(unifiedRow_(header, 'header', merges));
+  var headerRow = unifiedRow_(header, 'header', merges);
+  headerRow.fontSizeOverride = 6.5;
+  rows.push(headerRow);
   var tiers = [
     { range: '≤ 1 %', label: 'ACEPTABLE', bg: PDF_COLORS_.SUCCESS_BG, fg: PDF_COLORS_.SUCCESS },
     { range: '> 1 % y ≤ 3 %', label: 'CUESTIONABLE', bg: PDF_COLORS_.WARNING_BG, fg: PDF_COLORS_.WARNING },
@@ -2680,8 +2781,10 @@ function buildWindingCriteriaTable3Tier_() {
     cells[0] = t.range; cells[4] = t.label;
     var row = unifiedRow_(cells, 'legend', merges);
     row.coloredCols = [{ col: 4, bg: t.bg, fg: t.fg }];
+    row.fontSizeOverride = 6;
     rows.push(row);
   });
+  rows.cellPadding = 0.5;
   return rows;
 }
 
@@ -2750,6 +2853,34 @@ function buildConclusionRows_(overallVerdict) {
     { col: 4, bg: !aprobado ? PDF_COLORS_.DANGER_BG : PDF_COLORS_.NEUTRAL_BG, fg: !aprobado ? PDF_COLORS_.DANGER : PDF_COLORS_.TEXT_MUTED }
   ];
   rows.push(row);
+  return rows;
+}
+
+/** "Área de Control de Calidad" (firmas) — Punto 11, ronda 6k (2026-09-16):
+ *  antes vivía HORNEADA en la plantilla (appendSignatureSection_, 2 tablas
+ *  de nivel superior aparte, fuera de la tabla unificada) — con el resto
+ *  del documento (1-11) ya comprimido a "0 espacio entre filas", esas 2
+ *  tablas sueltas eran lo único que seguía sin caber en la página 1
+ *  (confirmado con un informe real: comprimirlas a su piso de
+ *  padding/fuente no movió el corte de página ni un punto, señal de que el
+ *  problema era el hueco ENTRE tablas de nivel superior, no su tamaño).
+ *  Se arma ahora como una fila más de la tabla unificada (mismo mecanismo
+ *  que Observaciones/Conclusión), eliminando ese hueco. La imagen de la
+ *  firma se inserta aparte (ver el `afterBuild` que le pasa el llamador a
+ *  `outerNestedFullRow_`), porque `appendNestedTable_`/`styleUnifiedCell_`
+ *  solo saben estilizar texto. */
+function buildFirmasUnifiedRows_(probadoPor, certificadoPor) {
+  var rows = [unifiedBannerRow_('ÁREA DE CONTROL DE CALIDAD')];
+  var merges = [{ startColumnIndex: 0, columnSpan: 3 }, { startColumnIndex: 3, columnSpan: 2 }, { startColumnIndex: 5, columnSpan: 2 }];
+  var header = ['PROBADO POR', '', '', 'CERTIFICADO POR', '', 'APROBADO POR', ''];
+  rows.push(unifiedRow_(header, 'header', merges));
+  var dataCells = new Array(UNIFIED_TABLE_COLS_).fill('');
+  dataCells[0] = (probadoPor.nombre || '—') + '\n' + fmtDatePdf_(probadoPor.fecha);
+  dataCells[3] = (certificadoPor.nombre || '—') + '\n' + fmtDatePdf_(certificadoPor.fecha);
+  // dataCells[5] queda vacía — la firma (imagen + nombre + cargo) se llena
+  // aparte vía el `afterBuild` de outerNestedFullRow_, sobre la celda real
+  // de la tabla ya creada (fila 2, columna 5 antes de fusionar).
+  rows.push(unifiedRow_(dataCells, 'data', merges));
   return rows;
 }
 
@@ -2857,15 +2988,37 @@ function cellAlign_(cell, alignment) {
 }
 
 function styleUnifiedCell_(cell, r, c, padding) {
+  // Punto 11, ronda 5 (2026-09-16) — `r.fontSizeOverride` (opcional, en el
+  // objeto de la FILA, no en la tabla) deja compactar una tabla puntual
+  // (Sección 8 — ver buildWindingCriteriaTable3Tier_) SIN tocar las
+  // constantes globales UNIFIED_FONT_*, que siguen igual para todo lo
+  // demás — a pedido explícito del cliente ("corrección quirúrgica",
+  // "no reducir globalmente toda la tipografía").
+  var fontOverride = r.fontSizeOverride;
   cell.setPaddingTop(padding).setPaddingBottom(padding)
     .setPaddingLeft(padding).setPaddingRight(padding);
   cell.editAsText().setFontFamily(PROTOCOL_FONT_FAMILY_);
+  // Punto 11, ronda 6c (2026-09-16) — reducir el padding de 1 a 0.5pt no
+  // movió NI UN PUNTO el corte de página (verificado con 2 informes reales
+  // generados en vivo, mismo renglón exacto desbordando ambas veces): la
+  // causa real es que esta función nunca tocaba el espaciado de PÁRRAFO de
+  // la celda (setSpacingBefore/After, setLineSpacing) — cada celda se crea
+  // con el interlineado/espaciado "Normal text" de Docs por defecto, que
+  // domina la altura de fila muchísimo más que el padding. Se normaliza acá,
+  // una sola vez para las ~40+ filas de toda la tabla unificada (outer +
+  // anidadas, ambas pasan por esta función).
+  for (var pi = 0; pi < cell.getNumChildren(); pi++) {
+    var pchild = cell.getChild(pi);
+    if (pchild.getType() === DocumentApp.ElementType.PARAGRAPH) {
+      pchild.asParagraph().setSpacingBefore(0).setSpacingAfter(0).setLineSpacing(1);
+    }
+  }
   if (r.role === 'banner') {
     cell.setBackgroundColor(PDF_COLORS_.ACCENT);
-    cell.editAsText().setBold(true).setFontSize(UNIFIED_FONT_BANNER_).setForegroundColor('#ffffff');
+    cell.editAsText().setBold(true).setFontSize(fontOverride || UNIFIED_FONT_BANNER_).setForegroundColor('#ffffff');
   } else if (r.role === 'header') {
     cell.setBackgroundColor(PDF_COLORS_.ACCENT);
-    cell.editAsText().setBold(true).setFontSize(UNIFIED_FONT_HEADER_).setForegroundColor('#ffffff');
+    cell.editAsText().setBold(true).setFontSize(fontOverride || UNIFIED_FONT_HEADER_).setForegroundColor('#ffffff');
     cellAlign_(cell, DocumentApp.HorizontalAlignment.CENTER);
   } else if (r.role === 'verdict') {
     var vcolors = verdictColor_(r.verdictValue);
@@ -2883,10 +3036,10 @@ function styleUnifiedCell_(cell, r, c, padding) {
     var colorSpec = (r.coloredCols || []).filter(function (cc) { return cc.col === c; })[0];
     if (colorSpec) {
       cell.setBackgroundColor(colorSpec.bg);
-      cell.editAsText().setBold(true).setFontSize(UNIFIED_FONT_DATA_).setForegroundColor(colorSpec.fg);
+      cell.editAsText().setBold(true).setFontSize(fontOverride || UNIFIED_FONT_DATA_).setForegroundColor(colorSpec.fg);
       cellAlign_(cell, DocumentApp.HorizontalAlignment.CENTER);
     } else {
-      cell.editAsText().setBold(false).setFontSize(UNIFIED_FONT_DATA_).setForegroundColor(PDF_COLORS_.TEXT_MUTED);
+      cell.editAsText().setBold(false).setFontSize(fontOverride || UNIFIED_FONT_DATA_).setForegroundColor(PDF_COLORS_.TEXT_MUTED);
     }
   } else if (r.role === 'blankline') {
     cell.setPaddingTop(6).setPaddingBottom(6);
@@ -2949,17 +3102,58 @@ function appendNestedTable_(parentCell, rows) {
   parentCell.setPaddingTop(0).setPaddingBottom(0).setPaddingLeft(0).setPaddingRight(0);
   var nestedTable = parentCell.appendTable();
   nestedTable.setBorderColor(PDF_COLORS_.BORDER);
+  // Punto 11, ronda 6l (2026-09-16) — HALLAZGO REAL, confirmado con
+  // captura de un informe real (Drive viewer): quedaban huecos visibles
+  // de verdad entre cada sección de la tabla unificada (~15-30pt cada
+  // uno), pese a que ronda 6c/6d ya habían normalizado el espaciado de
+  // párrafo DENTRO de cada celda. Causa: `insertOuterResultsTable_` crea
+  // la tabla externa con `body.insertTable(idx, initialCells)`, donde
+  // cada celda 'nested-full'/'nested-pair' arranca con texto '' (relleno,
+  // ver `initialCells`) — eso deja un párrafo vacío YA EXISTENTE en la
+  // celda ANTES de `parentCell.appendTable()`, con el interlineado/
+  // espaciado "Normal text" de Docs por defecto SIN normalizar (nunca
+  // pasa por styleUnifiedCell_, que solo estiliza celdas de la tabla
+  // ANIDADA). Se quita ese párrafo sobrante acá, en el único lugar por el
+  // que pasan TODAS las tablas anidadas (externas Y anidadas-dentro-de-
+  // anidadas), en vez de en cada llamador.
+  if (parentCell.getNumChildren() > 1) {
+    var leftoverPar = parentCell.getChild(0);
+    if (leftoverPar.getType() === DocumentApp.ElementType.PARAGRAPH && leftoverPar.asParagraph().getText() === '') {
+      parentCell.removeChild(leftoverPar);
+    }
+  }
+  // Punto 11, ronda 5 (2026-09-16) — `rows.cellPadding` (opcional, en el
+  // arreglo devuelto por el build*_, no una constante global) permite
+  // compactar el padding de UNA tabla puntual sin bajarle el padding a
+  // todo el documento — mismo criterio que `rows.colWidths`/
+  // `r.fontSizeOverride`, para la corrección quirúrgica de la Sección 8
+  // que pidió el cliente.
+  var cellPadding = rows.cellPadding != null ? rows.cellPadding : UNIFIED_CELL_PADDING_;
   var mergeSpecs = [];
   rows.forEach(function (r, rowIndex) {
     var tr = nestedTable.appendTableRow();
     r.cells.forEach(function (text) { tr.appendTableCell(text); });
     for (var c = 0; c < r.cells.length; c++) {
-      styleUnifiedCell_(tr.getCell(c), r, c, UNIFIED_CELL_PADDING_);
+      styleUnifiedCell_(tr.getCell(c), r, c, cellPadding);
     }
     r.merges.forEach(function (m) {
       mergeSpecs.push({ rowIndex: rowIndex, startColumnIndex: m.startColumnIndex, columnSpan: m.columnSpan });
     });
   });
+  // Punto 11, ronda 4 (2026-09-16) — anchos de columna explícitos, a pedido
+  // del cliente: sin esto, DocumentApp reparte las 7 columnas en partes
+  // IGUALES dentro de la tabla anidada, así que en tablas con columnas de
+  // ancho muy distinto (TAP angosto vs ESTADO/PROMEDIO/DESVIACIÓN % que
+  // necesitan más espacio) las palabras largas se parten ("PROMEDI/O",
+  // "APROBAD/O"). `rows.colWidths` (opcional, 7 números en puntos que
+  // suman al ancho real disponible) lo arma el `build*Rows_` que conoce el
+  // significado de cada columna — ver TTR_WINDING_COL_WIDTHS_PT_/
+  // EQUIPOS_COL_WIDTHS_PT_.
+  if (rows.colWidths) {
+    for (var wc = 0; wc < rows.colWidths.length; wc++) {
+      nestedTable.setColumnWidth(wc, rows.colWidths[wc]);
+    }
+  }
   return { table: nestedTable, mergeSpecs: mergeSpecs, bannerText: rows[0].cells[0] };
 }
 
@@ -2975,84 +3169,123 @@ function appendNestedTable_(parentCell, rows) {
 var OUTER_TABLE_COLS_ = 2;
 
 /** Fila externa que ocupa las 2 columnas fusionadas con una tabla anidada
- *  adentro (client/equipo, datos generales, Observaciones, Conclusión). */
-function outerNestedFullRow_(nestedRows) {
-  return { kind: 'nested-full', nestedRows: nestedRows };
+ *  adentro (client/equipo, datos generales, Observaciones, Conclusión).
+ *  `afterBuild` (opcional, ronda 6k) — callback(nestedTable) que
+ *  insertOuterResultsTable_ llama justo después de crear la tabla anidada,
+ *  con la tabla YA CREADA (antes de fusionar celdas) — permite insertar
+ *  contenido que appendNestedTable_ no sabe armar solo (una imagen en una
+ *  celda puntual, ver buildFirmasUnifiedRows_/la firma del ingeniero en
+ *  "Área de Control de Calidad"). */
+function outerNestedFullRow_(nestedRows, afterBuild) {
+  return { kind: 'nested-full', nestedRows: nestedRows, afterBuild: afterBuild };
 }
 /** Fila externa "resultados | criterios" — 2 tablas anidadas lado a lado,
  *  SIN fusionar (esta es la fila que de verdad necesita las 2 columnas). */
 function outerNestedPairRow_(leftRows, rightRows) {
   return { kind: 'nested-pair', leftRows: leftRows, rightRows: rightRows };
 }
-/** Fila externa "resultados | gráfica" — Punto 11, ronda 2 (2026-09-14):
- *  la referencia real del cliente empareja TTR con su gráfica de
- *  desviación por fase, NO con un panel de criterios (a diferencia de
- *  AT/BT/Aislamiento, que sí van con criterios). Izquierda es una tabla
- *  anidada normal; derecha es una imagen insertada directo en la celda
- *  externa (una imagen no necesita tabla anidada alrededor). */
-function outerPairTableImageRow_(leftRows, blob, widthPt, heightPt) {
-  return { kind: 'pair-table-image', leftRows: leftRows, blob: blob, widthPt: widthPt, heightPt: heightPt };
+/** Fila externa "imágenes | criterios" — Punto 11, ronda 6 (2026-09-16):
+ *  bug real encontrado en la verificación en vivo de esta ronda — 2
+ *  imágenes apiladas DENTRO de una tabla anidada (`unifiedImageRow_`)
+ *  quedan mal si esa tabla anidada necesita partirse entre páginas
+ *  (Google Docs las dibuja fuera de su celda, montadas sobre el
+ *  encabezado de la página siguiente). Insertar las imágenes DIRECTO en
+ *  la celda de la tabla EXTERNA (nivel superior, nunca anidada) — mismo
+ *  mecanismo que ya usaban `outerImageFullRow_`/`outerPairTableImageRow_`
+ *  en rondas anteriores, que nunca mostraron este bug — lo evita. El
+ *  banner ("N. GRÁFICOS DE RESULTADOS") va como el texto inicial de esa
+ *  misma celda, estilizado como banner; las imágenes se agregan después,
+ *  apiladas debajo, en la misma celda. `images` es un arreglo de
+ *  {blob, widthPt, heightPt}. */
+function outerImagesPairRow_(bannerText, images, rightRows) {
+  return { kind: 'images-pair', bannerText: bannerText, images: images, rightRows: rightRows };
 }
-/** Fila externa con una sola imagen a todo el ancho (fusionada) — Punto
- *  11, ronda 3 (2026-09-15): la curva de aislamiento no empareja con
- *  nada (Aislamiento ya usa sus 2 columnas con los resultados y la
- *  leyenda DAR/IP), así que va sola, debajo, a todo lo ancho. */
-function outerImageFullRow_(blob, widthPt, heightPt) {
-  return { kind: 'image-full', blob: blob, widthPt: widthPt, heightPt: heightPt };
-}
-
 /** Inserta la tabla EXTERNA de 2 columnas en `body`, justo ANTES de
  *  `beforeChild` (el marcador `<<TABLA_RESULTADOS_ELECTRICOS>>` de la
  *  plantilla — sin cambios en la plantilla misma, ver Punto 11 en
  *  CLAUDE.md: el marcador ya soportaba insertar cualquier contenido ahí).
  *  `outerRows` es un arreglo de descriptores outerNestedFullRow_/
- *  outerNestedPairRow_/outerPairTableImageRow_/outerImageFullRow_. Devuelve, además de
- *  la tabla externa, un `nestedRegistry` (una entrada por tabla anidada
- *  creada, con su `bannerText` único y sus propias `mergeSpecs`) para que
- *  finalizeReportPdf_ se lo pase a applyOuterAndNestedMerges_. */
+ *  outerNestedPairRow_ (ronda 6, 2026-09-16: `outerPairTableImageRow_`/
+ *  `outerImageFullRow_` se borraron — las imágenes ahora van DENTRO de
+ *  una tabla anidada normal, ver `unifiedImageRow_`, no como fila externa
+ *  propia). Devuelve, además de la tabla externa, un `nestedRegistry`
+ *  (una entrada por tabla anidada creada, con su `bannerText` único y sus
+ *  propias `mergeSpecs`) para que finalizeReportPdf_ se lo pase a
+ *  applyOuterAndNestedMerges_. */
 function insertOuterResultsTable_(body, beforeChild, outerRows) {
   if (outerRows.length === 0) return { table: null, outerMergeSpecs: [], nestedRegistry: [], outerMarkerText: null };
 
   var insertIndex = body.getChildIndex(beforeChild);
-  var initialCells = outerRows.map(function () { return ['', '']; });
+  var initialCells = outerRows.map(function (r) { return r.kind === 'images-pair' ? [r.bannerText, ''] : ['', '']; });
   var table = body.insertTable(insertIndex, initialCells);
   table.setBorderColor(PDF_COLORS_.BORDER);
 
   var outerMergeSpecs = [];
   var nestedRegistry = [];
 
+  // Punto 11, ronda 6d (2026-09-16) — la celda de la tabla EXTERNA que
+  // ALOJA una tabla anidada nunca tenía su propio padding puesto a 0: solo
+  // se zeroeaba la celda "vacía" del par (la que no lleva contenido), nunca
+  // la que sí lo lleva. DocumentApp deja ~5pt de padding por defecto en
+  // cada lado (mismo valor documentado en UNIFIED_CELL_PADDING_) — eso es
+  // ~10pt verticales de sobra POR CADA fila externa (1-7, 9-derecha, 10-11),
+  // que se sumaban aparte de lo que ya controla `cellPadding` de la tabla
+  // anidada. Confirmado con 2 informes reales: bajar el padding/espaciado
+  // de párrafo de las celdas ANIDADAS movió el corte de página de la
+  // Sección 9 a la 10 — pero la 10-11-12 seguían sin caber; este es el
+  // siguiente desperdicio real, no una nueva suposición ciega.
+  function zeroOuterCellPadding_(cell) {
+    cell.setPaddingTop(0).setPaddingBottom(0).setPaddingLeft(0).setPaddingRight(0);
+  }
   outerRows.forEach(function (r, rowIndex) {
     var row = table.getRow(rowIndex);
-    if (r.kind === 'pair-table-image') {
-      var leftNested = appendNestedTable_(row.getCell(0), r.leftRows);
-      nestedRegistry.push({ bannerText: leftNested.bannerText, mergeSpecs: leftNested.mergeSpecs });
-      var imgCell = row.getCell(1);
-      imgCell.setPaddingTop(2).setPaddingBottom(2).setPaddingLeft(2).setPaddingRight(2);
-      if (r.blob) {
-        var img = imgCell.appendImage(r.blob);
-        if (r.widthPt) img.setWidth(r.widthPt);
-        if (r.heightPt) img.setHeight(r.heightPt);
-      }
-    } else if (r.kind === 'image-full') {
-      var fullImgCell = row.getCell(0);
-      fullImgCell.setPaddingTop(2).setPaddingBottom(2).setPaddingLeft(2).setPaddingRight(2);
-      if (r.blob) {
-        var fullImg = fullImgCell.appendImage(r.blob);
-        if (r.widthPt) fullImg.setWidth(r.widthPt);
-        if (r.heightPt) fullImg.setHeight(r.heightPt);
-      }
-      row.getCell(1).setPaddingTop(0).setPaddingBottom(0).setPaddingLeft(0).setPaddingRight(0);
-      outerMergeSpecs.push({ rowIndex: rowIndex, startColumnIndex: 0, columnSpan: OUTER_TABLE_COLS_ });
-    } else if (r.kind === 'nested-full') {
+    // Punto 11, ronda 6m (2026-09-16) — HALLAZGO REAL (reportado por el
+    // cliente con captura: "dos filas en blanco" entre secciones,
+    // confirmado también en el Drive viewer de este lado): cada
+    // TableRow de la tabla externa se crea vía `body.insertTable(idx,
+    // initialCells)`, que le calcula una altura mínima a partir del
+    // contenido INICIAL ('' o el texto del banner de images-pair) — esa
+    // altura mínima queda pegada a la fila aunque después se rellene con
+    // contenido mucho más compacto (tabla anidada ya en su piso de
+    // padding/fuente), así que Docs dibuja la fila más alta de lo que su
+    // contenido real necesita. `setMinimumHeight(0)` fuerza a la fila a
+    // encogerse al alto real de su contenido — ronda 6l (quitar el
+    // párrafo vacío sobrante) no alcanzaba porque el problema no era el
+    // párrafo en sí, era la altura mínima ya fijada en la FILA.
+    row.setMinimumHeight(0);
+    if (r.kind === 'nested-full') {
+      zeroOuterCellPadding_(row.getCell(0));
       var nested = appendNestedTable_(row.getCell(0), r.nestedRows);
-      row.getCell(1).setPaddingTop(0).setPaddingBottom(0).setPaddingLeft(0).setPaddingRight(0);
+      zeroOuterCellPadding_(row.getCell(1));
       nestedRegistry.push({ bannerText: nested.bannerText, mergeSpecs: nested.mergeSpecs });
       outerMergeSpecs.push({ rowIndex: rowIndex, startColumnIndex: 0, columnSpan: OUTER_TABLE_COLS_ });
+      if (r.afterBuild) r.afterBuild(nested.table);
     } else if (r.kind === 'nested-pair') {
+      zeroOuterCellPadding_(row.getCell(0));
+      zeroOuterCellPadding_(row.getCell(1));
       var left = appendNestedTable_(row.getCell(0), r.leftRows);
       var right = appendNestedTable_(row.getCell(1), r.rightRows);
       nestedRegistry.push({ bannerText: left.bannerText, mergeSpecs: left.mergeSpecs });
       nestedRegistry.push({ bannerText: right.bannerText, mergeSpecs: right.mergeSpecs });
+    } else if (r.kind === 'images-pair') {
+      var imgLeftCell = row.getCell(0);
+      styleUnifiedCell_(imgLeftCell, { role: 'banner' }, 0, UNIFIED_CELL_PADDING_);
+      (r.images || []).forEach(function (im) {
+        if (!im.blob) return;
+        var img = imgLeftCell.appendImage(im.blob);
+        if (im.widthPt) img.setWidth(im.widthPt);
+        if (im.heightPt) img.setHeight(im.heightPt);
+      });
+      if (r.rightRows) {
+        zeroOuterCellPadding_(row.getCell(1));
+        var rightNested = appendNestedTable_(row.getCell(1), r.rightRows);
+        nestedRegistry.push({ bannerText: rightNested.bannerText, mergeSpecs: rightNested.mergeSpecs });
+      } else {
+        // Sin criterios que emparejar (caso raro: solo TTR presente, sin
+        // Devanados ni Aislamiento) — las imágenes ocupan las 2 columnas.
+        row.getCell(1).setPaddingTop(0).setPaddingBottom(0).setPaddingLeft(0).setPaddingRight(0);
+        outerMergeSpecs.push({ rowIndex: rowIndex, startColumnIndex: 0, columnSpan: OUTER_TABLE_COLS_ });
+      }
     }
   });
 
@@ -3067,8 +3300,12 @@ function appendUnifiedNoteFootnote_(body, table, notes) {
   if (!table || !notes || notes.length === 0) return;
   var idx = body.getChildIndex(table);
   var p = body.insertParagraph(idx + 1, '† Lectura repetida — ' + notes.join('  ·  '));
-  p.editAsText().setFontSize(7).setItalic(true).setForegroundColor(PDF_COLORS_.TEXT_MUTED);
-  p.setSpacingBefore(2).setSpacingAfter(6);
+  p.editAsText().setFontSize(6).setItalic(true).setForegroundColor(PDF_COLORS_.TEXT_MUTED);
+  // Punto 11, ronda 4 (2026-09-16): spacing before/after a 0, a pedido
+  // explícito del cliente ("no utilizar espaciado automático adicional") —
+  // antes 2/6pt, un contribuyente real (aunque chico) al desborde a 2
+  // páginas.
+  p.setSpacingBefore(0).setSpacingAfter(0).setLineSpacing(1);
 }
 
 /** Recorre TODO el contenido de un documento (Docs API avanzada) buscando
@@ -3145,6 +3382,58 @@ function applyOuterAndNestedMerges_(docId, outerMarkerText, outerMergeSpecs, nes
 
   if (requests.length === 0) return;
   Docs.Documents.batchUpdate({ requests: requests }, docId);
+
+  // Punto 11, ronda 6o (2026-09-16) — HALLAZGO REAL (confirmado con un
+  // diagnóstico puntual sobre un informe ya generado, debugInspectGeneratedReportRows_,
+  // ya retirado): la causa real de los huecos visibles entre CADA sección
+  // de la tabla unificada era doble, y ninguna de las 2 se veía ANTES del
+  // merge:
+  //   1) `mergeTableCells` resetea la altura mínima de la fila fusionada a
+  //      ~11pt, sin importar que ya se hubiera puesto en 0 antes de
+  //      fusionar (rondas 6d/6m, sin efecto por esto).
+  //   2) TODA celda de la tabla externa que aloja una tabla anidada queda
+  //      con [párrafo vacío, tabla, párrafo vacío] — Docs exige un
+  //      párrafo antes Y después de cualquier tabla dentro de una celda
+  //      (por eso ronda 6l no lograba QUITAR el de antes: Docs lo vuelve a
+  //      insertar), y ninguno de los 2 pasa por styleUnifiedCell_ (que
+  //      solo estiliza celdas DENTRO de la tabla anidada), así que se
+  //      quedan con el tamaño "Normal text" (~11pt) de Docs por defecto.
+  //      Esto era lo que de verdad ocupaba el espacio — (1) resultó ser
+  //      irrelevante en la práctica, el contenido real ya superaba 11pt.
+  // Ambas se corrigen acá, DESPUÉS del merge — es el único momento en que
+  // el párrafo final (el de después de la tabla) ya existe de verdad y en
+  // que `setMinimumHeight` no vuelve a pisarse.
+  if (outerCandidate) {
+    // Pequeño margen para que el batchUpdate recién hecho por la API
+    // avanzada se propague antes de que DocumentApp reabra el mismo
+    // documento (mismo tipo de desfase entre las 2 APIs que ya documentaba
+    // pinResultsTableHeaders_ en la dirección contraria).
+    Utilities.sleep(1500);
+    var docApp = DocumentApp.openById(docId);
+    var bodyApp = docApp.getBody();
+    for (var oi = 0; oi < bodyApp.getNumChildren(); oi++) {
+      var c2 = bodyApp.getChild(oi);
+      if (c2.getType() !== DocumentApp.ElementType.TABLE) continue;
+      var t2 = c2.asTable();
+      if (t2.getRow(0).getCell(0).getText().indexOf(outerMarkerText) === -1) continue;
+      for (var ri = 0; ri < t2.getNumRows(); ri++) {
+        var rowRi = t2.getRow(ri);
+        rowRi.setMinimumHeight(0);
+        for (var cc = 0; cc < rowRi.getNumCells(); cc++) {
+          var cellRc = rowRi.getCell(cc);
+          for (var pp = 0; pp < cellRc.getNumChildren(); pp++) {
+            var pChild = cellRc.getChild(pp);
+            if (pChild.getType() === DocumentApp.ElementType.PARAGRAPH && pChild.asParagraph().getText() === '') {
+              pChild.asParagraph().setSpacingBefore(0).setSpacingAfter(0).setLineSpacing(1);
+              pChild.editAsText().setFontSize(1);
+            }
+          }
+        }
+      }
+      break;
+    }
+    docApp.saveAndClose();
+  }
 }
 
 function mergeTableCellsRequest_(tableStartIndex, spec) {
@@ -3407,7 +3696,7 @@ function getReportTemplateUrls_(params, auth) {
 function buildElectricalTemplateDoc_() {
   var doc = DocumentApp.create('PLANTILLA_INFORME_ELECTRICO_' + Date.now());
   var body = doc.getBody();
-  body.setMarginTop(PROTOCOL_MARGIN_PT_).setMarginBottom(PROTOCOL_MARGIN_PT_)
+  body.setMarginTop(PROTOCOL_MARGIN_PT_).setMarginBottom(PROTOCOL_MARGIN_BOTTOM_PT_)
     .setMarginLeft(PROTOCOL_MARGIN_PT_).setMarginRight(PROTOCOL_MARGIN_PT_);
   body.setPageWidth(PROTOCOL_PAGE_WIDTH_PT_).setPageHeight(PROTOCOL_PAGE_HEIGHT_PT_);
 
@@ -3424,10 +3713,13 @@ function buildElectricalTemplateDoc_() {
   var tablePlaceholder = body.appendParagraph('<<TABLA_RESULTADOS_ELECTRICOS>>');
   tablePlaceholder.editAsText().setFontSize(1);
 
-  appendSignatureSection_(body,
-    { nombre: '<<PROBADO_POR_NOMBRE>>', fecha: '<<PROBADO_POR_FECHA>>' },
-    { nombre: '<<CERTIFICADO_POR_NOMBRE>>', fecha: '<<CERTIFICADO_POR_FECHA>>' }
-  );
+  // Punto 11, ronda 6k (2026-09-16): "Área de Control de Calidad" (firmas)
+  // ya NO se hornea acá — regenerateElectricalCombinedReport_ la arma
+  // dinámicamente como una fila más de la tabla unificada (ver
+  // buildFirmasUnifiedRows_), para que no quede como tabla de nivel
+  // superior aparte con el hueco que eso agregaba. Si esta plantilla se
+  // regenera desde cero, ya no hace falta correr después la acción admin
+  // `removeElectricalTemplateBakedSignature`.
 
   var footer = doc.addFooter();
   var footerPar = footer.appendParagraph('M&A Ingeniería y Consultoría SAS · Informe generado vía Gestión de Pruebas el <<FECHA_GENERACION>>');
@@ -3445,7 +3737,7 @@ function buildElectricalTemplateDoc_() {
 function buildOilTemplateDoc_() {
   var doc = DocumentApp.create('PLANTILLA_INFORME_ACEITE_' + Date.now());
   var body = doc.getBody();
-  body.setMarginTop(PROTOCOL_MARGIN_PT_).setMarginBottom(PROTOCOL_MARGIN_PT_)
+  body.setMarginTop(PROTOCOL_MARGIN_PT_).setMarginBottom(PROTOCOL_MARGIN_BOTTOM_PT_)
     .setMarginLeft(PROTOCOL_MARGIN_PT_).setMarginRight(PROTOCOL_MARGIN_PT_);
   body.setPageWidth(PROTOCOL_PAGE_WIDTH_PT_).setPageHeight(PROTOCOL_PAGE_HEIGHT_PT_);
 
@@ -3572,6 +3864,216 @@ function crearPlantillasInformes_(params, auth) {
  * para que el cliente los llene directo en la plantilla — mismo criterio
  * que el watermark, nunca datos que el código genere o inserte.
  */
+/**
+ * Punto 11, ronda 4 (2026-09-16) — segunda pasada sobre la caja de título
+ * (la que armó `restructureElectricalTemplateTitle_` en la ronda 2): la
+ * caja de foto vacía ("Foto del equipo") quedó con 70pt de alto fijo —
+ * en la verificación en vivo de esta ronda, con casi todo lo demás ya
+ * compactado, esa caja vacía era uno de los pocos espacios grandes que
+ * sobraban sin usarse. La baja a 26pt (sigue siendo una caja visible,
+ * usable para una foto pequeña) y ajusta el interlineado del texto
+ * CÓDIGO/VERSIÓN/FECHA/PÁGINA a sencillo (antes usaba el interlineado por
+ * defecto de Google Docs, más alto que 1).
+ *
+ * Ubica la tabla del título por FORMA + CONTENIDO (1 fila, 2 celdas,
+ * celda 0 empieza con 'PROTOCOLO DE PRUEBAS ELÉCTRICAS' — ya migrada por
+ * restructureElectricalTemplateTitle_, esta función asume esa forma, no
+ * la original de 1 celda). Nunca lanza si no la encuentra — plantilla
+ * nunca migrada, o título editado a mano.
+ */
+function compactElectricalTemplateTitleBox_(params, auth) {
+  if (auth.role !== 'Administrador') {
+    return jsonResponse_({ status: 403, message: 'Solo un Administrador puede modificar la plantilla' });
+  }
+  var templateId = getElectricalTemplateFileId_();
+  if (!templateId) {
+    return jsonResponse_({ status: 400, message: 'No existe la plantilla del informe eléctrico.' });
+  }
+  var doc = DocumentApp.openById(templateId);
+  var body = doc.getBody();
+  var titleTable = null;
+  for (var i = 0; i < body.getNumChildren(); i++) {
+    var child = body.getChild(i);
+    if (child.getType() !== DocumentApp.ElementType.TABLE) continue;
+    var t = child.asTable();
+    if (t.getNumRows() === 1 && t.getRow(0).getNumCells() === 2 &&
+      t.getRow(0).getCell(0).getText().trim().indexOf('PROTOCOLO DE PRUEBAS ELÉCTRICAS') === 0) {
+      titleTable = t;
+      break;
+    }
+  }
+  if (!titleTable) {
+    return jsonResponse_({ status: 404, message: 'No se encontró la caja de título ya migrada — corre primero "Reestructurar título" desde Administración.' });
+  }
+
+  var controlCell = titleTable.getRow(0).getCell(1);
+  var photoTable = null;
+  for (var j = 0; j < controlCell.getNumChildren(); j++) {
+    var cchild = controlCell.getChild(j);
+    if (cchild.getType() === DocumentApp.ElementType.TABLE) {
+      photoTable = cchild.asTable();
+    } else if (cchild.getType() === DocumentApp.ElementType.PARAGRAPH) {
+      cchild.asParagraph().setLineSpacing(1).setSpacingBefore(0).setSpacingAfter(0);
+    }
+  }
+  if (photoTable && photoTable.getNumRows() > 0) {
+    photoTable.getRow(0).setMinimumHeight(26);
+  }
+
+  doc.saveAndClose();
+  return jsonResponse_({ status: 200, message: 'Caja de título compactada (foto e interlineado).' });
+}
+
+/** Diagnóstico TEMPORAL (2026-09-16) — lista TODOS los hijos del body de la
+ *  plantilla (tipo + primeros 80 caracteres de texto), para investigar por
+ *  qué la caja de título "PROTOCOLO DE PRUEBAS ELÉCTRICAS" apareció 2 veces
+ *  en un informe real (una al inicio, otra a mitad de la página 2, antes
+ *  de las firmas) — nunca debería repetirse, es contenido del BODY, no del
+ *  header de Docs. BORRAR junto con su entrada en POST_ACTIONS en cuanto
+ *  se confirme la causa. */
+function debugInspectTemplateBody_(params, auth) {
+  if (auth.role !== 'Administrador') {
+    return jsonResponse_({ status: 403, message: 'Solo Administrador' });
+  }
+  var templateId = getElectricalTemplateFileId_();
+  var doc = DocumentApp.openById(templateId);
+  var body = doc.getBody();
+  var out = [];
+  var n = body.getNumChildren();
+  for (var i = 0; i < n; i++) {
+    var child = body.getChild(i);
+    var typeName = child.getType().toString();
+    var entry = { index: i, type: typeName };
+    if (typeName === 'TABLE') {
+      var t = child.asTable();
+      entry.numRows = t.getNumRows();
+      entry.numCells0 = t.getRow(0).getNumCells();
+      entry.text = t.getText().substring(0, 80);
+    } else {
+      entry.text = (child.getText ? child.getText() : '').substring(0, 80);
+    }
+    out.push(entry);
+  }
+  return jsonResponse_({ status: 200, data: { totalChildren: n, children: out } });
+}
+
+
+/**
+ * Punto 11, ronda 5 (2026-09-16) — corrige el ORDEN de la plantilla real:
+ * el diagnóstico (`debugInspectTemplateBody_`) confirmó que la tabla de
+ * título ("PROTOCOLO DE PRUEBAS ELÉCTRICAS...") quedó ubicada DESPUÉS del
+ * marcador `<<TABLA_RESULTADOS_ELECTRICOS>>` en vez de antes — por eso el
+ * título aparecía al FINAL del informe real (justo antes de las firmas)
+ * en vez de al principio: `insertUnifiedResultsTable_`/
+ * `insertOuterResultsTable_` siempre insertan la tabla de resultados
+ * justo en la posición del marcador, así que cualquier cosa que ya esté
+ * DESPUÉS del marcador en la plantilla queda DESPUÉS de los resultados
+ * en cada informe generado.
+ *
+ * No reconstruye el título (perdería la caja de foto/CÓDIGO-VERSIÓN ya
+ * migrada) — usa `Table.copy()` + `Body.insertTable(index, table)` para
+ * MOVER la tabla existente a la posición correcta, preservando su
+ * contenido tal cual. Ubica ambos elementos por CONTENIDO (nunca por
+ * índice adivinado, mismo criterio que el resto del proyecto). Nunca
+ * lanza si no encuentra alguno de los 2, o si el orden ya es correcto —
+ * segura de correr más de una vez.
+ */
+function fixElectricalTemplateTitleOrder_(params, auth) {
+  if (auth.role !== 'Administrador') {
+    return jsonResponse_({ status: 403, message: 'Solo un Administrador puede modificar la plantilla' });
+  }
+  var templateId = getElectricalTemplateFileId_();
+  if (!templateId) {
+    return jsonResponse_({ status: 400, message: 'No existe la plantilla del informe eléctrico.' });
+  }
+  var doc = DocumentApp.openById(templateId);
+  var body = doc.getBody();
+  var titleTable = null, titleIdx = -1;
+  var placeholderIdx = -1;
+  for (var i = 0; i < body.getNumChildren(); i++) {
+    var child = body.getChild(i);
+    if (child.getType() === DocumentApp.ElementType.TABLE) {
+      var t = child.asTable();
+      if (t.getNumRows() === 1 && t.getRow(0).getNumCells() === 2 &&
+        t.getRow(0).getCell(0).getText().trim().indexOf('PROTOCOLO DE PRUEBAS ELÉCTRICAS') === 0) {
+        titleTable = t; titleIdx = i;
+      }
+    } else if (child.getType() === DocumentApp.ElementType.PARAGRAPH) {
+      if (child.asParagraph().getText().trim() === '<<TABLA_RESULTADOS_ELECTRICOS>>') {
+        placeholderIdx = i;
+      }
+    }
+  }
+  if (!titleTable || placeholderIdx === -1) {
+    return jsonResponse_({ status: 404, message: 'No se encontraron ambos elementos (título ya migrado + marcador de tabla) — revisa la plantilla a mano.' });
+  }
+  if (titleIdx < placeholderIdx) {
+    return jsonResponse_({ status: 200, message: 'El orden ya es correcto (título antes del marcador) — no se cambió nada.' });
+  }
+
+  var titleCopy = titleTable.copy();
+  body.removeChild(titleTable);
+  // El índice del marcador pudo correrse al borrar el título (si el
+  // título estaba ANTES del marcador en la lista de hijos, aunque ya
+  // descartamos ese caso arriba) — se recalcula por seguridad.
+  var placeholderParAfterRemoval = null;
+  for (var j = 0; j < body.getNumChildren(); j++) {
+    var c2 = body.getChild(j);
+    if (c2.getType() === DocumentApp.ElementType.PARAGRAPH && c2.asParagraph().getText().trim() === '<<TABLA_RESULTADOS_ELECTRICOS>>') {
+      placeholderParAfterRemoval = j;
+      break;
+    }
+  }
+  body.insertTable(placeholderParAfterRemoval, titleCopy);
+  doc.saveAndClose();
+  return jsonResponse_({ status: 200, message: 'Orden corregido: la caja de título se movió antes del marcador de la tabla de resultados.' });
+}
+
+/** Acción admin de una sola vez (Punto 11, ronda 6k, 2026-09-16) — quita de
+ *  la plantilla ELÉCTRICA en vivo (nunca la de Aceite, que sigue usando
+ *  appendSignatureSection_ horneada sin cambios) la caja-título "ÁREA DE
+ *  CONTROL DE CALIDAD" + la tabla PROBADO POR/CERTIFICADO POR/APROBADO POR
+ *  que `appendSignatureSection_` había horneado ahí al crear la plantilla.
+ *  Ahora esa sección se arma dinámicamente como una fila más de la tabla
+ *  unificada (ver buildFirmasUnifiedRows_ y regenerateElectricalCombinedReport_)
+ *  — dejar las 2 tablas viejas en la plantilla habría duplicado la
+ *  sección (la vieja con placeholders <<PROBADO_POR_NOMBRE>> sin
+ *  reemplazar + la nueva real). Idempotente: si ya no encuentra nada,
+ *  informa y no toca nada. */
+function removeElectricalTemplateBakedSignature_(params, auth) {
+  if (auth.role !== 'Administrador') {
+    return jsonResponse_({ status: 403, message: 'Solo un Administrador puede modificar la plantilla' });
+  }
+  var templateId = getElectricalTemplateFileId_();
+  if (!templateId) {
+    return jsonResponse_({ status: 400, message: 'No existe la plantilla del informe eléctrico.' });
+  }
+  var doc = DocumentApp.openById(templateId);
+  var body = doc.getBody();
+  var titleIdx = -1, sigIdx = -1;
+  for (var i = 0; i < body.getNumChildren(); i++) {
+    var child = body.getChild(i);
+    if (child.getType() !== DocumentApp.ElementType.TABLE) continue;
+    var t = child.asTable();
+    if (t.getNumRows() === 1 && t.getRow(0).getNumCells() === 1 &&
+      t.getRow(0).getCell(0).getText().trim() === 'ÁREA DE CONTROL DE CALIDAD') {
+      titleIdx = i;
+    } else if (t.getNumRows() === 2 && t.getRow(0).getNumCells() === 3 &&
+      t.getRow(0).getCell(0).getText().trim() === 'PROBADO POR') {
+      sigIdx = i;
+    }
+  }
+  if (titleIdx === -1 && sigIdx === -1) {
+    return jsonResponse_({ status: 200, message: 'Ya no hay firma horneada en la plantilla — no se cambió nada.' });
+  }
+  // Borrar de mayor a menor índice para no invalidar el índice del otro al
+  // eliminar el primero.
+  var indices = [titleIdx, sigIdx].filter(function (x) { return x !== -1; }).sort(function (a, b) { return b - a; });
+  indices.forEach(function (idx) { body.removeChild(body.getChild(idx)); });
+  doc.saveAndClose();
+  return jsonResponse_({ status: 200, message: 'Firma horneada (título + tabla PROBADO POR/CERTIFICADO POR/APROBADO POR) eliminada de la plantilla — ahora se genera dinámicamente dentro de la tabla unificada.' });
+}
+
 function restructureElectricalTemplateTitle_(params, auth) {
   if (auth.role !== 'Administrador') {
     return jsonResponse_({ status: 403, message: 'Solo un Administrador puede modificar la plantilla' });
@@ -3637,10 +4139,34 @@ function restructureElectricalTemplateTitle_(params, auth) {
  *  (216 x 330 mm) del mismo día (2026-09-15), a pedido del "prompt
  *  maestro" del cliente: la referencia real tiene densidad alta y
  *  necesita aprovechar casi todo el ancho de la hoja. 1 mm = 2.834645669
- *  pt — 210mm=595.28pt, 297mm=841.89pt, 8mm=22.68pt. */
+ *  pt — 210mm=595.28pt, 297mm=841.89pt. Margen superior/izq/der bajado de
+ *  8mm a 6mm (2026-09-16, ronda 4 — "primera configuración a probar" que
+ *  pidió el cliente para el intento de 1 sola página; explícitamente NO
+ *  0mm). El margen INFERIOR se dejó aparte (`PROTOCOL_MARGIN_BOTTOM_PT_`)
+ *  — con el pie de página real que el cliente ya agregó a la plantilla
+ *  (imagen + iconos, más alto que el texto simple de antes), 6mm no
+ *  alcanzaba: el cuerpo se solapaba con el pie en vez de terminar antes
+ *  — se ve en la verificación en vivo de esta ronda (una tabla partida a
+ *  la mitad justo donde empieza el pie). El margen inferior de
+ *  DocumentApp (dónde termina el CUERPO) es independiente del margen del
+ *  PIE mismo (dónde empieza el pie, ver Format → Encabezado y pie de
+ *  página en Docs — eso no se puede controlar por API, solo a mano) —
+ *  agrandar el margen inferior del cuerpo es la única forma de reservar
+ *  espacio real para un pie más alto desde el código. */
 var PROTOCOL_PAGE_WIDTH_PT_ = 595.28;
 var PROTOCOL_PAGE_HEIGHT_PT_ = 841.89;
-var PROTOCOL_MARGIN_PT_ = 22.68;
+// Punto 11, ronda 6i (2026-09-16): 6mm -> 5mm — dentro del rango 5-6mm
+// que el propio cliente autorizó como último recurso ("prompt maestro"
+// #3: "márgenes 5-6mm no 0mm"). Confirmado que el margen SOLO se aplica
+// de verdad al volver a correr la acción admin `setReportTemplatesPageSize`
+// contra la plantilla en vivo — cambiar la constante sin eso no tiene
+// ningún efecto (así se perdieron las rondas 6f/6g hasta detectarlo).
+var PROTOCOL_MARGIN_PT_ = 14.17;
+// Ronda 6g: 12mm -> 9mm (ya confirmado con efecto real, único ajuste que sí
+// movió el corte de página junto con el espaciado de párrafo). Ronda 6i:
+// 9mm -> 7mm, siguiente paso dentro del mismo margen de seguridad frente a
+// los 6mm que causaron el overlap original con el pie de página del cliente.
+var PROTOCOL_MARGIN_BOTTOM_PT_ = 19.84;
 
 /** Punto 11 (2026-09-15, a pedido del cliente) — fija tamaño A4 y
  *  márgenes de 8 mm en las 2 plantillas YA EXISTENTES, igual criterio que
@@ -3664,10 +4190,10 @@ function setReportTemplatesPageSize_(params, auth) {
     var doc = DocumentApp.openById(fileId);
     var body = doc.getBody();
     body.setPageWidth(PROTOCOL_PAGE_WIDTH_PT_).setPageHeight(PROTOCOL_PAGE_HEIGHT_PT_);
-    body.setMarginTop(PROTOCOL_MARGIN_PT_).setMarginBottom(PROTOCOL_MARGIN_PT_)
+    body.setMarginTop(PROTOCOL_MARGIN_PT_).setMarginBottom(PROTOCOL_MARGIN_BOTTOM_PT_)
       .setMarginLeft(PROTOCOL_MARGIN_PT_).setMarginRight(PROTOCOL_MARGIN_PT_);
     doc.saveAndClose();
-    results[key] = 'actualizado a A4 (210 x 297 mm), márgenes 8 mm';
+    results[key] = 'actualizado a A4 (210 x 297 mm), márgenes 5 mm (7 mm abajo, para el pie de página)';
   });
   return jsonResponse_({ status: 200, message: 'Tamaño de página y márgenes actualizados.', data: results });
 }
@@ -3823,17 +4349,27 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
   // huecos — un informe con solo Aislamiento numera esa sección "3.", no
   // "8." (el número que tendría si TTR/Devanados estuvieran presentes).
   var n = 1;
-  // Sección 1 (ronda 3): Cliente/Equipo emparejado con Datos de la Prueba,
-  // ambos numerados como UNA sola sección "1." (mismo número para los 2 —
-  // la referencia real los trata como una sola sección con 2 mitades, no
-  // 2 secciones aparte).
+  // Sección 1 — Cliente/Equipo y Datos de la Prueba, ambos numerados como
+  // UNA sola sección "1." (mismo número para los 2 — la referencia real
+  // los trata como una sola sección con 2 mitades). Punto 11, ronda 4
+  // (2026-09-16): dejaron de ir EMPAREJADAS al 50% (como en la ronda 3) —
+  // Cliente/Equipo tiene 12 datos, Datos de la Prueba solo 6, así que
+  // emparejadas la fila externa quedaba a la altura de la más alta (12) y
+  // el lado corto dejaba la mitad de su columna en blanco, un desperdicio
+  // real de espacio vertical detectado en la verificación en vivo de esta
+  // ronda. Ahora van una debajo de otra, cada una a ancho completo — y
+  // como ninguna necesita ya la mitad de página, ambas volvieron a 2
+  // pares etiqueta/valor por fila (ver los comentarios en
+  // buildClientEquipoUnifiedRows_/buildDatosGeneralesUnifiedRows_), así
+  // que la altura total de la Sección 1 (6+3=9 filas) es MENOR que antes
+  // (12+6=18 filas repartidas en 2 columnas, con media columna vacía).
   var clienteEquipoRows = numberSection_(buildClientEquipoUnifiedRows_(site, transformer), n);
   var datosPruebaRows = buildDatosGeneralesUnifiedRows_(
     fmtDatePdf_(signedTest.created_at), tecnicoResponsable, ambienteTempText, ambienteHumedadText,
     estadoEquipoText, normas.join(' / ')
   );
   n++;
-  var outerRows = [outerNestedPairRow_(clienteEquipoRows, datosPruebaRows)];
+  var outerRows = [outerNestedFullRow_(clienteEquipoRows), outerNestedFullRow_(datosPruebaRows)];
 
   // Sección 2+3 (ronda 3): Objetivo y Alcance | Equipos Utilizados, lado a
   // lado — nuevas, a pedido del "prompt maestro" del 2026-09-15.
@@ -3842,27 +4378,20 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
     numberSection_(buildEquiposUtilizadosRows_(equipos), n++)
   ));
 
-  // TTR — a diferencia de AT/BT/Aislamiento (que van con un panel de
-  // criterios al lado), la referencia real del cliente empareja TTR con
-  // SU GRÁFICA de desviación por fase (outerPairTableImageRow_). El
-  // veredicto de sección ahora vive DENTRO de la tabla anidada
-  // (nestedVerdictRow_), no en una fila aparte de la tabla externa — otro
-  // ajuste sobre la referencia real.
+  // Punto 11, ronda 6 (2026-09-16) — REESTRUCTURACIÓN de emparejamiento a
+  // pedido explícito del cliente, mirando de nuevo la referencia real que
+  // había compartido: TTR va junto a AT (no junto a su gráfica), BT junto
+  // a Aislamiento (no junto a la leyenda DAR/IP), y las 2 gráficas
+  // (TTR + curva de aislamiento) más los criterios de evaluación
+  // (Devanados + DAR/IP) pasan a ser 2 secciones propias, emparejadas
+  // entre sí, DESPUÉS de los resultados. Reemplaza el emparejamiento de
+  // las rondas 2-5 (TTR+gráfica, AT+BT, Aislamiento+leyenda) por completo.
+  var ttrRowsFinal = null, atRowsFinal = null, btRowsFinal = null, aisRowsFinal = null;
+  var atVerdict = null;
+
   if (ttrCalc) {
-    var ttrRows = buildTtrUnifiedSection_(ttrCalc, esMonofasico, ttrInstrumento, ttrWarning);
-    ttrRows.push(nestedVerdictRow_('Veredicto TTR', ttrCalc.overallVerdict));
-    numberSection_(ttrRows, n++);
-    // Misma condición que usa buildTtrDeviationChart_ internamente
-    // (monofásico o sin TAPs no tiene gráfica) — se verifica ANTES de
-    // pedir la imagen para saber si el número de sección 4 se consume o
-    // no (sin huecos en la numeración si la gráfica no aplica).
-    var willHaveChart = !esMonofasico && ttrCalc.taps && Object.keys(ttrCalc.taps).length > 0;
-    if (willHaveChart) {
-      var ttrChartBlob = buildTtrDeviationChart_(ttrCalc, esMonofasico, n++);
-      outerRows.push(outerPairTableImageRow_(ttrRows, ttrChartBlob, 300, 157));
-    } else {
-      outerRows.push(outerNestedFullRow_(ttrRows));
-    }
+    ttrRowsFinal = buildTtrUnifiedSection_(ttrCalc, esMonofasico, ttrInstrumento, ttrWarning);
+    ttrRowsFinal.push(nestedVerdictRow_('Veredicto TTR', ttrCalc.overallVerdict));
     allVerdicts.push(ttrCalc.overallVerdict);
     allNotes = allNotes.concat(collectTtrUnifiedNotes_(ttrCalc));
   }
@@ -3873,59 +4402,103 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
   // (solo el overallVerdict combinado), así que se re-deriva aquí con la
   // MISMA fórmula que usa internamente (every tap APROBADO); el
   // secundario sí trae su propio `verdict` directo.
-  //
-  // Punto 11, ronda 2: AT y BT ahora van LADO A LADO entre sí (no cada uno
-  // con su propio panel de criterios) — la referencia real trae una sola
-  // tabla de criterios de Devanados, a todo lo ancho, DESPUÉS de ambos.
   if (wrCalc) {
-    var atRows = null, btRows = null, atVerdict = null;
     if (wrCalc.taps && wrCalc.taps.length > 0) {
-      atRows = buildWindingSideUnifiedRows_('ALTA TENSIÓN (AT)', wrCalc.taps, esMonofasico, transformer.at_devanado_material, wrInstrumento, WINDING_PHASE_ORDER_);
+      atRowsFinal = buildWindingSideUnifiedRows_('ALTA TENSIÓN (AT)', wrCalc.taps, esMonofasico, transformer.at_devanado_material, wrInstrumento, WINDING_PHASE_ORDER_);
       atVerdict = wrCalc.taps.every(function (t) { return t.tapVerdict === 'APROBADO'; }) ? 'APROBADO' : 'RECHAZADO';
-      atRows.push(nestedVerdictRow_('Veredicto AT', atVerdict));
+      atRowsFinal.push(nestedVerdictRow_('Veredicto AT', atVerdict));
       allVerdicts.push(atVerdict);
       allNotes = allNotes.concat(collectWindingSideUnifiedNotes_('AT', wrCalc.taps));
     }
     if (wrCalc.secondary) {
-      btRows = buildWindingSideUnifiedRows_('BAJA TENSIÓN (BT)', [wrCalc.secondary], esMonofasico, transformer.bt_devanado_material, wrInstrumento, WINDING_SECONDARY_PHASE_ORDER_);
-      btRows.push(nestedVerdictRow_('Veredicto BT', wrCalc.secondary.verdict));
+      btRowsFinal = buildWindingSideUnifiedRows_('BAJA TENSIÓN (BT)', [wrCalc.secondary], esMonofasico, transformer.bt_devanado_material, wrInstrumento, WINDING_SECONDARY_PHASE_ORDER_);
+      btRowsFinal.push(nestedVerdictRow_('Veredicto BT', wrCalc.secondary.verdict));
       allVerdicts.push(wrCalc.secondary.verdict);
       allNotes = allNotes.concat(collectWindingSideUnifiedNotes_('BT', [wrCalc.secondary]));
     }
-    if (atRows && btRows) {
-      numberSection_(atRows, n++);
-      numberSection_(btRows, n++);
-      outerRows.push(outerNestedPairRow_(atRows, btRows));
-    } else if (atRows) {
-      outerRows.push(outerNestedFullRow_(numberSection_(atRows, n++)));
-    } else if (btRows) {
-      outerRows.push(outerNestedFullRow_(numberSection_(btRows, n++)));
-    }
-    if (atRows || btRows) {
-      outerRows.push(outerNestedFullRow_(numberSection_(buildWindingCriteriaTable3Tier_(), n++)));
-    }
   }
 
-  // Aislamiento — sigue emparejado con su panel de criterios (leyenda
-  // DAR/IP en Completo, nota corta en Simple), igual que ya estaba. La
-  // curva de aislamiento (ronda 3, 2026-09-15) va debajo, a todo el
-  // ancho, sin emparejar con nada — Aislamiento ya usa sus 2 columnas.
   if (aisCalc) {
-    var aisRows = buildInsulationUnifiedRows_(aisCalc, aisInstrumento, aisTension);
-    aisRows.push(nestedVerdictRow_('Veredicto Aislamiento', aisCalc.overallVerdict));
-    numberSection_(aisRows, n++);
-    var aisCriteriaRows = numberSection_(buildInsulationCriteriaRows_(aisEsSimple), n++);
-    outerRows.push(outerNestedPairRow_(aisRows, aisCriteriaRows));
+    aisRowsFinal = buildInsulationUnifiedRows_(aisCalc, aisInstrumento, aisTension);
+    aisRowsFinal.push(nestedVerdictRow_('Veredicto Aislamiento', aisCalc.overallVerdict));
     allVerdicts.push(aisCalc.overallVerdict);
     allNotes = allNotes.concat(collectInsulationUnifiedNotes_(aisCalc));
+  }
 
-    if (!aisEsSimple) {
-      var curveBlob = buildInsulationCurveChart_(aisCalc, aisRaw, n);
-      if (curveBlob) {
-        outerRows.push(outerImageFullRow_(curveBlob, 420, 220));
-        n++;
-      }
-    }
+  // TTR | AT — emparejados. Si falta uno de los 2, el que sí está va solo,
+  // a ancho completo (nunca se fuerza un emparejamiento con nada).
+  if (ttrRowsFinal && atRowsFinal) {
+    numberSection_(ttrRowsFinal, n++);
+    numberSection_(atRowsFinal, n++);
+    outerRows.push(outerNestedPairRow_(ttrRowsFinal, atRowsFinal));
+  } else if (ttrRowsFinal) {
+    outerRows.push(outerNestedFullRow_(numberSection_(ttrRowsFinal, n++)));
+  } else if (atRowsFinal) {
+    outerRows.push(outerNestedFullRow_(numberSection_(atRowsFinal, n++)));
+  }
+
+  // BT | Aislamiento — emparejados, mismo criterio.
+  if (btRowsFinal && aisRowsFinal) {
+    numberSection_(btRowsFinal, n++);
+    numberSection_(aisRowsFinal, n++);
+    outerRows.push(outerNestedPairRow_(btRowsFinal, aisRowsFinal));
+  } else if (btRowsFinal) {
+    outerRows.push(outerNestedFullRow_(numberSection_(btRowsFinal, n++)));
+  } else if (aisRowsFinal) {
+    outerRows.push(outerNestedFullRow_(numberSection_(aisRowsFinal, n++)));
+  }
+
+  // Gráficos de Resultados (TTR + curva de aislamiento) | Criterios de
+  // Evaluación (Devanados + DAR/IP) — emparejados entre sí. Cada uno se
+  // arma solo si aplica (monofásico no tiene gráfica de TTR; Aislamiento
+  // Simple no tiene curva ni DAR/IP).
+  //
+  // Punto 11, ronda 6 (2026-09-16) — bug real encontrado en la
+  // verificación en vivo: apilar las 2 imágenes DENTRO de una tabla
+  // anidada (`unifiedImageRow_`) las dejaba mal si esa tabla anidada
+  // necesitaba partirse entre páginas — Google Docs las dibujaba fuera de
+  // su celda, montadas sobre el encabezado de la página siguiente. Se
+  // resolvió sacándolas de la tabla anidada: ahora van DIRECTO en la
+  // celda de la tabla EXTERNA (`outerImagesPairRow_`), el mismo mecanismo
+  // que ya usaban `outerImageFullRow_`/`outerPairTableImageRow_` en
+  // rondas anteriores — nunca mostraron este bug.
+  var willHaveTtrChart = !!(ttrCalc && !esMonofasico && ttrCalc.taps && Object.keys(ttrCalc.taps).length > 0);
+  var willHaveCurveChart = !!(aisCalc && !aisEsSimple);
+  // Punto 11, ronda 6e (2026-09-16): 130pt por gráfico bajado a 100pt —
+  // confirmado en vivo (Drive viewer) que la imagen de la Sección 8 se
+  // desbordaba ENTERA a la página 2 (superpuesta con el encabezado
+  // corporativo) mientras el texto de la Sección 9 (misma fila externa)
+  // SÍ cabía completo en la página 1 — la imagen, al ser un bloque
+  // atómico, no puede partirse: si no entra completa en el espacio que
+  // queda en la página 1 salta entera a la 2. Achicarla es lo que la deja
+  // entrar en ese mismo espacio en vez de tocar la tipografía/columnas ya
+  // en su piso.
+  var chartImages = [];
+  if (willHaveTtrChart) {
+    var ttrChartBlob = buildTtrDeviationChart_(ttrCalc, esMonofasico, null);
+    if (ttrChartBlob) chartImages.push({ blob: ttrChartBlob, widthPt: 220, heightPt: 70 });
+  }
+  if (willHaveCurveChart) {
+    var curveBlob = buildInsulationCurveChart_(aisCalc, aisRaw, null);
+    if (curveBlob) chartImages.push({ blob: curveBlob, widthPt: 220, heightPt: 70 });
+  }
+  var devanadosCriteriaNeeded = !!(atRowsFinal || btRowsFinal);
+  var aislamientoCriteriaNeeded = !!aisCalc;
+  var criteriaRows = null;
+  if (devanadosCriteriaNeeded || aislamientoCriteriaNeeded) {
+    criteriaRows = [];
+    if (devanadosCriteriaNeeded) criteriaRows = criteriaRows.concat(buildWindingCriteriaTable3Tier_());
+    if (aislamientoCriteriaNeeded) criteriaRows = criteriaRows.concat(buildInsulationCriteriaRows_(aisEsSimple));
+    criteriaRows.cellPadding = 0.5;
+  }
+  if (chartImages.length && criteriaRows) {
+    var chartsNum = n++;
+    numberSection_(criteriaRows, n++);
+    outerRows.push(outerImagesPairRow_(chartsNum + '. GRÁFICOS DE RESULTADOS', chartImages, criteriaRows));
+  } else if (chartImages.length) {
+    outerRows.push(outerImagesPairRow_(n++ + '. GRÁFICOS DE RESULTADOS', chartImages, null));
+  } else if (criteriaRows) {
+    outerRows.push(outerNestedFullRow_(numberSection_(criteriaRows, n++)));
   }
 
   // Observaciones + Conclusión General — emparejadas lado a lado (ronda
@@ -3937,31 +4510,42 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
     numberSection_(buildConclusionRows_(conclusionVerdict), n++)
   ));
 
-  var tablePlaceholderPar = findMarkerParagraph_(body, '<<TABLA_RESULTADOS_ELECTRICOS>>');
-  if (!tablePlaceholderPar) throw new Error('La plantilla no tiene el marcador de la tabla de resultados — regenera las plantillas desde Administración.');
-  var tableResult = insertOuterResultsTable_(body, tablePlaceholderPar, outerRows);
-  body.removeChild(tablePlaceholderPar);
-  appendUnifiedNoteFootnote_(body, tableResult.table, allNotes);
-  // "12. ÁREA DE CONTROL DE CALIDAD" — Punto 11, ronda 2: la sección de
-  // firmas (appendSignatureSection_) se arma UNA VEZ en la plantilla
-  // (buildElectricalTemplateDoc_ → appendSectionTitle_, que además pasa el
-  // texto a MAYÚSCULAS — el replaceText de abajo tiene que buscar el texto
-  // YA en mayúsculas o nunca encuentra nada, sin lanzar error, solo se
-  // queda sin numerar en silencio). No se puede numerar en la plantilla
-  // misma porque el número real depende de cuántas secciones vinieron
-  // antes en ESTE informe — se numera acá con un replaceText simple, sin
-  // tocar la plantilla ni regenerarla.
-  body.replaceText('ÁREA DE CONTROL DE CALIDAD', n + '. ÁREA DE CONTROL DE CALIDAD');
-
+  // "ÁREA DE CONTROL DE CALIDAD" (firmas) — Punto 11, ronda 6k (2026-09-16):
+  // ya NO vive horneada en la plantilla (ver buildFirmasUnifiedRows_) — es
+  // una fila más de esta misma tabla unificada, para no dejar el hueco
+  // entre tablas de nivel superior que impedía cerrar 1 sola página.
   // PROBADO POR = mismo criterio que TÉCNICO RESPONSABLE arriba
   // (operador_nombre, no la cuenta de login compartida). CERTIFICADO POR
   // (2026-09-13, a pedido del cliente) queda FIJO en el mismo ingeniero
   // que ya firma "APROBADO POR" — deja de mostrar quién certificó en la
   // app (revisado_por), la fecha real de certificación sí se conserva.
-  body.replaceText('<<PROBADO_POR_NOMBRE>>', tecnicoResponsable);
-  body.replaceText('<<PROBADO_POR_FECHA>>', fmtDatePdf_(signedTest.created_at));
-  body.replaceText('<<CERTIFICADO_POR_NOMBRE>>', ENGINEER_SIGNATURE_NAME_);
-  body.replaceText('<<CERTIFICADO_POR_FECHA>>', fmtDatePdf_(signedTest.revisado_at));
+  var firmaRows = numberSection_(buildFirmasUnifiedRows_(
+    { nombre: tecnicoResponsable, fecha: signedTest.created_at },
+    { nombre: ENGINEER_SIGNATURE_NAME_, fecha: signedTest.revisado_at }
+  ), n++);
+  outerRows.push(outerNestedFullRow_(firmaRows, function (nestedTable) {
+    var sigCell = nestedTable.getRow(2).getCell(5);
+    var engineerBlob = getEngineerSignatureBlob_();
+    if (engineerBlob) {
+      var simg = sigCell.appendImage(engineerBlob);
+      var sratio = simg.getHeight() / simg.getWidth();
+      simg.setWidth(30);
+      simg.setHeight(Math.round(30 * sratio));
+    }
+    cellAlign_(sigCell, DocumentApp.HorizontalAlignment.CENTER);
+    var snameLine = sigCell.appendParagraph(ENGINEER_SIGNATURE_NAME_);
+    snameLine.editAsText().setBold(true).setFontSize(7).setFontFamily(PROTOCOL_FONT_FAMILY_);
+    snameLine.setAlignment(DocumentApp.HorizontalAlignment.CENTER).setSpacingBefore(0).setSpacingAfter(0).setLineSpacing(1);
+    var stitleLine = sigCell.appendParagraph(ENGINEER_SIGNATURE_TITLE_);
+    stitleLine.editAsText().setFontSize(6.5).setForegroundColor(PDF_COLORS_.TEXT_MUTED).setFontFamily(PROTOCOL_FONT_FAMILY_);
+    stitleLine.setAlignment(DocumentApp.HorizontalAlignment.CENTER).setSpacingBefore(0).setSpacingAfter(0).setLineSpacing(1);
+  }));
+
+  var tablePlaceholderPar = findMarkerParagraph_(body, '<<TABLA_RESULTADOS_ELECTRICOS>>');
+  if (!tablePlaceholderPar) throw new Error('La plantilla no tiene el marcador de la tabla de resultados — regenera las plantillas desde Administración.');
+  var tableResult = insertOuterResultsTable_(body, tablePlaceholderPar, outerRows);
+  body.removeChild(tablePlaceholderPar);
+  appendUnifiedNoteFootnote_(body, tableResult.table, allNotes);
 
   var fileName = 'Informe_Electrico_' + transformer.serial_number + '_' + fmtTimestampForFilename_(new Date());
   var saved = finalizeReportPdf_(doc, folderId, fileName, { outerMarkerText: tableResult.outerMarkerText, outerMergeSpecs: tableResult.outerMergeSpecs, nestedRegistry: tableResult.nestedRegistry });
@@ -4959,6 +5543,10 @@ var POST_ACTIONS = {
   certifyElectricalReport: certifyElectricalReport_,
   generateReportTemplates: crearPlantillasInformes_,
   restructureElectricalTemplateTitle: restructureElectricalTemplateTitle_,
+  debugInspectTemplateBody: debugInspectTemplateBody_,
+  fixElectricalTemplateTitleOrder: fixElectricalTemplateTitleOrder_,
+  removeElectricalTemplateBakedSignature: removeElectricalTemplateBakedSignature_,
+  compactElectricalTemplateTitleBox: compactElectricalTemplateTitleBox_,
   setReportTemplatesPageSize: setReportTemplatesPageSize_,
   rejectTest: rejectTest_,
   updateTestDraft: updateTestDraft_,

@@ -3651,3 +3651,170 @@ usuario antes de tocarlo, el cliente real ya está en producción). Mismo
 caso para `DEMO-MONOFASICO-01` (mismo sitio "DEMO - Verificación
 Plantillas V2"), creado el 2026-09-13 para verificar los puntos 2/3 de la
 lista de cambios pendientes.
+
+### Rondas 4-6 (2026-09-16) — "que quepa en 1 sola página A4", verificado en vivo
+
+El cliente pidió, con mensajes muy detallados y varias rondas de
+verificación con PDF real descargado (nunca solo el visor de Drive, que
+resultó poco confiable — el método fiable terminó siendo
+`curl -sL "https://drive.google.com/uc?export=download&id=<FILEID>"` +
+`pdftotext -layout` para el texto y el visor de Drive solo para
+inspección visual puntual), que el informe eléctrico completo (las 4
+pruebas: TTR + AT + BT + Aislamiento, con Aislamiento en modo Completo
+DAR/IP) cabga en **1 sola página A4**, con **cero espacio en blanco entre
+secciones** — describió a mano el orden exacto de referencia: 1 (cliente+
+equipo+datos prueba) / 2-3 (objetivo+equipos) / 4-5 (TTR+AT) / 6-7 (BT+
+Aislamiento) / 8-9 (Gráficos+Criterios) / 10-11 (Observaciones+
+Conclusión) / 12 (firmas) — sin aceptar 2 páginas como resultado final en
+ningún momento intermedio.
+
+**Reestructura de emparejamiento (ronda 6)**: antes AT/BT vivían juntos
+(ronda 2/3) con TTR y Aislamiento cada uno con su gráfica/criterios
+propios. Se cambió a TTR|AT y BT|Aislamiento emparejados (coincide con la
+referencia real que compartió el cliente), y Gráficos(TTR+Aislamiento,
+las 2 imágenes juntas)+Criterios(Devanados+Aislamiento, las 2 tablas
+juntas) como UN emparejamiento combinado — `outerImagesPairRow_` (imágenes
+directo en la celda de la tabla EXTERNA, nunca dentro de una tabla
+anidada — ver el bug de imágenes rotas más abajo).
+
+**Mecanismos de compactación agregados** (todos opcionales, por fila o
+por tabla — nunca constantes globales, a pedido explícito del cliente de
+no bajarle la tipografía a todo el documento por el problema de una sola
+sección):
+- `r.fontSizeOverride` (en el objeto fila) — pisa `UNIFIED_FONT_*` para
+  ESA fila puntual, ver `styleUnifiedCell_`.
+- `rows.cellPadding` (en el arreglo de filas de un `build*Rows_`) — pisa
+  `UNIFIED_CELL_PADDING_` para ESA tabla anidada puntual, ver
+  `appendNestedTable_`.
+- `rows.colWidths` (mismo lugar) — anchos de columna explícitos en pt,
+  ver `TTR_WINDING_COL_WIDTHS_PT_`/`EQUIPOS_COL_WIDTHS_PT_` — sin esto
+  DocumentApp reparte las 7 columnas en partes iguales y palabras largas
+  ("APROBADO", "CUESTIONABLE") se parten en 2 líneas en columnas
+  angostas.
+
+**Bug real: título duplicado en la página 2.** El informe mostraba la
+caja "PROTOCOLO DE PRUEBAS ELÉCTRICAS" una segunda vez, pegada al
+encabezado corporativo de la página 2, justo antes de las firmas. Causa
+(confirmada con un diagnóstico puntual, `debugInspectTemplateBody_`,
+listando los hijos del body de la plantilla): la tabla del título vivía
+en el body de la plantilla DESPUÉS del marcador
+`<<TABLA_RESULTADOS_ELECTRICOS>>` — como `insertOuterResultsTable_`
+siempre inserta la tabla de resultados justo en la posición de ese
+marcador, cualquier cosa que en la plantilla estuviera DESPUÉS del
+marcador termina DESPUÉS de los resultados en todo informe generado.
+Arreglado con `fixElectricalTemplateTitleOrder_` (acción admin de una
+sola vez, ya corrida): `Table.copy()` + `body.removeChild()` +
+`body.insertTable(idx, copia)` para mover la caja de título a ANTES del
+marcador, sin perder su contenido/estilo.
+
+**Bug real: imágenes rotas/superpuestas con el encabezado.** Con las 2
+gráficas (TTR + curva de aislamiento) metidas DENTRO de una tabla
+anidada (mecanismo viejo, `unifiedImageRow_`, ya borrado), si esa tabla
+anidada necesitaba partirse entre páginas, Google Docs dibujaba las
+imágenes rotas, montadas sobre el encabezado corporativo de la página
+siguiente — ocurría igual a 320×168pt que a 240×100pt (no era cuestión de
+tamaño, es una limitación real de Docs al partir una tabla anidada con
+imágenes). Se resolvió insertando las imágenes DIRECTO en la celda de la
+tabla EXTERNA (`outerImagesPairRow_`, nunca anidadas) — pero el mismo bug
+reaparecía si esa FILA EXTERNA (imagen, un bloque atómico que no puede
+partirse) no entraba completa en el espacio que quedaba en la página:
+saltaba entera a la 2, superpuesta con el encabezado igual. La solución
+definitiva fue lograr que TODO el documento entrara en la página 1 (ver
+abajo), eliminando el salto de página en sí — los gráficos bajaron de
+320×168 a 220×70pt en el camino, más chicos de lo estrictamente
+necesario, con margen de sobra.
+
+**La causa real del "queda 2 páginas por muy poco" — 2 hallazgos que NO
+se ven mirando el código, solo generando informes reales y midiendo.**
+Después de agotar tipografía/padding/anchos de columna/márgenes (5-6mm,
+el piso que autorizó el cliente) sin que el corte de página se moviera un
+solo punto en varios intentos, un diagnóstico puntual
+(`debugInspectGeneratedReportRows_`, ya retirado — abría el documento
+INTERMEDIO real, antes de mandarlo a la papelera, y medía cada fila de la
+tabla unificada) reveló 2 causas reales, ninguna de las 2 visible antes
+del merge de celdas:
+
+1. **`Docs.Documents.batchUpdate` con `mergeTableCells` resetea la altura
+   mínima de la fila fusionada a ~11pt** — sin importar que
+   `insertOuterResultsTable_` ya la hubiera puesto en 0 con
+   `row.setMinimumHeight(0)` ANTES de fusionar. Como el merge se hace con
+   la API avanzada de Docs (`applyOuterAndNestedMerges_`, después de
+   `doc.saveAndClose()`), y `row.setMinimumHeight(0)` se hacía con
+   DocumentApp ANTES de ese merge, el merge simplemente lo pisaba. (En la
+   práctica esto resultó ser irrelevante — el contenido real de esas
+   filas ya superaba 11pt — pero se corrigió igual, aplicándolo de nuevo
+   DESPUÉS del merge, por si acaso con menos contenido sí llegara a
+   importar.)
+2. **La causa real de los huecos visibles entre CADA sección**: toda
+   celda de la tabla EXTERNA que aloja una tabla anidada queda con
+   `[párrafo vacío, tabla, párrafo vacío]` — Google Docs exige un párrafo
+   antes Y después de cualquier tabla dentro de una celda (por eso un
+   intento anterior de simplemente BORRAR el párrafo sobrante no
+   funcionaba: Docs lo vuelve a insertar). Ninguno de esos 2 párrafos
+   pasa nunca por `styleUnifiedCell_` (que solo estiliza celdas DENTRO de
+   la tabla anidada), así que se quedaban con el tamaño "Normal text"
+   (~11pt) de Google Docs por defecto — ese era el hueco real que el
+   cliente reportó viendo a simple vista ("dejas muchos espacios entre
+   filas").
+
+Ambos se corrigen en `applyOuterAndNestedMerges_`, DESPUÉS del
+`Docs.Documents.batchUpdate` del merge (con `Utilities.sleep(1500)` antes
+de reabrir con `DocumentApp.openById` — la API avanzada y DocumentApp no
+son instantáneamente consistentes entre sí sobre el mismo documento; el
+mismo tipo de desfase que ya obligaba a guardar con DocumentApp antes de
+que la API avanzada pudiera ver los cambios, aquí en la dirección
+contraria): se busca la tabla externa por el texto de su primer banner
+(mismo criterio que el resto del merge), y para cada fila y cada celda,
+`setMinimumHeight(0)` + los párrafos vacíos sobrantes se encogen a
+`setFontSize(1)` con `setSpacingBefore(0).setSpacingAfter(0).setLineSpacing(1)`.
+
+**Sección 12 (firmas) ya no vive horneada en la plantilla.** Antes
+`appendSignatureSection_` armaba 2 tablas de nivel superior APARTE de la
+tabla unificada (la caja-título + la tabla PROBADO POR/CERTIFICADO POR/
+APROBADO POR), directo en el body de la plantilla, con placeholders
+`<<PROBADO_POR_NOMBRE>>` etc. — 2 tablas de nivel superior consecutivas
+dejan un hueco entre ellas sin importar cómo estén armadas por dentro
+(mismo motivo por el que existe la tabla unificada en primer lugar).
+Ahora `buildFirmasUnifiedRows_` arma esa sección como una fila MÁS de la
+misma tabla unificada (banner+header+datos, 7 columnas con fusiones
+3/2/2), insertada vía `outerNestedFullRow_(rows, afterBuild)` — el
+parámetro `afterBuild(nestedTable)`, nuevo en esta ronda, es un callback
+que `insertOuterResultsTable_` llama justo después de crear la tabla
+anidada, con la tabla YA CREADA (antes de fusionar), para poder insertar
+la imagen de la firma del ingeniero en la celda "APROBADO POR" (algo que
+`appendNestedTable_`/`styleUnifiedCell_` no saben hacer solas, solo
+estilizan texto). La firma horneada VIEJA se quitó de la plantilla en
+vivo con `removeElectricalTemplateBakedSignature_` (acción admin de una
+sola vez, ya corrida — busca la caja-título "ÁREA DE CONTROL DE CALIDAD"
++ la tabla PROBADO POR por su contenido exacto y las borra; deja de
+usarse en informes eléctricos nuevos, `buildElectricalTemplateDoc_`
+también se actualizó para no volver a hornearla si la plantilla se
+regenera desde cero algún día). El informe de Aceite NO se tocó — sigue
+usando `appendSignatureSection_` horneada, sin cambios.
+
+**Márgenes finales**: `PROTOCOL_MARGIN_PT_` (arriba/izq/der) bajó de 6mm
+a **5mm** (14.17pt); `PROTOCOL_MARGIN_BOTTOM_PT_` (abajo, aparte, para el
+pie de página del cliente) bajó de 15mm a **7mm** (19.84pt) — ambos
+dentro del rango 5-6mm que el cliente autorizó como último recurso
+("prompt maestro" #3), y el de abajo confirmado visualmente sin overlap
+con el pie de página real (el bug original de overlap fue a 6mm exactos
+en el margen inferior, antes de separar `PROTOCOL_MARGIN_BOTTOM_PT_` del
+resto — ver ronda 3/4). **Importante**: estas constantes SOLO se aplican
+de verdad a los informes reales si se vuelve a correr la acción admin
+`setReportTemplatesPageSize` contra la plantilla en vivo después de
+cambiarlas — cambiar la constante en el código y desplegar el backend NO
+alcanza, el margen queda horneado en el documento de la plantilla (mismo
+criterio que el resto de "edición quirúrgica en vivo" de este proyecto).
+
+**Resultado final, verificado con un informe real** (transformador de
+demo `DEMO-COMPLETO-01`, las 4 pruebas + Aislamiento Completo DAR/IP):
+PDF de **1 sola página**, gráficos TTR+Aislamiento visibles sin
+superposición con el encabezado, tabla de firmas con la imagen de la
+firma del ingeniero, sin espacios en blanco entre secciones. Los
+diagnósticos temporales (`debugInspectGeneratedReportRows_`,
+`cleanupTmpElectricoFiles`, el log en `PropertiesService` para depurar el
+fix post-merge) se retiraron del código antes de dar la ronda por
+cerrada; `docFile.setTrashed(true)` (deshabilitado un rato para poder
+inspeccionar el doc intermedio) quedó restaurado. `debugInspectTemplateBody_`
+(ronda 5) sigue presente y marcada como temporal — pendiente de retirar
+en una futura sesión, no se tocó en esta ronda.
