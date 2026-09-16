@@ -4464,23 +4464,22 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
   // rondas anteriores — nunca mostraron este bug.
   var willHaveTtrChart = !!(ttrCalc && !esMonofasico && ttrCalc.taps && Object.keys(ttrCalc.taps).length > 0);
   var willHaveCurveChart = !!(aisCalc && !aisEsSimple);
-  // Punto 11, ronda 6e (2026-09-16): 130pt por gráfico bajado a 100pt —
-  // confirmado en vivo (Drive viewer) que la imagen de la Sección 8 se
-  // desbordaba ENTERA a la página 2 (superpuesta con el encabezado
-  // corporativo) mientras el texto de la Sección 9 (misma fila externa)
-  // SÍ cabía completo en la página 1 — la imagen, al ser un bloque
-  // atómico, no puede partirse: si no entra completa en el espacio que
-  // queda en la página 1 salta entera a la 2. Achicarla es lo que la deja
-  // entrar en ese mismo espacio en vez de tocar la tipografía/columnas ya
-  // en su piso.
+  // Punto 11, ronda 6s (2026-09-16) — 70pt (ronda 6e) resultó ilegible a
+  // pedido del cliente ("la gráfica no se detalla bien"). La ronda 6o
+  // encontró la causa REAL de los huecos entre secciones (altura mínima
+  // de fila reseteada por el merge + párrafos vacíos sin encoger, ver
+  // `applyOuterAndNestedMerges_`) — con ese fix, el documento ya no
+  // depende de imágenes diminutas para caber en 1 página, así que se
+  // suben a un tamaño legible. Verificar que se siga cabiendo en 1
+  // página con este tamaño antes de dar por cerrado.
   var chartImages = [];
   if (willHaveTtrChart) {
     var ttrChartBlob = buildTtrDeviationChart_(ttrCalc, esMonofasico, null);
-    if (ttrChartBlob) chartImages.push({ blob: ttrChartBlob, widthPt: 220, heightPt: 70 });
+    if (ttrChartBlob) chartImages.push({ blob: ttrChartBlob, widthPt: 250, heightPt: 95 });
   }
   if (willHaveCurveChart) {
     var curveBlob = buildInsulationCurveChart_(aisCalc, aisRaw, null);
-    if (curveBlob) chartImages.push({ blob: curveBlob, widthPt: 220, heightPt: 70 });
+    if (curveBlob) chartImages.push({ blob: curveBlob, widthPt: 250, heightPt: 95 });
   }
   var devanadosCriteriaNeeded = !!(atRowsFinal || btRowsFinal);
   var aislamientoCriteriaNeeded = !!aisCalc;
@@ -4529,8 +4528,14 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
     if (engineerBlob) {
       var simg = sigCell.appendImage(engineerBlob);
       var sratio = simg.getHeight() / simg.getWidth();
-      simg.setWidth(30);
-      simg.setHeight(Math.round(30 * sratio));
+      // Punto 11, ronda 6s (2026-09-16): 30pt resultó ilegible a pedido
+      // del cliente ("la firma no se ve bien") — mismo motivo que el
+      // tamaño de gráfico de arriba, ya no hace falta mantenerla tan
+      // chica para caber en 1 página. 60pt (primer intento) volvió a
+      // desbordar a la página 2 por muy poco (solo la cola de esta misma
+      // fila) — bajado a 45pt.
+      simg.setWidth(45);
+      simg.setHeight(Math.round(45 * sratio));
     }
     cellAlign_(sigCell, DocumentApp.HorizontalAlignment.CENTER);
     var snameLine = sigCell.appendParagraph(ENGINEER_SIGNATURE_NAME_);

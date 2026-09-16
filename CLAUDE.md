@@ -3818,3 +3818,32 @@ cerrada; `docFile.setTrashed(true)` (deshabilitado un rato para poder
 inspeccionar el doc intermedio) quedó restaurado. `debugInspectTemplateBody_`
 (ronda 5) sigue presente y marcada como temporal — pendiente de retirar
 en una futura sesión, no se tocó en esta ronda.
+
+**Ronda 6s-6v (mismo día, feedback del cliente sobre calidad visual)**:
+con el margen real que dejó el fix de la ronda 6o, se subieron de nuevo
+los tamaños que se habían achicado al mínimo para caber en 1 página —
+el cliente reportó "la firma no se ve bien" y "la gráfica no se detalla
+bien". Firma del ingeniero (celda "APROBADO POR" de
+`buildFirmasUnifiedRows_`): 30pt → 45pt. Gráficos (TTR + curva de
+aislamiento, `regenerateElectricalCombinedReport_`): 220×70pt → 250×95pt.
+Ambos subieron en varios pasos intermedios más grandes (60pt/140pt)
+que volvieron a desbordar a 2 páginas por muy poco — el valor final
+quedó ajustado por prueba real, no por cálculo. Verificado de nuevo con
+un informe real: 1 sola página, gráficos y firma claramente más
+legibles que antes.
+
+**Pendiente, a evaluar con el cliente (2026-09-16)**: pidió un código QR
+en el informe que permita verificar si el certificado es original —
+patrón común en certificados: un QR que apunta a una URL pública de
+verificación (ej. `https://.../verificar?id=<hash>`) que muestra los
+datos clave del informe (transformador, fecha, resultado, quién
+certificó) para confirmar que ese PDF específico es genuino y no fue
+alterado. Es implementable con lo que ya existe en este backend (Apps
+Script `doGet`/`doPost` ya expone la Web App; generar el QR es un
+`Charts.newQRCode as image` nativo de Apps Script, sin servicio externo
+ni costo) — pero es una funcionalidad nueva, no un ajuste de layout:
+necesita decidir qué datos expone la página de verificación (pública, sin
+login), dónde vive esa página, y qué identificador usar (un hash/UUID
+por informe, guardado en la hoja `DOCUMENTOS` o una nueva columna).
+Todavía no implementado — queda pendiente de que el cliente confirme el
+alcance antes de construirlo.
