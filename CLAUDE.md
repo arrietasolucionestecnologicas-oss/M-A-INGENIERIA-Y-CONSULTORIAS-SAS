@@ -3924,3 +3924,71 @@ de 6+3=9) y la Sección 12 más ancha volvieron a empujar el documento a 2
 páginas — se volvió a ajustar el tamaño de los gráficos (85→78pt) para
 recuperar la única página, mismo método de siempre (generar un informe
 real, medir, ajustar).
+
+### Ronda 7 (continuación, mismo día) — el QR no escaneaba de verdad, y una segunda ronda de feedback ("Fase 2")
+
+El cliente reportó, después de la ronda anterior, que **la cámara del
+celular no detectaba el QR** (no es que abriera una página en blanco —
+directamente no lo reconocía como código). Esto obligó a un método de
+verificación nuevo para este proyecto, porque ni el visor de Drive ni
+`pdftotext` sirven para probar si una IMAGEN es escaneable:
+
+- **`pdf-poppler`** (paquete npm, trae los binarios de poppler
+  embebidos — no hacía falta instalar nada en el sistema) para
+  renderizar la página real del PDF a resolución alta (`scale: 3072`,
+  ~2175×3073px para A4) — mucho más fiel que la miniatura de
+  `drive.google.com/thumbnail`, que resultó ser OTRA fuente de
+  compresión con su propio límite de tamaño de archivo para subir al
+  decodificador.
+- **`api.qrserver.com/v1/read-qr-code/`** (mismo servicio que genera los
+  QR, también ofrece lectura) contra esa imagen — decodifica el
+  contenido real o confirma "could not find/read QR Code", sin
+  necesidad de un celular físico ni de una librería de decodificación
+  del lado del cliente (se intentó cargar `jsQR` vía CDN en el Browser
+  pane primero; bloqueado, no se investigó por qué — el camino de
+  `pdf-poppler` + `qrserver` resultó más simple y más fiel de todos
+  modos).
+
+**Hallazgo real**: el QR fuente (recién generado por `qrserver.com`,
+antes de que Google Docs lo toque) decodificaba perfecto a cualquier
+tamaño — confirmado bajándolo y leyéndolo aparte. El problema aparecía
+DESPUÉS de que `DocumentApp` lo insertara y Docs lo exportara a PDF: a
+45pt (tamaño original) y a 75pt (primer ajuste) la imagen YA renderizada
+en el PDF real no decodificaba, aunque a simple vista se viera nítida —
+Google Docs recomprime/reescala las imágenes insertadas al exportar a
+PDF con un algoritmo que no preserva los bordes duros que un código QR
+necesita. La única palanca real fue el tamaño físico de impresión:
+**120pt fue el primer tamaño que sí decodificó** en un informe real
+(75pt no alcanzó). De paso se intentó acortar la URL con `is.gd` (menos
+caracteres = menos módulos = QR más "grueso" al mismo tamaño) —
+**is.gd bloquea las peticiones salientes de Apps Script** ("Error,
+database insert failed", confirmado en vivo) — la función
+`shortenUrl_` se dejó en el código pero sin llamarla, por si más
+adelante conviene probar otro acortador.
+
+Con el QR a 120pt, la Sección 12 volvió a empujar el documento a 2
+páginas (y con la imagen sola saltando entera a la página 2, reapareciendo
+el bug visual de la ronda 6 — imagen atómica que no entra completa se
+va sola a la siguiente página). Se recuperó el espacio bajando los
+gráficos de 78 a 62pt y quitando el texto "Escanear para verificar" bajo
+el QR (el encabezado "AUTENTICIDAD" ya lo deja claro) — verificado de
+nuevo con el mismo método `pdf-poppler` + `qrserver`: decodifica
+correcto y el documento vuelve a 1 sola página.
+
+**Segunda ronda de feedback del cliente ("Fase 2" — otra vez un JSON/
+instrucciones pensadas para HTML, con `<tr>`/`<tbody>`/`<?= ?>` que no
+existen en este proyecto)** — de sus 3 puntos:
+1. **Filas de veredicto "fuera de la tabla"**: FALSO POSITIVO — ya
+   estaban implementadas correctamente (fila `role: 'verdict'`/`'data'`
+   integrada al final de cada tabla, con el color de fondo cubriendo la
+   celda completa, fusionada a todo el ancho) desde rondas anteriores.
+   No se tocó nada acá, solo se confirmó visualmente de nuevo.
+2. **Quitar el texto "Sin foto"**: implementado — la celda de la foto
+   (`buildSection1ThreeColRows_`/`afterBuild`) queda vacía si el equipo
+   no tiene `plate_photo_file_id`, en vez de mostrar un texto de
+   relleno.
+3. **Sección 11 con un solo resultado centrado, sin las 2 opciones tipo
+   checkbox**: implementado (`buildConclusionRows_` reescrita) — ahora
+   es una sola celda fusionada a todo el ancho con el resultado real
+   (✓/✗ + texto), coloreada verde o roja, en vez de mostrar
+   "APROBADO"/"NO APROBADO" lado a lado con un ☑/☐.

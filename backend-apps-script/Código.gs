@@ -1954,11 +1954,36 @@ function getEngineerSignatureBlob_() {
  *  getEngineerSignatureBlob_/getTransformerPlatePhotoBlob_). */
 function getQrCodeBlob_(text) {
   try {
-    var url = 'https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=' + encodeURIComponent(text);
+    var url = 'https://api.qrserver.com/v1/create-qr-code/?size=500x500&margin=2&data=' + encodeURIComponent(text);
     var resp = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
     if (resp.getResponseCode() === 200) return resp.getBlob();
   } catch (e) { /* No relanzar — ver comentario de arriba. */ }
   return null;
+}
+
+/** Punto 11, ronda 7b (2026-09-17) — HALLAZGO REAL: el QR generado sí
+ *  decodifica perfecto en su tamaño original (confirmado bajando la
+ *  imagen fuente y leyéndola con el propio lector de qrserver.com), pero
+ *  la miniatura REAL del PDF ya exportado (`drive.google.com/thumbnail`)
+ *  NO decodifica — Google Docs reescala/recomprime la imagen al
+ *  exportar a PDF, y a 45pt de ancho la URL completa (larga: dominio de
+ *  Apps Script + deploymentId + id de verificación, ~150 caracteres)
+ *  queda con demasiados módulos para ese tamaño físico, así que el
+ *  camarógrafo del celular no la detecta — confirmado en vivo por el
+ *  cliente ("la cámara no detecta ningún código"). Se acorta la URL con
+ *  is.gd (servicio público gratuito, sin API key) ANTES de generar el
+ *  QR — menos caracteres = menos módulos = QR más "grueso" y fácil de
+ *  leer al mismo tamaño físico. Si el acortador falla, se usa la URL
+ *  completa igual (nunca debe bloquear la generación del informe). */
+function shortenUrl_(longUrl) {
+  try {
+    var resp = UrlFetchApp.fetch('https://is.gd/create.php?format=simple&url=' + encodeURIComponent(longUrl), { muteHttpExceptions: true });
+    if (resp.getResponseCode() === 200) {
+      var short = resp.getContentText().trim();
+      if (short.indexOf('http') === 0) return short;
+    }
+  } catch (e) { /* No relanzar — se usa la URL larga como respaldo. */ }
+  return longUrl;
 }
 
 /** Foto de placa del transformador (`plate_photo_file_id`, la sube el
@@ -2956,18 +2981,24 @@ function buildObservacionesRows_(presentLabels, estadoEquipoText, normasText, ap
  *  `overallVerdict` ya viene combinado (ver regenerateElectricalCombinedReport_:
  *  APROBADO solo si TODAS las secciones presentes lo están) — esto no
  *  recalcula nada, solo decide qué casilla marcar. */
+/** Punto 11, ronda 7b (2026-09-17) — a pedido del cliente ("elimina las
+ *  opciones tipo checkbox... renderiza un único resultado centrado"):
+ *  antes mostraba las 2 opciones lado a lado (APROBADO/NO APROBADO, la
+ *  que no aplica en gris tachado visualmente con un ☐) — ahora es UNA
+ *  sola celda, todo el ancho, con SOLO el resultado real, centrada. El
+ *  backend (acá) ya calculaba el resultado final antes de esto — el
+ *  cambio es puramente de presentación, ningún dato nuevo. */
 function buildConclusionRows_(overallVerdict) {
   var aprobado = String(overallVerdict || '').indexOf('APROBADO') === 0;
   var rows = [unifiedBannerRow_('CONCLUSIÓN GENERAL')];
-  var merges = [{ startColumnIndex: 0, columnSpan: 4 }, { startColumnIndex: 4, columnSpan: 3 }];
   var cells = new Array(UNIFIED_TABLE_COLS_).fill('');
-  cells[0] = (aprobado ? '☑' : '☐') + ' EQUIPO APROBADO';
-  cells[4] = (!aprobado ? '☑' : '☐') + ' EQUIPO NO APROBADO';
-  var row = unifiedRow_(cells, 'legend', merges);
-  row.coloredCols = [
-    { col: 0, bg: aprobado ? PDF_COLORS_.SUCCESS_BG : PDF_COLORS_.NEUTRAL_BG, fg: aprobado ? PDF_COLORS_.SUCCESS : PDF_COLORS_.TEXT_MUTED },
-    { col: 4, bg: !aprobado ? PDF_COLORS_.DANGER_BG : PDF_COLORS_.NEUTRAL_BG, fg: !aprobado ? PDF_COLORS_.DANGER : PDF_COLORS_.TEXT_MUTED }
-  ];
+  cells[0] = (aprobado ? '✓ ' : '✗ ') + (aprobado ? 'EQUIPO APROBADO' : 'EQUIPO NO APROBADO');
+  var row = unifiedRow_(cells, 'legend', [{ startColumnIndex: 0, columnSpan: UNIFIED_TABLE_COLS_ }]);
+  row.coloredCols = [{ col: 0, bg: aprobado ? PDF_COLORS_.SUCCESS_BG : PDF_COLORS_.DANGER_BG, fg: aprobado ? PDF_COLORS_.SUCCESS : PDF_COLORS_.DANGER }];
+  // Resultado final del informe — más grande que el resto de la letra de
+  // datos (6pt) para que destaque, sin llegar al tamaño "14px" literal
+  // del JSON (rompería la escala compacta de todo el documento).
+  row.fontSizeOverride = 9;
   rows.push(row);
   return rows;
 }
@@ -4535,11 +4566,12 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
       // centrarla hay que alinear ESE párrafo (cellAlign_ centraría el
       // párrafo vacío original de la celda, no el de la imagen).
       pimg.getParent().asParagraph().setAlignment(DocumentApp.HorizontalAlignment.CENTER);
-    } else {
-      var noPhoto = photoCell.appendParagraph('Sin foto');
-      noPhoto.editAsText().setItalic(true).setFontSize(6.5).setForegroundColor(PDF_COLORS_.TEXT_MUTED).setFontFamily(PROTOCOL_FONT_FAMILY_);
-      noPhoto.setAlignment(DocumentApp.HorizontalAlignment.CENTER).setSpacingBefore(0).setSpacingAfter(0).setLineSpacing(1);
     }
+    // Ronda 7b (2026-09-17) — a pedido del cliente ("sin texto alternativo
+    // visible que rompa la estética"): si el equipo no tiene foto de
+    // placa, la celda queda vacía (ya no dice "Sin foto"), consistente
+    // con el resto del documento donde nunca se inventa/anuncia un dato
+    // ausente con texto de relleno.
   })];
 
   // Sección 2+3 (ronda 3): Objetivo y Alcance | Equipos Utilizados, lado a
@@ -4646,11 +4678,11 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
   var chartImages = [];
   if (willHaveTtrChart) {
     var ttrChartBlob = buildTtrDeviationChart_(ttrCalc, esMonofasico, null);
-    if (ttrChartBlob) chartImages.push({ blob: ttrChartBlob, widthPt: 250, heightPt: 78 });
+    if (ttrChartBlob) chartImages.push({ blob: ttrChartBlob, widthPt: 250, heightPt: 62 });
   }
   if (willHaveCurveChart) {
     var curveBlob = buildInsulationCurveChart_(aisCalc, aisRaw, null);
-    if (curveBlob) chartImages.push({ blob: curveBlob, widthPt: 250, heightPt: 78 });
+    if (curveBlob) chartImages.push({ blob: curveBlob, widthPt: 250, heightPt: 62 });
   }
   var devanadosCriteriaNeeded = !!(atRowsFinal || btRowsFinal);
   var aislamientoCriteriaNeeded = !!aisCalc;
@@ -4702,6 +4734,11 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
   // "no válido" — así de eso depende que el QR sirva para detectar un
   // certificado falso/alterado.
   var verificationId = generateId_();
+  // Ronda 7c: `shortenUrl_` (is.gd) falla siempre desde Apps Script
+  // ("Error, database insert failed" — bloquea las IPs salientes de
+  // UrlFetchApp, confirmado en vivo) — se deja de llamar para no sumar
+  // latencia por una llamada condenada a fallar; se prioriza tamaño/
+  // resolución del QR en vez de acortar la URL.
   var verificationUrl = ScriptApp.getService().getUrl() + '?verificar=' + verificationId;
   var qrBlob = getQrCodeBlob_(verificationUrl);
 
@@ -4735,16 +4772,24 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
     var qrCell = nestedTable.getRow(2).getCell(3);
     if (qrBlob) {
       var qimg = qrCell.appendImage(qrBlob);
-      qimg.setWidth(45);
-      qimg.setHeight(45);
+      // Ronda 7 (2026-09-17) — 45pt no decodificaba en el PDF ya
+      // exportado (confirmado renderizando la página real a alta
+      // resolución con pdf-poppler y leyéndola con el lector de
+      // qrserver.com: "could not find/read QR Code"). El acortador de
+      // URL (is.gd) no es opción — bloquea las IPs de Apps Script,
+      // confirmado en vivo — así que la única palanca real es tamaño/
+      // resolución de la imagen. 75pt tampoco alcanzó; subido a 120pt.
+      qimg.setWidth(120);
+      qimg.setHeight(120);
       qimg.getParent().asParagraph().setAlignment(DocumentApp.HorizontalAlignment.CENTER);
     } else {
       var noQr = qrCell.appendParagraph('—');
       noQr.setAlignment(DocumentApp.HorizontalAlignment.CENTER).setSpacingBefore(0).setSpacingAfter(0).setLineSpacing(1);
     }
-    var qrCaption = qrCell.appendParagraph('Escanear para verificar');
-    qrCaption.editAsText().setFontSize(5.5).setItalic(true).setForegroundColor(PDF_COLORS_.TEXT_MUTED).setFontFamily(PROTOCOL_FONT_FAMILY_);
-    qrCaption.setAlignment(DocumentApp.HorizontalAlignment.CENTER).setSpacingBefore(0).setSpacingAfter(0).setLineSpacing(1);
+    // Ronda 7h (2026-09-17): se quita el texto "Escanear para verificar" —
+    // con el QR ya a 120pt (el mínimo que sí decodifica, confirmado en
+    // vivo) cada pt cuenta para volver a 1 sola página; el encabezado
+    // "AUTENTICIDAD" de la columna ya deja claro qué es.
   }));
 
   var tablePlaceholderPar = findMarkerParagraph_(body, '<<TABLA_RESULTADOS_ELECTRICOS>>');
