@@ -3838,12 +3838,89 @@ patrón común en certificados: un QR que apunta a una URL pública de
 verificación (ej. `https://.../verificar?id=<hash>`) que muestra los
 datos clave del informe (transformador, fecha, resultado, quién
 certificó) para confirmar que ese PDF específico es genuino y no fue
-alterado. Es implementable con lo que ya existe en este backend (Apps
-Script `doGet`/`doPost` ya expone la Web App; generar el QR es un
-`Charts.newQRCode as image` nativo de Apps Script, sin servicio externo
-ni costo) — pero es una funcionalidad nueva, no un ajuste de layout:
-necesita decidir qué datos expone la página de verificación (pública, sin
-login), dónde vive esa página, y qué identificador usar (un hash/UUID
-por informe, guardado en la hoja `DOCUMENTOS` o una nueva columna).
-Todavía no implementado — queda pendiente de que el cliente confirme el
-alcance antes de construirlo.
+alterado. **Implementado en la ronda 7 (2026-09-17), ver más abajo.**
+
+### Ronda 7 (2026-09-17) — JSON de diseño del cliente: Sección 1 en 3 columnas, Sección 12 en 4 bloques + QR de autenticidad
+
+El cliente compartió un JSON de "design tokens" (colores/tipografía/
+layout) pidiendo migrar el maquetado a CSS Flexbox/Grid — **mal
+entendido de origen**: este backend jamás usó HTML/CSS para el PDF, todo
+se arma con la API de Google Docs (`DocumentApp`), que no tiene ningún
+concepto de CSS/flex/grid. Se le explicó la diferencia y se tradujo la
+INTENCIÓN de cada punto del JSON a los mecanismos reales de este backend
+(tablas anidadas con anchos de columna explícitos, que es lo que YA se
+usa en todo el documento desde la ronda 4 — el "layout de columnas" que
+pedía el JSON en realidad ya existía, solo no en la Sección 1).
+
+**Sección 1 — 3 columnas reales** (`buildSection1ThreeColRows_`,
+reemplaza a `buildClientEquipoUnifiedRows_`/`buildDatosGeneralesUnifiedRows_`,
+borradas — sin más llamadores; Aceite sigue con su propio
+`appendClientEquipoGrid_`, sin tocar): columna izquierda (12 campos
+Cliente→Año de fabricación, uno por fila, ya NO emparejados 2 por fila),
+columna central (foto de placa del transformador — se reusa
+`plate_photo_file_id`, el mismo campo que ya sube el técnico al crear/
+editar el equipo, NO se pidió una foto nueva; "Sin foto" en cursiva si el
+equipo nunca tuvo una), columna derecha (6 campos Fecha de prueba→
+Normas). Mecanismos nuevos, genéricos, reutilizables en cualquier tabla
+futura: `rows.customMerges` en `appendNestedTable_` (fusiones que no
+pertenecen a una fila puntual — la celda de la foto se fusiona
+VERTICALMENTE a lo largo de las 12 filas de datos vía
+`mergeTableCellsRequest_`, que ahora acepta `spec.rowSpan` además de
+`columnSpan`) y `r.labelBgOverride` en `styleUnifiedCell_` (color de
+fondo de etiqueta por fila, nuevo token `PDF_COLORS_.LABEL_BG_BLUE =
+'#E8F1F8'`, tal cual lo pidió el cliente — sin tocar `NEUTRAL_BG`, que
+sigue igual para el resto del documento).
+
+**Sección 12 — 4 bloques** (`buildFirmasUnifiedRows_` reescrita):
+Probado Por (Técnico) / Revisado Por / Aprobado Por (Ingeniero, con
+firma) / Autenticidad (QR). El cliente pidió un rol "Coordinador"
+separado para "Revisado Por" — **decisión explícita del cliente
+(2026-09-17): no existe ese rol hoy, así que ese bloque muestra el MISMO
+ingeniero que ya firma "Aprobado Por"**, no un firmante nuevo (más
+simple que agregar un campo/rol nuevo al modelo de datos por ahora).
+
+**QR de autenticidad — hallazgo real: `Charts.newQRCode` NO EXISTE** en
+el servicio `Charts` de Apps Script (no hay tipo de gráfico QR nativo —
+confirmado en vivo, lanza "is not a function"; una suposición equivocada
+inicial, corregida con un diagnóstico igual que los de la ronda 6).
+Reemplazado por `getQrCodeBlob_(text)`: `UrlFetchApp.fetch()` contra
+`api.qrserver.com` (servicio público gratuito, sin API key) — el scope
+`script.external_request` ya estaba declarado en `appsscript.json`
+(usado por otras llamadas), así que no hizo falta re-autorizar nada.
+Flujo completo:
+1. `regenerateElectricalCombinedReport_` genera `verificationId`
+   (`generateId_()`) y `verificationUrl` (`ScriptApp.getService().getUrl()
+   + '?verificar=' + verificationId`) ANTES de armar la Sección 12 —
+   necesita existir antes de exportar el PDF, para que el QR quede
+   embebido en el documento.
+2. El QR se inserta en la celda "Autenticidad" vía el `afterBuild` de
+   `outerNestedFullRow_` (mismo mecanismo que la firma del ingeniero).
+3. DESPUÉS de `finalizeReportPdf_` (ya con `saved.fileId`), se guarda una
+   fila en `DOCUMENTOS` reusando el MISMO `verificationId` como `id` —
+   nunca un id nuevo, o el QR apuntaría a un registro inexistente — con 3
+   columnas nuevas agregadas AL FINAL de `HEADERS.DOCUMENTOS`
+   (`ensureAllSheets_` sincroniza la fila de encabezado sola, sin
+   migración manual): `transformer_id`, `verdict`, `certified_by`. Quedan
+   vacías para cualquier documento que no sea un informe eléctrico.
+4. `doGet(e)` intercepta `e.parameter.verificar` ANTES de
+   `routeRequest_`/`validateAuth_` — la página de verificación es
+   PÚBLICA a propósito (quien escanea el QR no tiene usuario de la app),
+   nunca pasa por Control de Acceso. `verificarInformeElectrico_` busca
+   el id en `DOCUMENTOS`, cruza `transformer_id`→`TRANSFORMADORES`
+   (N° de serie) y `site_id`→`SITIOS` (cliente), y devuelve un HTML
+   mínimo e inline (`verificationPageHtml_`, con `escapeHtml_` porque
+   inserta texto de Sheets directo en el HTML) — "Certificado válido" +
+   4 datos, o "Certificado no válido" si el id no existe o no es un
+   `CERTIFICADOS` eléctrico. Verificado en vivo con un id real (muestra
+   los datos correctos) y un id inventado (muestra "no válido").
+5. Nota de plataforma, no un bug: la primera vez que se abre la URL en un
+   navegador, Google muestra su propio aviso "Un usuario de Google Apps
+   Script creó esta aplicación" (interstitial estándar de CUALQUIER Web
+   App de Apps Script, no algo que este código controle) — se cierra con
+   un clic y no vuelve a aparecer en esa sesión del navegador.
+
+**Efecto en el ancho de página**: la Sección 1 más alta (12 filas en vez
+de 6+3=9) y la Sección 12 más ancha volvieron a empujar el documento a 2
+páginas — se volvió a ajustar el tamaño de los gráficos (85→78pt) para
+recuperar la única página, mismo método de siempre (generar un informe
+real, medir, ajustar).

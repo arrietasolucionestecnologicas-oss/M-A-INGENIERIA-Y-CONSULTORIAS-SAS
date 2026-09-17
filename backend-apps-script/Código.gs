@@ -120,7 +120,16 @@ var HEADERS = {
    *  fecha sin tener que recorrer carpetas de Drive en cada consulta. */
   DOCUMENTOS: [
     'id', 'site_id', 'category', 'file_name', 'file_id', 'mime_type',
-    'uploaded_by', 'created_at'
+    'uploaded_by', 'created_at',
+    // Punto 11, ronda 7 (2026-09-17) — columnas nuevas, agregadas AL FINAL
+    // (ensureAllSheets_ sincroniza la fila de encabezado sola, ver
+    // comentario ahí) SOLO para el QR de autenticidad del informe
+    // eléctrico: `id` de esta misma fila es el token que va en el QR
+    // (`.../exec?verificar=<id>`), y estos 3 campos son lo que muestra la
+    // página pública de verificación (verificarInformeElectrico_/doGet).
+    // Quedan en blanco para cualquier documento que no sea un informe
+    // eléctrico (adjuntos, informes de Aceite, subidas manuales).
+    'transformer_id', 'verdict', 'certified_by'
   ],
   /** Comercial — Ofertas y Licitaciones. `estado` guardado es siempre
    *  'Pendiente'/'Aprobada'/'Rechazada' — 'Cierre' NUNCA se escribe aquí, es
@@ -208,11 +217,102 @@ var VECTOR_GROUP_MULTIPLIERS = {
 // ---------------------------------------------------------------------------
 
 function doGet(e) {
+  // Punto 11, ronda 7 (2026-09-17) — página pública de verificación del QR
+  // de autenticidad (ver regenerateElectricalCombinedReport_): quien
+  // escanea el QR de un informe eléctrico NO tiene (ni debe necesitar)
+  // usuario de la app, así que esta ruta se resuelve ACÁ, ANTES de
+  // routeRequest_/validateAuth_ (que exige token para todo lo demás) —
+  // nunca pasa por Control de Acceso ni por ninguna acción de POST_ACTIONS/
+  // GET_ACTIONS.
+  if (e && e.parameter && e.parameter.verificar) {
+    return verificarInformeElectrico_(e.parameter.verificar);
+  }
   return routeRequest_(e, 'GET');
 }
 
 function doPost(e) {
   return routeRequest_(e, 'POST');
+}
+
+/** Página pública (sin login) del QR de autenticidad — Punto 11, ronda 7
+ *  (2026-09-17). `docId` es el `id` de la fila en DOCUMENTOS que
+ *  `regenerateElectricalCombinedReport_` crea junto con el PDF (ver ahí:
+ *  el mismo id va embebido en el QR y en esta fila, nunca 2 ids
+ *  distintos). Muestra solo lo mínimo para confirmar autenticidad — nunca
+ *  el PDF completo ni datos sensibles — y "no válido" si el id no
+ *  corresponde a un CERTIFICADOS eléctrico real (mismo criterio: un QR
+ *  reimpreso a mano con un id inventado no encuentra nada acá). Nunca
+ *  lanza — cualquier error interno también cae en "no válido" en vez de
+ *  un stack trace público. */
+function verificarInformeElectrico_(docId) {
+  var html;
+  try {
+    ensureAllSheets_();
+    var sheet = getSheet_('DOCUMENTOS');
+    var data = sheet.getDataRange().getValues();
+    var idCol = HEADERS.DOCUMENTOS.indexOf('id');
+    var row = null;
+    for (var r = 1; r < data.length; r++) {
+      if (data[r][idCol] === docId) { row = rowToObject_(data[r], 'DOCUMENTOS', r + 1); break; }
+    }
+    if (!row || row.category !== 'CERTIFICADOS' || !row.transformer_id) {
+      html = verificationPageHtml_(false, null);
+    } else {
+      var transformer = findTransformerRow_(row.transformer_id);
+      var site = transformer ? findSiteRow_(transformer.site_id) : null;
+      html = verificationPageHtml_(true, {
+        cliente: site ? site.client_name : '—',
+        serie: transformer ? transformer.serial_number : '—',
+        fecha: fmtDatePdf_(row.created_at),
+        veredicto: row.verdict || '—',
+        certificadoPor: row.certified_by || '—'
+      });
+    }
+  } catch (e) {
+    html = verificationPageHtml_(false, null);
+  }
+  return HtmlService.createHtmlOutput(html).setTitle('Verificación de certificado — M&A Ingeniería');
+}
+
+/** HTML mínimo, inline (sin plantilla ni assets externos — esta página la
+ *  ve cualquiera que escanee el QR, no solo usuarios de la app). */
+function verificationPageHtml_(valido, datos) {
+  var style = 'body{font-family:Arial,Helvetica,sans-serif;background:#F4F6F7;margin:0;' +
+    'padding:32px 16px;color:#222222;} .card{max-width:420px;margin:0 auto;background:#fff;' +
+    'border-radius:8px;padding:24px;box-shadow:0 1px 4px rgba(0,0,0,0.15);} h1{font-size:16px;' +
+    'margin:0 0 16px;color:#00506F;} .row{display:flex;justify-content:space-between;' +
+    'padding:6px 0;border-bottom:1px solid #E5E8EA;font-size:13px;} .label{color:#404040;} ' +
+    '.value{font-weight:bold;text-align:right;} .badge{display:inline-block;padding:4px 10px;' +
+    'border-radius:4px;font-weight:bold;font-size:13px;} .ok{background:#C6EFCE;color:#006100;} ' +
+    '.bad{background:#F4CCCC;color:#9C0006;}';
+  if (!valido) {
+    return '<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
+      '<style>' + style + '</style></head><body><div class="card">' +
+      '<h1>M&amp;A Ingeniería y Consultoría SAS</h1>' +
+      '<span class="badge bad">Certificado no válido</span>' +
+      '<p style="font-size:13px;color:#404040;margin-top:12px;">Este código no corresponde a ningún ' +
+      'informe certificado por M&amp;A Ingeniería y Consultoría SAS.</p></div></body></html>';
+  }
+  var badgeClass = String(datos.veredicto).indexOf('APROBADO') === 0 ? 'ok' : 'bad';
+  return '<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
+    '<style>' + style + '</style></head><body><div class="card">' +
+    '<h1>M&amp;A Ingeniería y Consultoría SAS</h1>' +
+    '<span class="badge ok">Certificado válido</span>' +
+    '<div class="row"><span class="label">Cliente</span><span class="value">' + escapeHtml_(datos.cliente) + '</span></div>' +
+    '<div class="row"><span class="label">N° de serie</span><span class="value">' + escapeHtml_(datos.serie) + '</span></div>' +
+    '<div class="row"><span class="label">Fecha</span><span class="value">' + escapeHtml_(datos.fecha) + '</span></div>' +
+    '<div class="row"><span class="label">Resultado</span><span class="value ' + badgeClass + '">' + escapeHtml_(datos.veredicto) + '</span></div>' +
+    '<div class="row" style="border-bottom:none;"><span class="label">Certificado por</span><span class="value">' + escapeHtml_(datos.certificadoPor) + '</span></div>' +
+    '</div></body></html>';
+}
+
+/** Escape mínimo de HTML — esta página pública inserta texto que viene de
+ *  Sheets (nombre de cliente, etc.) directo en el HTML, sin plantilla que
+ *  lo escape sola. */
+function escapeHtml_(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 /**
@@ -1748,7 +1848,12 @@ var PDF_COLORS_ = {
   WARNING: '#7F6000', WARNING_BG: '#FFF2CC',
   DANGER: '#9C0006', DANGER_BG: '#F4CCCC',
   NEUTRAL_BG: '#E5E8EA',
-  BORDER: '#AEB7BD'
+  BORDER: '#AEB7BD',
+  // Punto 11, ronda 7 (2026-09-17) — token puntual del JSON de diseño del
+  // cliente ("label_bg_blue"), usado SOLO en la Sección 1 de 3 columnas
+  // (ver buildSection1ThreeColRows_) — no reemplaza NEUTRAL_BG en el
+  // resto del documento, que el cliente nunca pidió cambiar.
+  LABEL_BG_BLUE: '#E8F1F8'
 };
 
 /** Título de protocolo — barra prominente bajo el encabezado, formato
@@ -1837,6 +1942,34 @@ function getEngineerSignatureBlob_() {
   var id = PropertiesService.getScriptProperties().getProperty('ENGINEER_SIGNATURE_FILE_ID');
   if (!id) return null;
   try { return DriveApp.getFileById(id).getBlob(); } catch (e) { return null; }
+}
+
+/** QR de autenticidad — Punto 11, ronda 7 (2026-09-17). `Charts.newQRCode`
+ *  NO existe en el servicio Charts de Apps Script (no hay tipo de gráfico
+ *  QR nativo — confirmado en vivo: "Charts.newQRCode is not a function").
+ *  Se genera vía `api.qrserver.com` (servicio público gratuito, sin
+ *  API key) con `UrlFetchApp` — mismo patrón que cualquier llamada HTTP
+ *  saliente de Apps Script. Nunca lanza — si el servicio no responde, el
+ *  informe se genera igual, solo sin QR (mismo criterio que
+ *  getEngineerSignatureBlob_/getTransformerPlatePhotoBlob_). */
+function getQrCodeBlob_(text) {
+  try {
+    var url = 'https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=' + encodeURIComponent(text);
+    var resp = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+    if (resp.getResponseCode() === 200) return resp.getBlob();
+  } catch (e) { /* No relanzar — ver comentario de arriba. */ }
+  return null;
+}
+
+/** Foto de placa del transformador (`plate_photo_file_id`, la sube el
+ *  técnico al crear/editar el equipo — ver createTransformer_/
+ *  updateTransformer_) — Punto 11, ronda 7 (2026-09-17): reusada como la
+ *  foto de la columna central de la nueva Sección 1 de 3 columnas. Mismo
+ *  criterio que getEngineerSignatureBlob_/getLogoBlob_: si el equipo nunca
+ *  tuvo foto, el informe se genera igual, sin bloquear. */
+function getTransformerPlatePhotoBlob_(fileId) {
+  if (!fileId) return null;
+  try { return DriveApp.getFileById(fileId).getBlob(); } catch (e) { return null; }
 }
 
 /** Solo Administrador. Mismo patrón que uploadLogoAsset_. */
@@ -2347,82 +2480,65 @@ function numberSection_(rows, num) {
   return rows;
 }
 
-/** "Datos del cliente y del equipo" como filas de la tabla única — mismos
- *  6 pares etiqueta/valor de siempre (ver appendClientEquipoGrid_, que
- *  sigue existiendo tal cual solo para Aceite), repartidos en las 7
- *  columnas físicas como etiqueta(1 col)+valor(2 cols)+etiqueta(1 col)+
- *  valor(3 cols) por fila — el valor se deja más ancho porque suele ser
- *  el dato más largo (nombre de cliente, número de serie, etc). */
-function buildClientEquipoUnifiedRows_(site, transformer) {
-  var rows = [unifiedBannerRow_('DATOS DEL CLIENTE Y DEL EQUIPO')];
-  // Punto 11, ronda 4 (2026-09-16): VUELVE a 2 pares etiqueta/valor por
-  // fila (6 filas) — la ronda 3 lo había bajado a 1 por fila (12 filas)
-  // porque en ese momento esta grilla vivía emparejada al 50% con "Datos
-  // de la prueba" (solo 6 filas), y 2 pares en esa mitad angosta partía
-  // las etiquetas largas. En la verificación en vivo de ESTA ronda se vio
-  // que ese emparejamiento dejaba media columna de espacio en blanco (12
-  // filas de un lado contra 6 del otro fuerzan la fila externa a la altura
-  // de la más alta) — un desperdicio real de espacio vertical, la
-  // prioridad #1 de esta ronda. La sección volvió a ancho completo (ver
-  // regenerateElectricalCombinedReport_: ya NO se empareja con "Datos de
-  // la prueba", cada una es su propia fila externa de ancho completo) —
-  // a ancho completo, 2 pares por fila SÍ tienen espacio de sobra (ya
-  // verificado así en la ronda 2, antes de que existiera el layout de 2
-  // columnas), así que no hay riesgo de que la etiqueta se vuelva a
-  // partir, y la sección queda a la mitad de alto (6 filas en vez de 12).
-  var pairMerges = [{ startColumnIndex: 1, columnSpan: 2 }, { startColumnIndex: 4, columnSpan: 3 }];
-  var pairs = [
-    ['CLIENTE', site.client_name || '—', 'NIT', site.nit || '—'],
-    ['CIUDAD', site.ciudad || '—', 'PROYECTO', site.project_name || '—'],
-    ['FABRICANTE', transformer.manufacturer || '—', 'N° DE SERIE', transformer.serial_number || '—'],
-    ['GRUPO DE CONEXIÓN', transformer.vector_group || '—', 'POTENCIA NOMINAL', transformer.rated_power_kva ? (String(transformer.rated_power_kva) + ' kVA') : '—'],
-    ['TENSIÓN PRIMARIA', transformer.hv_nominal_voltage ? (String(transformer.hv_nominal_voltage) + ' V') : '—', 'TENSIÓN SECUNDARIA', transformer.lv_nominal_voltage ? (String(transformer.lv_nominal_voltage) + ' V') : '—'],
-    ['REFRIGERACIÓN', transformer.cooling_type || '—', 'AÑO DE FABRICACIÓN', transformer.manufacture_year ? String(transformer.manufacture_year) : '—']
-  ];
-  pairs.forEach(function (p) {
-    var cells = new Array(UNIFIED_TABLE_COLS_).fill('');
-    cells[0] = p[0]; cells[1] = p[1]; cells[3] = p[2]; cells[4] = p[3];
-    rows.push(unifiedLabelRow_(cells, [0, 3], pairMerges));
-  });
-  return rows;
-}
+// buildClientEquipoUnifiedRows_/buildDatosGeneralesUnifiedRows_ (rondas
+// 2-4) se borraron en la ronda 7 (2026-09-17) — sin más llamadores desde
+// que buildSection1ThreeColRows_ (más abajo) las reemplazó. El informe de
+// Aceite sigue con su propio appendClientEquipoGrid_, sin tocar.
 
-/** "Datos generales de la prueba" (FECHA/TÉCNICO/NORMA) como 1 sola fila
- *  de la tabla única — reemplaza a la vieja appendSharedTestMetaSection_
- *  (que armaba esto como grilla aparte en la plantilla, con placeholders
- *  <<FECHA_GENERAL>>/<<TECNICO_GENERAL>>). Ahora se construye con los
- *  valores YA REALES en tiempo de generación (regenerateElectricalCombinedReport_
- *  calcula `signedTest` — la prueba más reciente entre las presentes —
- *  ANTES de armar esta fila, no después como antes), así que no hace
- *  falta ningún placeholder ni body.replaceText() para esto. NORMA es
- *  literal, nunca cambia. */
-/** "Datos de la prueba" — Punto 11, ronda 3 (2026-09-15, "prompt maestro"
- *  del cliente): reemplaza a la "Datos generales de la prueba" de la
- *  ronda 2, que traía los instrumentos mezclados adentro — ahora los
- *  instrumentos son su propia sección aparte ("Equipos utilizados", ver
- *  `buildEquiposUtilizadosRows_`), así que esta queda con FECHA/TÉCNICO/
- *  TEMP/HUMEDAD/ESTADO DEL EQUIPO (dato que YA existía en el modelo —
- *  `transformer.estado_equipo`) + NORMAS DE REFERENCIA.
- *
- *  Punto 11, ronda 4 (2026-09-16): vuelve a 2 pares por fila (3 filas, no
- *  6) — igual motivo y mismo cambio que `buildClientEquipoUnifiedRows_`:
- *  esta sección ya NO va emparejada al 50% con "Datos del cliente y del
- *  equipo" (ver regenerateElectricalCombinedReport_), así que 2 pares por
- *  fila a ancho completo tiene espacio de sobra, sin riesgo de partir
- *  "TÉCNICO RESPONSABLE"/"TEMPERATURA AMBIENTE". */
-function buildDatosGeneralesUnifiedRows_(fechaText, tecnicoText, tempText, humedadText, estadoEquipoText, normasText) {
-  var rows = [unifiedBannerRow_('DATOS DE LA PRUEBA')];
-  var pairMerges = [{ startColumnIndex: 1, columnSpan: 2 }, { startColumnIndex: 4, columnSpan: 3 }];
-  var pairs = [
-    ['FECHA DE PRUEBA', fechaText, 'TÉCNICO RESPONSABLE', tecnicoText],
-    ['TEMPERATURA AMBIENTE', tempText || '—', 'HUMEDAD RELATIVA', humedadText || '—'],
-    ['ESTADO DEL EQUIPO', estadoEquipoText, 'NORMAS DE REFERENCIA', normasText]
+/** Anchos de columna (pt) de la Sección 1 de 3 columnas — etiqueta-izq /
+ *  valor-izq / FOTO / etiqueta-der / valor-der. Suman ~560pt, el ancho
+ *  útil real a 5mm de margen (ver PROTOCOL_MARGIN_PT_). */
+var SECTION1_THREE_COL_WIDTHS_PT_ = [80, 160, 90, 75, 155];
+
+/** Sección 1 en 3 columnas reales — Punto 11, ronda 7 (2026-09-17), JSON
+ *  de diseño del cliente: columna izquierda (12 filas, Cliente→Año de
+ *  fabricación, una etiqueta/valor por fila, sin emparejar 2 por fila
+ *  como antes), columna central (foto de placa del transformador,
+ *  `plate_photo_file_id` — la misma que ya sube el técnico al crear/
+ *  editar el equipo, ver getTransformerPlatePhotoBlob_, reusada acá en
+ *  vez de pedir una foto nueva), columna derecha (6 filas, Fecha de
+ *  prueba→Normas). Reemplaza a `buildClientEquipoUnifiedRows_` +
+ *  `buildDatosGeneralesUnifiedRows_` (borradas, sin más llamadores — el
+ *  informe de Aceite usa su propio `appendClientEquipoGrid_`, sin tocar,
+ *  este rediseño solo lo pidió el cliente para el Eléctrico). La celda de
+ *  la foto se llena aparte, vía el
+ *  `afterBuild` de `outerNestedFullRow_` (mismo mecanismo que la firma del
+ *  ingeniero en `buildFirmasUnifiedRows_`) — esta función solo arma el
+ *  texto y la fusión vertical de esa celda. */
+function buildSection1ThreeColRows_(site, transformer, fechaText, tecnicoText, tempText, humedadText, estadoEquipoText, normasText) {
+  var left = [
+    ['CLIENTE', site.client_name || '—'],
+    ['NIT', site.nit || '—'],
+    ['CIUDAD', site.ciudad || '—'],
+    ['PROYECTO', site.project_name || '—'],
+    ['FABRICANTE', transformer.manufacturer || '—'],
+    ['N° DE SERIE', transformer.serial_number || '—'],
+    ['GRUPO DE CONEXIÓN', transformer.vector_group || '—'],
+    ['POTENCIA NOMINAL', transformer.rated_power_kva ? (String(transformer.rated_power_kva) + ' kVA') : '—'],
+    ['TENSIÓN PRIMARIA', transformer.hv_nominal_voltage ? (String(transformer.hv_nominal_voltage) + ' V') : '—'],
+    ['TENSIÓN SECUNDARIA', transformer.lv_nominal_voltage ? (String(transformer.lv_nominal_voltage) + ' V') : '—'],
+    ['REFRIGERACIÓN', transformer.cooling_type || '—'],
+    ['AÑO DE FABRICACIÓN', transformer.manufacture_year ? String(transformer.manufacture_year) : '—']
   ];
-  pairs.forEach(function (p) {
-    var cells = new Array(UNIFIED_TABLE_COLS_).fill('');
-    cells[0] = p[0]; cells[1] = p[1]; cells[3] = p[2]; cells[4] = p[3];
-    rows.push(unifiedLabelRow_(cells, [0, 3], pairMerges));
-  });
+  var right = [
+    ['FECHA DE PRUEBA', fechaText],
+    ['TÉCNICO RESPONSABLE', tecnicoText],
+    ['TEMPERATURA AMBIENTE', tempText || '—'],
+    ['HUMEDAD RELATIVA', humedadText || '—'],
+    ['ESTADO DEL EQUIPO', estadoEquipoText],
+    ['NORMAS DE REFERENCIA', normasText]
+  ];
+  var rows = [unifiedRow_(['DATOS DEL CLIENTE Y DEL EQUIPO', '', '', '', ''], 'banner', [{ startColumnIndex: 0, columnSpan: 5 }])];
+  for (var i = 0; i < left.length; i++) {
+    var r = right[i] || ['', ''];
+    var dataRow = unifiedLabelRow_([left[i][0], left[i][1], '', r[0], r[1]], [0, 3], []);
+    // r.labelBgOverride se lee por FILA en styleUnifiedCell_ (no por
+    // arreglo) — ver ronda 7 más arriba.
+    dataRow.labelBgOverride = PDF_COLORS_.LABEL_BG_BLUE;
+    rows.push(dataRow);
+  }
+  rows.colWidths = SECTION1_THREE_COL_WIDTHS_PT_;
+  rows.customMerges = [{ rowIndex: 1, startColumnIndex: 2, columnSpan: 1, rowSpan: left.length }];
   return rows;
 }
 
@@ -2869,18 +2985,31 @@ function buildConclusionRows_(overallVerdict) {
  *  firma se inserta aparte (ver el `afterBuild` que le pasa el llamador a
  *  `outerNestedFullRow_`), porque `appendNestedTable_`/`styleUnifiedCell_`
  *  solo saben estilizar texto. */
+/** Anchos de columna (pt) de la Sección 12 de 4 bloques — Probado/
+ *  Revisado/Aprobado/QR, ~140pt cada uno (suman ~560pt, el ancho útil a
+ *  5mm de margen). */
+var SECTION12_FOUR_COL_WIDTHS_PT_ = [140, 140, 140, 140];
+
+/** "Área de Control de Calidad" en 4 bloques — Punto 11, ronda 7
+ *  (2026-09-17), JSON de diseño del cliente: pasa de 3 columnas (Probado/
+ *  Certificado/Aprobado) a 4 (Probado/Revisado/Aprobado/QR de
+ *  Autenticidad). El cliente no tiene hoy un rol "Coordinador" separado
+ *  del ingeniero (decisión explícita, 2026-09-17): el bloque "REVISADO
+ *  POR" muestra el MISMO ingeniero que ya firma "APROBADO POR"
+ *  (`certificadoPor`), no un firmante nuevo. La firma (imagen) y el QR se
+ *  llenan aparte, vía el `afterBuild` de `outerNestedFullRow_` — esta
+ *  función solo arma el texto de las 2 columnas de la izquierda. */
 function buildFirmasUnifiedRows_(probadoPor, certificadoPor) {
-  var rows = [unifiedBannerRow_('ÁREA DE CONTROL DE CALIDAD')];
-  var merges = [{ startColumnIndex: 0, columnSpan: 3 }, { startColumnIndex: 3, columnSpan: 2 }, { startColumnIndex: 5, columnSpan: 2 }];
-  var header = ['PROBADO POR', '', '', 'CERTIFICADO POR', '', 'APROBADO POR', ''];
-  rows.push(unifiedRow_(header, 'header', merges));
-  var dataCells = new Array(UNIFIED_TABLE_COLS_).fill('');
-  dataCells[0] = (probadoPor.nombre || '—') + '\n' + fmtDatePdf_(probadoPor.fecha);
-  dataCells[3] = (certificadoPor.nombre || '—') + '\n' + fmtDatePdf_(certificadoPor.fecha);
-  // dataCells[5] queda vacía — la firma (imagen + nombre + cargo) se llena
-  // aparte vía el `afterBuild` de outerNestedFullRow_, sobre la celda real
-  // de la tabla ya creada (fila 2, columna 5 antes de fusionar).
-  rows.push(unifiedRow_(dataCells, 'data', merges));
+  var rows = [unifiedRow_(['ÁREA DE CONTROL DE CALIDAD', '', '', ''], 'banner', [{ startColumnIndex: 0, columnSpan: 4 }])];
+  rows.push(unifiedRow_(['PROBADO POR', 'REVISADO POR', 'APROBADO POR', 'AUTENTICIDAD'], 'header', []));
+  var dataRow = unifiedRow_([
+    (probadoPor.nombre || '—') + '\n' + fmtDatePdf_(probadoPor.fecha),
+    (certificadoPor.nombre || '—') + '\n' + fmtDatePdf_(certificadoPor.fecha),
+    '', // firma del ingeniero — se llena aparte, ver afterBuild
+    ''  // QR de autenticidad — se llena aparte, ver afterBuild
+  ], 'data', []);
+  rows.push(dataRow);
+  rows.colWidths = SECTION12_FOUR_COL_WIDTHS_PT_;
   return rows;
 }
 
@@ -3027,7 +3156,13 @@ function styleUnifiedCell_(cell, r, c, padding) {
   } else if (r.role === 'labelvalue') {
     var isLabel = r.labelCols.indexOf(c) !== -1;
     if (isLabel) {
-      cell.setBackgroundColor(PDF_COLORS_.NEUTRAL_BG);
+      // Punto 11, ronda 7 (2026-09-17) — `r.labelBgOverride` (opcional,
+      // mismo criterio que `fontSizeOverride`) permite un color de fondo
+      // de etiqueta distinto para UNA tabla puntual (Sección 1 de 3
+      // columnas, ver buildSection1ThreeColRows_ — el cliente pidió
+      // celdas de etiqueta en azul claro ahí) sin cambiar NEUTRAL_BG para
+      // el resto de tablas etiqueta/valor del documento.
+      cell.setBackgroundColor(r.labelBgOverride || PDF_COLORS_.NEUTRAL_BG);
       cell.editAsText().setBold(true).setFontSize(UNIFIED_FONT_DATA_).setForegroundColor(PDF_COLORS_.TEXT);
     } else {
       cell.editAsText().setBold(false).setFontSize(UNIFIED_FONT_DATA_).setForegroundColor(PDF_COLORS_.TEXT);
@@ -3140,6 +3275,14 @@ function appendNestedTable_(parentCell, rows) {
       mergeSpecs.push({ rowIndex: rowIndex, startColumnIndex: m.startColumnIndex, columnSpan: m.columnSpan });
     });
   });
+  // Punto 11, ronda 7 (2026-09-17) — `rows.customMerges` (opcional, mismo
+  // criterio que `colWidths`/`cellPadding`): fusiones que no pertenecen a
+  // una fila lógica puntual (r.merges es horizontal, dentro de UNA fila) —
+  // la celda de la foto del transformador en `buildSection1ThreeColRows_`
+  // necesita fusionarse VERTICALMENTE a lo largo de varias filas.
+  if (rows.customMerges) {
+    rows.customMerges.forEach(function (m) { mergeSpecs.push(m); });
+  }
   // Punto 11, ronda 4 (2026-09-16) — anchos de columna explícitos, a pedido
   // del cliente: sin esto, DocumentApp reparte las 7 columnas en partes
   // IGUALES dentro de la tabla anidada, así que en tablas con columnas de
@@ -3445,7 +3588,13 @@ function mergeTableCellsRequest_(tableStartIndex, spec) {
           rowIndex: spec.rowIndex,
           columnIndex: spec.startColumnIndex
         },
-        rowSpan: 1,
+        // Punto 11, ronda 7 (2026-09-17) — `spec.rowSpan` opcional (antes
+        // siempre 1): la celda de la foto del transformador en la nueva
+        // Sección 1 de 3 columnas (`buildSection1ThreeColRows_`) necesita
+        // fusionarse VERTICALMENTE a lo largo de varias filas, no solo
+        // horizontalmente — mismo mecanismo de `mergeTableCells`, la API
+        // ya soportaba rowSpan>1, solo faltaba exponerlo acá.
+        rowSpan: spec.rowSpan || 1,
         columnSpan: spec.columnSpan
       }
     }
@@ -4363,13 +4512,35 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
   // buildClientEquipoUnifiedRows_/buildDatosGeneralesUnifiedRows_), así
   // que la altura total de la Sección 1 (6+3=9 filas) es MENOR que antes
   // (12+6=18 filas repartidas en 2 columnas, con media columna vacía).
-  var clienteEquipoRows = numberSection_(buildClientEquipoUnifiedRows_(site, transformer), n);
-  var datosPruebaRows = buildDatosGeneralesUnifiedRows_(
-    fmtDatePdf_(signedTest.created_at), tecnicoResponsable, ambienteTempText, ambienteHumedadText,
-    estadoEquipoText, normas.join(' / ')
-  );
+  // Punto 11, ronda 7 (2026-09-17) — JSON de diseño del cliente: Sección 1
+  // pasa de 2 tablas etiqueta/valor apiladas a UNA sola tabla de 3
+  // columnas reales (cliente/equipo | foto de placa | datos de la prueba),
+  // ver buildSection1ThreeColRows_. La foto (si el equipo tiene una
+  // `plate_photo_file_id` subida) se inserta aparte, vía `afterBuild`,
+  // sobre la celda ya fusionada verticalmente.
+  var section1Rows = numberSection_(buildSection1ThreeColRows_(
+    site, transformer, fmtDatePdf_(signedTest.created_at), tecnicoResponsable,
+    ambienteTempText, ambienteHumedadText, estadoEquipoText, normas.join(' / ')
+  ), n);
   n++;
-  var outerRows = [outerNestedFullRow_(clienteEquipoRows), outerNestedFullRow_(datosPruebaRows)];
+  var outerRows = [outerNestedFullRow_(section1Rows, function (nestedTable) {
+    var photoCell = nestedTable.getRow(1).getCell(2);
+    var photoBlob = getTransformerPlatePhotoBlob_(transformer.plate_photo_file_id);
+    if (photoBlob) {
+      var pimg = photoCell.appendImage(photoBlob);
+      var pratio = pimg.getHeight() / pimg.getWidth();
+      pimg.setWidth(80);
+      pimg.setHeight(Math.round(80 * pratio));
+      // La imagen es un elemento INLINE dentro de su propio párrafo — para
+      // centrarla hay que alinear ESE párrafo (cellAlign_ centraría el
+      // párrafo vacío original de la celda, no el de la imagen).
+      pimg.getParent().asParagraph().setAlignment(DocumentApp.HorizontalAlignment.CENTER);
+    } else {
+      var noPhoto = photoCell.appendParagraph('Sin foto');
+      noPhoto.editAsText().setItalic(true).setFontSize(6.5).setForegroundColor(PDF_COLORS_.TEXT_MUTED).setFontFamily(PROTOCOL_FONT_FAMILY_);
+      noPhoto.setAlignment(DocumentApp.HorizontalAlignment.CENTER).setSpacingBefore(0).setSpacingAfter(0).setLineSpacing(1);
+    }
+  })];
 
   // Sección 2+3 (ronda 3): Objetivo y Alcance | Equipos Utilizados, lado a
   // lado — nuevas, a pedido del "prompt maestro" del 2026-09-15.
@@ -4475,11 +4646,11 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
   var chartImages = [];
   if (willHaveTtrChart) {
     var ttrChartBlob = buildTtrDeviationChart_(ttrCalc, esMonofasico, null);
-    if (ttrChartBlob) chartImages.push({ blob: ttrChartBlob, widthPt: 250, heightPt: 95 });
+    if (ttrChartBlob) chartImages.push({ blob: ttrChartBlob, widthPt: 250, heightPt: 78 });
   }
   if (willHaveCurveChart) {
     var curveBlob = buildInsulationCurveChart_(aisCalc, aisRaw, null);
-    if (curveBlob) chartImages.push({ blob: curveBlob, widthPt: 250, heightPt: 95 });
+    if (curveBlob) chartImages.push({ blob: curveBlob, widthPt: 250, heightPt: 78 });
   }
   var devanadosCriteriaNeeded = !!(atRowsFinal || btRowsFinal);
   var aislamientoCriteriaNeeded = !!aisCalc;
@@ -4518,12 +4689,28 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
   // (2026-09-13, a pedido del cliente) queda FIJO en el mismo ingeniero
   // que ya firma "APROBADO POR" — deja de mostrar quién certificó en la
   // app (revisado_por), la fecha real de certificación sí se conserva.
+  // Punto 11, ronda 7 (2026-09-17) — QR de autenticidad (JSON de diseño
+  // del cliente, 4to bloque de la Sección 12): `verificationId` se genera
+  // ACÁ (antes de armar el PDF) porque el QR tiene que quedar YA
+  // insertado en el documento antes de exportarlo — pero el registro en
+  // DOCUMENTOS (con este mismo id) recién se puede escribir más abajo,
+  // después de conocer `saved.fileId`. Se reusa el MISMO id en los 2
+  // lugares (nunca 2 generateId_() distintos) para que el QR apunte
+  // exactamente al registro que se guarda. La página pública de
+  // verificación (verificarInformeElectrico_, sin login — ver doGet) lee
+  // por ese id; si no existe o no es un CERTIFICADOS eléctrico, muestra
+  // "no válido" — así de eso depende que el QR sirva para detectar un
+  // certificado falso/alterado.
+  var verificationId = generateId_();
+  var verificationUrl = ScriptApp.getService().getUrl() + '?verificar=' + verificationId;
+  var qrBlob = getQrCodeBlob_(verificationUrl);
+
   var firmaRows = numberSection_(buildFirmasUnifiedRows_(
     { nombre: tecnicoResponsable, fecha: signedTest.created_at },
     { nombre: ENGINEER_SIGNATURE_NAME_, fecha: signedTest.revisado_at }
   ), n++);
   outerRows.push(outerNestedFullRow_(firmaRows, function (nestedTable) {
-    var sigCell = nestedTable.getRow(2).getCell(5);
+    var sigCell = nestedTable.getRow(2).getCell(2);
     var engineerBlob = getEngineerSignatureBlob_();
     if (engineerBlob) {
       var simg = sigCell.appendImage(engineerBlob);
@@ -4536,14 +4723,28 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
       // fila) — bajado a 45pt.
       simg.setWidth(45);
       simg.setHeight(Math.round(45 * sratio));
+      simg.getParent().asParagraph().setAlignment(DocumentApp.HorizontalAlignment.CENTER);
     }
-    cellAlign_(sigCell, DocumentApp.HorizontalAlignment.CENTER);
     var snameLine = sigCell.appendParagraph(ENGINEER_SIGNATURE_NAME_);
     snameLine.editAsText().setBold(true).setFontSize(7).setFontFamily(PROTOCOL_FONT_FAMILY_);
     snameLine.setAlignment(DocumentApp.HorizontalAlignment.CENTER).setSpacingBefore(0).setSpacingAfter(0).setLineSpacing(1);
     var stitleLine = sigCell.appendParagraph(ENGINEER_SIGNATURE_TITLE_);
     stitleLine.editAsText().setFontSize(6.5).setForegroundColor(PDF_COLORS_.TEXT_MUTED).setFontFamily(PROTOCOL_FONT_FAMILY_);
     stitleLine.setAlignment(DocumentApp.HorizontalAlignment.CENTER).setSpacingBefore(0).setSpacingAfter(0).setLineSpacing(1);
+
+    var qrCell = nestedTable.getRow(2).getCell(3);
+    if (qrBlob) {
+      var qimg = qrCell.appendImage(qrBlob);
+      qimg.setWidth(45);
+      qimg.setHeight(45);
+      qimg.getParent().asParagraph().setAlignment(DocumentApp.HorizontalAlignment.CENTER);
+    } else {
+      var noQr = qrCell.appendParagraph('—');
+      noQr.setAlignment(DocumentApp.HorizontalAlignment.CENTER).setSpacingBefore(0).setSpacingAfter(0).setLineSpacing(1);
+    }
+    var qrCaption = qrCell.appendParagraph('Escanear para verificar');
+    qrCaption.editAsText().setFontSize(5.5).setItalic(true).setForegroundColor(PDF_COLORS_.TEXT_MUTED).setFontFamily(PROTOCOL_FONT_FAMILY_);
+    qrCaption.setAlignment(DocumentApp.HorizontalAlignment.CENTER).setSpacingBefore(0).setSpacingAfter(0).setLineSpacing(1);
   }));
 
   var tablePlaceholderPar = findMarkerParagraph_(body, '<<TABLA_RESULTADOS_ELECTRICOS>>');
@@ -4557,15 +4758,21 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
 
   getSheet_('TRANSFORMADORES').getRange(transformer._row, colIndex_('TRANSFORMADORES', 'electrical_report_file_id')).setValue(saved.fileId);
 
+  // Reusa `verificationId` (el mismo que ya quedó embebido en el QR del
+  // PDF) — nunca un id nuevo acá, o el QR apuntaría a un registro que no
+  // existe.
   appendRow_('DOCUMENTOS', {
-    id: generateId_(),
+    id: verificationId,
     site_id: transformer.site_id,
     category: 'CERTIFICADOS',
     file_name: fileName,
     file_id: saved.fileId,
     mime_type: 'application/pdf',
     uploaded_by: uploadedBy || 'desconocido',
-    created_at: new Date().toISOString()
+    created_at: new Date().toISOString(),
+    transformer_id: transformer.id,
+    verdict: conclusionVerdict,
+    certified_by: ENGINEER_SIGNATURE_NAME_
   });
 
   return saved;
