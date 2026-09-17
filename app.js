@@ -1135,6 +1135,10 @@ function openEditTransformerModal_() {
   document.getElementById('editTrfMaterialAt').value = t.at_devanado_material || '';
   document.getElementById('editTrfMaterialBt').value = t.bt_devanado_material || '';
   document.getElementById('editTrfYear').value = t.manufacture_year || '';
+  document.getElementById('editTrfPlatePhoto').value = '';
+  document.getElementById('editTrfPlatePhotoNote').innerHTML = t.plate_photo_url
+    ? 'Ya tiene una foto — <a href="' + t.plate_photo_url + '" target="_blank" rel="noopener">verla</a>. Elegí un archivo para reemplazarla.'
+    : 'Este equipo todavía no tiene foto de la placa.';
   document.getElementById('editTrfTapPositions').value = t.numero_posiciones_tap || '';
   document.getElementById('editTrfPosTapNominal').value = t.posicion_tap_nominal || '';
   document.getElementById('editTrfTtrOfertado').checked = t.ttr_ofertado !== false;
@@ -1214,7 +1218,12 @@ function handleEditTransformerSubmit(e) {
   }
 
   // Local-first: se refleja el cambio de inmediato tanto en el detalle como en la
-  // fila del panel; el POST real corre en segundo plano.
+  // fila del panel; el POST real corre en segundo plano. La foto (si se eligió
+  // un archivo nuevo) sí necesita leerse de forma asíncrona ANTES de armar el
+  // payload real de la API — mismo patrón que handleCreateTransformerSubmit,
+  // pero acá el resto del flujo ya era local-first/optimista, así que solo la
+  // parte que sube al backend espera a `readFileAsBase64_`; el reflejo local
+  // (Object.assign/renderDetail/cerrar el modal) no depende de la foto.
   Object.assign(state.currentTransformer, payload);
   renderDetail();
   var rec = state.transformers.filter(function (t) { return t.id === id; })[0];
@@ -1227,13 +1236,26 @@ function handleEditTransformerSubmit(e) {
   saveDraft_('mya_cache_transformer_' + id, state.currentTransformer);
   closeEditTransformerModal_();
 
-  callApi('updateTransformer', 'POST', payload)
+  readFileAsBase64_(document.getElementById('editTrfPlatePhoto'))
+    .then(function (photo) {
+      var apiPayload = payload;
+      if (photo) apiPayload = Object.assign({}, payload, { file_base64: photo.base64, file_mime_type: photo.mimeType });
+      return callApi('updateTransformer', 'POST', apiPayload);
+    })
     .then(function () { return callApi('listTransformers', 'GET', { site_id: siteId }); })
     .then(function (transformers) {
       if (state.currentSiteId === siteId) {
         state.transformers = transformers || [];
         saveDraft_('mya_cache_transformers_' + siteId, state.transformers);
         renderDashboard();
+      }
+      return callApi('getTransformer', 'GET', { id: id });
+    })
+    .then(function (transformer) {
+      if (state.currentTransformerId === id) {
+        state.currentTransformer = transformer;
+        saveDraft_('mya_cache_transformer_' + id, transformer);
+        renderDetail();
       }
       showToast_('Equipo actualizado', 'success');
     })

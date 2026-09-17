@@ -286,6 +286,11 @@
         </div>
         <div class="field"><label>A&ntilde;o de fabricaci&oacute;n</label><input class="mono" id="editTrfYear" type="text" inputmode="numeric" pattern="[0-9]*"></div>
         <div class="field">
+          <label>Foto de la placa</label>
+          <input id="editTrfPlatePhoto" type="file" accept="image/*" capture="environment">
+          <div class="field-note" id="editTrfPlatePhotoNote"></div>
+        </div>
+        <div class="field">
           <label>N&uacute;mero de posiciones del cambiador de tomas</label>
           <input class="mono" id="editTrfTapPositions" type="text" inputmode="numeric" pattern="[0-9]*" placeholder="5 (por defecto)">
           <div class="field-note">Vacío = se mantiene el valor actual del equipo (5 por defecto). Cambiarlo aquí regenera las posiciones de TAP; si el equipo tiene una matriz personalizada, revísala después.</div>
