@@ -2116,8 +2116,10 @@ function handleEditTestDraft_(testId) {
   } else if (test.test_type === 'AISLAMIENTO') {
     state.insulation = {
       windingTemperatureC: raw.windingTemperatureC != null ? raw.windingTemperatureC : 20,
-      combinations: JSON.parse(JSON.stringify(raw.measurements || defaultInsulationCombinations_()))
+      combinations: ensureInsulationCombinationsShape_(JSON.parse(JSON.stringify(raw.measurements || defaultInsulationCombinations_())))
     };
+    if (raw.metodo) state.insulation.metodo = raw.metodo;
+    if (raw.tension_prueba_v) state.insulation.tension_prueba_v = raw.tension_prueba_v;
     showView('insulation-form');
     document.getElementById('insulationInstrument').value = test.instrument_used || '';
   } else if (test.test_type === 'ACEITE_DIELECTRICO') {
@@ -3419,12 +3421,40 @@ function defaultInsulationCombinations_() {
   return p;
 }
 
+/** Bug real reportado por el usuario (2026-09-26): una combinación
+ *  guardada ANTES de que existiera el método "Simple"
+ *  (resistenciaValor/resistenciaUnidad) — sea un borrador local del
+ *  navegador o una prueba en Borrador ya guardada en el servidor — no
+ *  tiene esos 2 campos. El <select> de unidad la muestra igual con
+ *  "GΩ" preseleccionado (por ser la primera opción, sin que nada tenga
+ *  el atributo `selected`), pero el valor real en el estado sigue
+ *  siendo `undefined` — el backend lo rechaza como unidad inválida
+ *  aunque en pantalla se vea una ya elegida. Se completan los campos
+ *  que falten con los mismos valores por defecto de
+ *  `defaultInsulationCombinations_`, sin tocar nada de lo que ya
+ *  traía. Compartida entre `resetInsulationStateFromTransformer`
+ *  (borrador local) y `handleEditTestDraft_` (borrador del servidor) —
+ *  el mismo bug se reprodujo por las 2 vías. */
+function ensureInsulationCombinationsShape_(combinations) {
+  INSULATION_COMBINATIONS.forEach(function (k) {
+    if (!combinations[k]) {
+      combinations[k] = defaultInsulationCombinations_()[k];
+      return;
+    }
+    var r = combinations[k];
+    if (typeof r.resistenciaValor !== 'number') r.resistenciaValor = 0;
+    if (!r.resistenciaUnidad) r.resistenciaUnidad = 'MΩ';
+  });
+  return combinations;
+}
+
 function resetInsulationStateFromTransformer() {
   var draft = loadDraft_('mya_draft_insulation_' + state.currentTransformerId);
   state.insulation = draft || { windingTemperatureC: 20, combinations: defaultInsulationCombinations_() };
   if (!state.insulation.combinations) state.insulation.combinations = defaultInsulationCombinations_();
   if (!state.insulation.metodo) state.insulation.metodo = 'completo';
   if (!state.insulation.tension_prueba_v) state.insulation.tension_prueba_v = 1000;
+  ensureInsulationCombinationsShape_(state.insulation.combinations);
   var evidenceInput = document.getElementById('insulationEvidence');
   if (evidenceInput) evidenceInput.value = '';
 }
