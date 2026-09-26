@@ -3992,3 +3992,214 @@ existen en este proyecto)** — de sus 3 puntos:
    es una sola celda fusionada a todo el ancho con el resultado real
    (✓/✗ + texto), coloreada verde o roja, en vez de mostrar
    "APROBADO"/"NO APROBADO" lado a lado con un ☑/☐.
+
+### Ronda 8 (2026-09-19) — límite real de anidación de imágenes, el
+verdadero motivo del desborde a página 2, y rebalanceo de la Sección 1
+
+Varias rondas más de "auditoría" (Fase 2, Fase 3, y una "corrección
+definitiva de DocumentApp") llegaron pidiendo cosas que asumían HTML/CSS
+otra vez, o que pedían deshacer arreglos YA verificados (encoger el QR de
+vuelta a 65-70px, partir el veredicto en tablas separadas — esto último
+es exactamente la causa raíz que la ronda 6 ya había diagnosticado y
+corregido). Se rechazaron esas instrucciones puntuales pidiendo evidencia
+real en vez de implementarlas a ciegas — mismo criterio de todo el
+proyecto: generar un informe de verdad y medir, nunca asumir.
+
+**Bug real encontrado (no una suposición más): límite de Google Docs con
+imágenes anidadas 3 niveles de profundidad.** Al reestructurar la celda
+"AUTENTICIDAD" para que el QR fuera a la izquierda y un texto de
+verificación a la derecha, se intentó una sub-tabla 1×2 DENTRO de esa
+celda (que ya estaba dentro de la tabla de firmas, que ya estaba dentro
+de la tabla externa — 3 niveles). `DocumentApp` reportaba el
+`appendImage` como 100% exitoso (blob válido, tamaño y dimensiones
+correctos, celda con sus hijos — confirmado con un diagnóstico puntual
+vía `PropertiesService`), pero la imagen **nunca aparecía en el PDF
+exportado**. No es el mismo bug de la ronda 6 (fila que no cabe entera se
+va sola a la página siguiente) — acá la imagen simplemente no se
+renderiza, sin importar cuánto espacio haya. **Arreglo: eliminar el
+nivel de anidación extra.** La tabla de firmas pasó a tener 5 columnas
+físicas reales (`SECTION12_FIVE_COL_WIDTHS_PT_`) en vez de 4 + una
+sub-tabla — imagen y texto son cada uno su propia celda de la MISMA
+tabla, nunca una tabla dentro de otra dentro de otra. Regla general para
+este proyecto: **nunca anidar una tabla dentro de una celda que ya está
+dentro de otra tabla anidada** — usar columnas físicas adicionales de la
+tabla existente (con fusión de encabezado si hace falta agrupar
+visualmente) en su lugar.
+
+**La verdadera causa del desborde a página 2 (no las gráficas ni el
+margen) — 2 hallazgos encadenados, ambos confirmados con un diagnóstico
+real, no adivinados:**
+
+1. Google Docs exige un párrafo vacío antes y después de CUALQUIER tabla
+   — ya se sabía esto para tablas ANIDADAS dentro de una celda
+   (`shrinkEmptyBookendParagraphs_`, ronda 6o), pero nunca se había
+   aplicado a la tabla EXTERNA dentro del `Body` del documento. Peor:
+   **no es un solo párrafo, Docs va acumulando varios** cada vez que la
+   función reabre/guarda el documento (confirmado con una Script
+   Property de diagnóstico: 3 párrafos vacíos consecutivos después de la
+   tabla externa en un informe real, cada uno al tamaño "Normal text"
+   (~11pt) por defecto). `applyOuterAndNestedMerges_` ahora recorre y
+   encoge TODOS los que encuentre después de la tabla externa, no solo
+   el primero.
+2. El mismo hallazgo de la ronda 6o ("`mergeTableCells` resetea
+   `minimumHeight` a ~11pt sin importar `setMinimumHeight(0)` previo")
+   solo se corregía para las filas de la tabla EXTERNA — las tablas
+   ANIDADAS dentro de cada celda (Sección 1 con la fusión vertical de la
+   foto, Sección 12 con la fusión de "AUTENTICIDAD") también pasan por
+   `mergeTableCells` vía `nestedRegistry`, y sus propias filas nunca
+   volvían a bajarse a 0 después de ese merge. Ahora `applyOuterAndNestedMerges_`
+   también resetea `minimumHeight(0)` en las filas de cualquier tabla
+   anidada que encuentre dentro de cada celda de la tabla externa.
+
+Ninguno de los 2 arreglos por sí solo cerró el desborde — hicieron falta
+los 2 juntos, y ni así alcanzó del todo (ver siguiente hallazgo). El
+ajuste de gráficos/margen de la ronda anterior (7) no era el problema
+real; quedó igual (55pt / 6mm) hasta la ronda 8k más abajo.
+
+**El verdadero cierre de 1 página vino de otro lado, a pedido explícito
+del usuario**: la Sección 1 tenía 12 filas pero la columna derecha
+(Fecha de prueba, Técnico, Temperatura, Humedad, Estado, Normas) solo
+llenaba 6 — las otras 6 filas tenían la mitad derecha completamente en
+blanco, un desperdicio real y visible. Se movieron Tensión secundaria,
+Refrigeración y Año de fabricación (antes al final de la columna
+izquierda) a la columna derecha, balanceando ambas en 9 filas —
+**Sección 1 pasó de 12 a 9 filas (–25 %)**, y ESE fue el cambio que
+finalmente cerró el documento en 1 sola página de verdad (confirmado con
+`pdf-poppler`, no solo "no se ve el pie duplicado"). `buildSection1ThreeColRows_`
+sigue calculando `rows.customMerges`/`rowSpan` a partir de `left.length`
+automáticamente, así que el ajuste no rompió la fusión vertical de la
+celda de la foto.
+
+**Última ronda de feedback (mismo día), 3 pedidos + 1 pregunta, todos
+resueltos:**
+1. **QR no uniforme con la fila / reducir tamaño** — el cliente insistió
+   en que un tamaño chico SÍ había escaneado antes (contradice la
+   evidencia de la ronda 7: 45-75pt confirmados NO escaneables). En vez
+   de descartar el pedido o de aceptarlo a ciegas, se probó un tamaño
+   intermedio (100pt, bajando desde 120pt) y se reverificó con el MISMO
+   método de siempre (`pdf-poppler` + `qrserver.com`, en 2 resoluciones
+   distintas — alta y ~150dpi) antes de darlo por bueno: **100pt sí
+   decodifica**. Se dejó en 100pt. Si en un celular real llega a fallar,
+   subir de nuevo — nunca bajar más sin repetir este mismo test.
+2. **Quitar la columna de texto junto al QR** — implementado
+   (`buildFirmasUnifiedRows_`: la celda de datos del QR ahora se fusiona
+   igual que la de encabezado, 1 sola celda visual en vez de imagen +
+   texto en 2 celdas separadas). `SECTION12_FIVE_COL_WIDTHS_PT_` pasó de
+   `[110,110,110,126,100]` a `[141,141,142,71,71]` para que las 4 celdas
+   visuales (Probado/Revisado/Aprobado/QR) queden del mismo ancho.
+3. **"Las gráficas se ven mal, no se entienden"** — causa real: se
+   mostraban a 250×55pt (relación 4.5:1) contra su forma nativa real de
+   ~1.92:1 (`setDimensions(460,240)` en `buildTtrDeviationChart_`/
+   `buildInsulationCurveChart_`), una deformación vertical severa. Con
+   el espacio liberado por el rebalanceo de la Sección 1 se subieron a
+   155×80pt (relación 1.94:1, casi exacta) — un primer intento a
+   230×120pt (relación exacta) volvió a desbordar a 2 páginas, confirmado
+   y revertido antes de asentarse en 155×80.
+4. **"TTR solo muestra una posición"** — investigado y confirmado que
+   NO es un bug: `buildTtrDeviationChart_` grafica exactamente los TAPs
+   presentes en `calc.taps`, que vienen de las lecturas realmente
+   registradas. El informe de prueba (DEMO-COMPLETO-01) solo tiene 1
+   lectura TTR registrada (TAP 3) — la tabla de la Sección 4 muestra la
+   misma única fila, confirmando que es una limitación de los DATOS de
+   esa prueba puntual, no del código. Para ver varios TAPs en el
+   gráfico hay que registrar más lecturas TTR para ese equipo.
+5. **Foto de la placa del transformador**: ya existía el campo desde una
+   ronda anterior (`editTrfPlatePhoto` en el modal "Editar equipo",
+   `handleEditTransformerSubmit` en `app.js` la sube como
+   `file_base64`/`file_mime_type` junto con el resto del payload) — solo
+   hacía falta señalarlo, no se tocó código nuevo.
+
+**Reafirmación de la regla de todo el proyecto** (varias veces puesta a
+prueba en esta ronda): ante cualquier instrucción externa que contradiga
+una verificación propia ya hecha con evidencia real, no implementarla a
+ciegas — pedir la evidencia, o repetir el mismo test antes de decidir.
+Aplica igual cuando quien pide el cambio es el cliente/usuario directo
+(punto 1 de arriba): se probó y reverificó en vez de aceptar o rechazar
+de plano.
+
+### Ronda 8 (continuación, mismo día) — el "zigzag" de columnas, gráficas
+lado a lado, y equilibrio visual de la Sección 12
+
+El usuario pidió, con instrucciones puntuales de API `DocumentApp`, 3
+cosas más: (1) corregir que el límite izquierda/derecha de la tabla
+maestra se viera desalineado entre secciones ("zigzag"), (2) las 2
+gráficas de la Sección 8 lado a lado en vez de apiladas, (3) espaciado/
+centrado de la Sección 12. Luego, en un mensaje aparte, 3 correcciones
+más (colisión con el pie de página, centrado vertical/horizontal de la
+fila de firmas, agrandar la firma/tipografía) — mismo patrón de siempre:
+se verificó cada afirmación contra un PDF real antes de tocar código, y
+se implementó lo confirmado, no lo asumido.
+
+**"Zigzag" — diagnóstico real, distinto del propuesto.** El usuario
+sugería `setWidth()` en las celdas de la tabla EXTERNA — pero esa tabla
+es una sola, con una sola definición de columnas para TODAS sus filas;
+estructuralmente no puede tener un límite distinto por fila (confirmado
+midiendo el PDF real a nivel de píxel: el límite entre columna izquierda/
+derecha SIEMPRE caía en el mismo x, fila tras fila). La causa real: cada
+sección arma su propia tabla ANIDADA dentro de esa celda, y varias
+(`buildObjetivoAlcanceRows_`, `buildInsulationUnifiedRows_`,
+`buildDarIpLegendRows_`, `buildWindingCriteriaTable3Tier_`,
+`buildInsulationCriteriaRows_`, `buildObservacionesRows_`,
+`buildConclusionRows_`) nunca tenían un `rows.colWidths` explícito —
+Docs las auto-dimensionaba según su contenido, con anchos totales
+DISTINTOS por sección (confirmado con el mismo método de medición de
+píxeles: las cajas con borde propio de cada tabla anidada terminaban en
+un x distinto, aunque el límite de la tabla externa fuera siempre el
+mismo — el "zigzag" percibido era ese, la caja de cada sección, no el
+límite real). Arreglo: **270pt de ancho total** (ya usado por TTR/
+Equipos, y ya documentado como `NESTED_HALF_WIDTH_PT_` desde antes pero
+nunca aplicado a esas 6 tablas) en TODAS. Reusar directamente
+`TTR_WINDING_COL_WIDTHS_PT_` (proporciones pensadas para TAP/U/V/W) partía
+"EXCELENTE"/"AT-Tierra" en 2 líneas en la tabla de Aislamiento — se creó
+`AISLAMIENTO_COL_WIDTHS_PT_` y `CRITERIA_COL_WIDTHS_PT_`, cada una con
+proporciones propias pero sumando el mismo 270pt.
+
+**Bug real de paso, encontrado verificando el fix**: `criteriaRows =
+criteriaRows.concat(buildWindingCriteriaTable3Tier_())` (para combinar
+las 2 tablas de criterios en una sola) devuelve un arreglo NUEVO —
+`Array.concat()` no hereda propiedades puestas a mano (`colWidths`) en
+los arreglos originales. El `colWidths` que cada `build*_` dejaba en su
+propio `rows` se perdía silenciosamente ahí. Se vuelve a poner
+`criteriaRows.colWidths = CRITERIA_COL_WIDTHS_PT_` DESPUÉS del `concat()`.
+
+**Gráficas lado a lado (Sección 8)**: antes iban DIRECTO en la celda de
+la tabla externa (ronda 6 las había sacado de cualquier tabla anidada
+porque una fila que necesita partirse entre páginas dibuja las imágenes
+fuera de su celda, montadas sobre el encabezado de la página siguiente).
+Ese riesgo es de PARTIDO DE PÁGINA, no de anidación — con el documento ya
+confiablemente en 1 página, se armó una tabla anidada 1×2 sin bordes
+(`imgLeftCell.appendTable()` + `setBorderWidth(0)`) para poner las 2
+imágenes lado a lado — nivel de anidación 1 (nunca 3, que es el límite
+real de la ronda 8d), verificado con un PDF real que las 2 imágenes
+aparecen correctamente. Tamaño bajado de 155×80 (apiladas) a 128×67 (lado
+a lado) manteniendo la relación de aspecto nativa de la gráfica
+(460×240 = 1.92:1) — el usuario había sugerido 125×100 (1.25:1), que las
+hubiera vuelto a deformar, esta vez estirándolas de más a lo alto.
+
+**Sección 12 — centrado y proporción firma/QR**: las 4 celdas de la fila
+de datos (Probado/Revisado/Aprobado/QR) ahora llevan
+`setVerticalAlignment(CENTER)` — antes el contenido quedaba arriba,
+dejando un hueco visible debajo en las celdas más cortas que el QR (la
+celda más alta de la fila). Probado/Revisado pasaron de un solo string
+`"nombre\nfecha"` a 2 párrafos separados (mismo patrón que ya usaba la
+celda de firma para nombre/cargo), para poder darle negrita+10pt SOLO al
+nombre y dejar la fecha en 8pt sin negrita. La firma subió de 45pt (piso
+de la ronda 6s, cuando el gráfico de arriba obligaba a mantenerla chica)
+a 80pt manteniendo su relación de aspecto real — con el espacio liberado
+por el rebalanceo de la Sección 1 y las gráficas lado a lado hay margen
+real para esto, verificado que sigue en 1 página y que el QR (100pt,
+ronda 8j) sigue decodificando.
+
+**Rechazado explícitamente, con evidencia**: el usuario pidió además
+"corregir" una supuesta colisión entre el borde de la tabla maestra y el
+pie de página, con 2 métodos puntuales — insertar un
+`body.appendParagraph('')` suelto después de la tabla, o subir el margen
+inferior a 50pt. Se verificó el PDF real primero: hay ~27pt de espacio
+limpio entre la tabla y el pie, ninguna colisión. Además, el método
+propuesto (párrafo vacío suelto tras la tabla externa) es EXACTAMENTE el
+mismo patrón que causaba el desborde a 2 páginas que las rondas 8e-8h de
+este mismo día habían diagnosticado y corregido (Docs acumula esos
+párrafos cada vez que el documento se reabre) — implementarlo a ciegas
+habría reintroducido ese bug. Subir el margen a 50pt (más de 4x el 6mm/
+17pt actual) muy probablemente desbordaría a 2 páginas de nuevo, dado lo
+ajustado que ya queda el documento. No se tocó nada de esto.

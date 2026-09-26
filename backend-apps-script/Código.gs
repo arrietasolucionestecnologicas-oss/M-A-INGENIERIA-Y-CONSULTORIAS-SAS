@@ -2448,6 +2448,22 @@ var TTR_WINDING_COL_WIDTHS_PT_ = [24, 30, 30, 30, 51, 49, 56];
  *  CALIBRACIÓN(2 cols) — MARCA/MODELO se deja la más ancha porque ahí van
  *  los nombres de instrumento más largos ("Micro-ohmmeter DLRO-10"). */
 var EQUIPOS_COL_WIDTHS_PT_ = [41, 54, 54, 27, 27, 34, 33];
+/** Ronda 8m (2026-09-19) — COMBINACIÓN(1 col, "AT-Tierra"/"BT-Tierra")/
+ *  R 1 MIN(1)/DAR(1)/CALIF. DAR(1, "CUESTIONABLE")/IP(1)/CALIF. IP(2 cols
+ *  fusionadas). Reusar TTR_WINDING_COL_WIDTHS_PT_ acá (mismo total de
+ *  270pt, pero proporciones pensadas para TAP/U/V/W) partía "EXCELENTE"/
+ *  "AT-Tierra" en 2 líneas — detectado en la verificación en vivo de esta
+ *  ronda. Mismo total, proporciones propias. */
+var AISLAMIENTO_COL_WIDTHS_PT_ = [58, 38, 28, 56, 28, 31, 31];
+/** Ronda 8m (2026-09-19) — usada por AMBAS tablas de criterios
+ *  (Devanados 3-tier y DAR/IP), que se concatenan en una sola tabla
+ *  anidada (`criteriaRows`, ver regenerateElectricalCombinedReport_) —
+ *  deben compartir un solo arreglo de anchos porque Docs no permite que
+ *  distintas filas de LA MISMA tabla tengan columnas de ancho distinto.
+ *  Balanceada para que sirva a los 2 patrones de fusión (4+3 columnas en
+ *  Devanados, 2+2+1+2 en DAR/IP) sin partir "CUESTIONABLE"/"NO ACEPTABLE"
+ *  ni los rangos numéricos. */
+var CRITERIA_COL_WIDTHS_PT_ = [38, 38, 38, 38, 42, 40, 36];
 
 /** Una fila "lógica" de la tabla unificada. `cells` siempre tiene 7
  *  strings (relleno con '' donde una fusión posterior los va a tapar).
@@ -2531,6 +2547,13 @@ var SECTION1_THREE_COL_WIDTHS_PT_ = [80, 160, 90, 75, 155];
  *  ingeniero en `buildFirmasUnifiedRows_`) — esta función solo arma el
  *  texto y la fusión vertical de esa celda. */
 function buildSection1ThreeColRows_(site, transformer, fechaText, tecnicoText, tempText, humedadText, estadoEquipoText, normasText) {
+  // Ronda 8i (2026-09-19) — a pedido explícito del usuario: la derecha
+  // solo tenía 6 datos contra 12 de la izquierda, así que la mitad de las
+  // filas de esta sección quedaban con la mitad derecha completamente en
+  // blanco (espacio desperdiciado real, visible en el PDF). Se mueven acá
+  // los 3 últimos campos de placa (antes al final de `left`) para
+  // equilibrar ambas columnas en 9 filas cada una — la sección pasa de 12
+  // a 9 filas (–25 %), sin perder ningún dato.
   var left = [
     ['CLIENTE', site.client_name || '—'],
     ['NIT', site.nit || '—'],
@@ -2540,12 +2563,12 @@ function buildSection1ThreeColRows_(site, transformer, fechaText, tecnicoText, t
     ['N° DE SERIE', transformer.serial_number || '—'],
     ['GRUPO DE CONEXIÓN', transformer.vector_group || '—'],
     ['POTENCIA NOMINAL', transformer.rated_power_kva ? (String(transformer.rated_power_kva) + ' kVA') : '—'],
-    ['TENSIÓN PRIMARIA', transformer.hv_nominal_voltage ? (String(transformer.hv_nominal_voltage) + ' V') : '—'],
-    ['TENSIÓN SECUNDARIA', transformer.lv_nominal_voltage ? (String(transformer.lv_nominal_voltage) + ' V') : '—'],
-    ['REFRIGERACIÓN', transformer.cooling_type || '—'],
-    ['AÑO DE FABRICACIÓN', transformer.manufacture_year ? String(transformer.manufacture_year) : '—']
+    ['TENSIÓN PRIMARIA', transformer.hv_nominal_voltage ? (String(transformer.hv_nominal_voltage) + ' V') : '—']
   ];
   var right = [
+    ['TENSIÓN SECUNDARIA', transformer.lv_nominal_voltage ? (String(transformer.lv_nominal_voltage) + ' V') : '—'],
+    ['REFRIGERACIÓN', transformer.cooling_type || '—'],
+    ['AÑO DE FABRICACIÓN', transformer.manufacture_year ? String(transformer.manufacture_year) : '—'],
     ['FECHA DE PRUEBA', fechaText],
     ['TÉCNICO RESPONSABLE', tecnicoText],
     ['TEMPERATURA AMBIENTE', tempText || '—'],
@@ -2603,6 +2626,7 @@ function buildObjetivoAlcanceRows_(presentLabels) {
   cells[0] = 'Verificar el estado eléctrico del transformador mediante la medición de ' + joinSpanishList_(presentLabels) +
     ', con el fin de evaluar su condición operativa y detectar posibles deterioros en el sistema de aislamiento y en los devanados.';
   rows.push(unifiedRow_(cells, 'data', fullMerge));
+  rows.colWidths = TTR_WINDING_COL_WIDTHS_PT_;
   return rows;
 }
 
@@ -2826,6 +2850,7 @@ function buildInsulationUnifiedRows_(calc, instrumentoLine, tensionPruebaText) {
   }
 
   rows.cellPadding = 0.5;
+  rows.colWidths = AISLAMIENTO_COL_WIDTHS_PT_;
   return rows;
 }
 
@@ -2875,6 +2900,7 @@ function buildDarIpLegendRows_() {
     rows.push(row);
   });
   rows.cellPadding = 0.5;
+  rows.colWidths = CRITERIA_COL_WIDTHS_PT_;
   return rows;
 }
 
@@ -2926,6 +2952,7 @@ function buildWindingCriteriaTable3Tier_() {
     rows.push(row);
   });
   rows.cellPadding = 0.5;
+  rows.colWidths = CRITERIA_COL_WIDTHS_PT_;
   return rows;
 }
 
@@ -2940,6 +2967,7 @@ function buildInsulationCriteriaRows_(esSimple) {
   var cells = new Array(UNIFIED_TABLE_COLS_).fill('');
   cells[0] = 'Lectura única de resistencia (ej. al minuto) — sin las lecturas adicionales de tiempo que arman DAR/IP, no aplica calificación por índice.';
   rows.push(unifiedRow_(cells, 'data', [{ startColumnIndex: 0, columnSpan: UNIFIED_TABLE_COLS_ }]));
+  rows.colWidths = CRITERIA_COL_WIDTHS_PT_;
   return rows;
 }
 
@@ -2974,6 +3002,7 @@ function buildObservacionesRows_(presentLabels, estadoEquipoText, normasText, ap
   var cells = new Array(UNIFIED_TABLE_COLS_).fill('');
   cells[0] = sentence;
   rows.push(unifiedRow_(cells, 'data', fullMerge));
+  rows.colWidths = TTR_WINDING_COL_WIDTHS_PT_;
   return rows;
 }
 
@@ -3000,6 +3029,7 @@ function buildConclusionRows_(overallVerdict) {
   // del JSON (rompería la escala compacta de todo el documento).
   row.fontSizeOverride = 9;
   rows.push(row);
+  rows.colWidths = TTR_WINDING_COL_WIDTHS_PT_;
   return rows;
 }
 
@@ -3016,31 +3046,61 @@ function buildConclusionRows_(overallVerdict) {
  *  firma se inserta aparte (ver el `afterBuild` que le pasa el llamador a
  *  `outerNestedFullRow_`), porque `appendNestedTable_`/`styleUnifiedCell_`
  *  solo saben estilizar texto. */
-/** Anchos de columna (pt) de la Sección 12 de 4 bloques — Probado/
- *  Revisado/Aprobado/QR, ~140pt cada uno (suman ~560pt, el ancho útil a
- *  5mm de margen). */
-var SECTION12_FOUR_COL_WIDTHS_PT_ = [140, 140, 140, 140];
+/** Anchos de columna (pt) de la Sección 12 — Probado/Revisado/Aprobado a
+ *  110pt (alcanza de sobra para nombre+fecha) y Autenticidad partida en 2
+ *  columnas FÍSICAS de la MISMA tabla (126pt imagen + 100pt texto) — ronda
+ *  8b/8c (2026-09-19): una sub-tabla anidada DENTRO de la celda
+ *  "Autenticidad" reportaba el `appendImage` como exitoso a nivel
+ *  DocumentApp (blob válido, ancho/alto correctos, celda con sus hijos)
+ *  pero la imagen NUNCA aparecía en el PDF ya exportado — un límite real
+ *  de Docs con imágenes anidadas 3 niveles (tabla externa → tabla de
+ *  firmas → sub-tabla) que no tiene que ver con partido de página (el bug
+ *  de la ronda 6). La fila "AUTENTICIDAD" se fusiona en el header (mismo
+ *  mecanismo `merges` de siempre) para que el título quede centrado sobre
+ *  las 2 columnas, pero en la fila de DATOS cada una es su propia celda
+ *  real de la tabla de firmas — mismo nivel de anidación que el resto del
+ *  documento, nada nuevo. Suman lo mismo ~556pt de antes. */
+// Ronda 8j (2026-09-19) — sin columna de texto junto al QR, las 4 celdas
+// visuales (Probado/Revisado/Aprobado/QR) quedan del mismo ancho — antes
+// el bloque QR (126+100=226pt) era visiblemente más ancho que los otros 3
+// (110pt cada uno), a pedido del usuario ("no está uniforme").
+var SECTION12_FIVE_COL_WIDTHS_PT_ = [141, 141, 142, 71, 71];
 
 /** "Área de Control de Calidad" en 4 bloques — Punto 11, ronda 7
  *  (2026-09-17), JSON de diseño del cliente: pasa de 3 columnas (Probado/
  *  Certificado/Aprobado) a 4 (Probado/Revisado/Aprobado/QR de
- *  Autenticidad). El cliente no tiene hoy un rol "Coordinador" separado
- *  del ingeniero (decisión explícita, 2026-09-17): el bloque "REVISADO
- *  POR" muestra el MISMO ingeniero que ya firma "APROBADO POR"
- *  (`certificadoPor`), no un firmante nuevo. La firma (imagen) y el QR se
- *  llenan aparte, vía el `afterBuild` de `outerNestedFullRow_` — esta
- *  función solo arma el texto de las 2 columnas de la izquierda. */
+ *  Autenticidad) — el bloque de autenticidad usa 2 columnas FÍSICAS
+ *  (imagen + texto, ver SECTION12_FIVE_COL_WIDTHS_PT_ más arriba), así
+ *  que la tabla real tiene 5 columnas, no 4. El cliente no tiene hoy un
+ *  rol "Coordinador" separado del ingeniero (decisión explícita,
+ *  2026-09-17): el bloque "REVISADO POR" muestra el MISMO ingeniero que
+ *  ya firma "APROBADO POR" (`certificadoPor`), no un firmante nuevo. La
+ *  firma (imagen) y el QR se llenan aparte, vía el `afterBuild` de
+ *  `outerNestedFullRow_` — esta función solo arma el texto. */
 function buildFirmasUnifiedRows_(probadoPor, certificadoPor) {
-  var rows = [unifiedRow_(['ÁREA DE CONTROL DE CALIDAD', '', '', ''], 'banner', [{ startColumnIndex: 0, columnSpan: 4 }])];
-  rows.push(unifiedRow_(['PROBADO POR', 'REVISADO POR', 'APROBADO POR', 'AUTENTICIDAD'], 'header', []));
+  var rows = [unifiedRow_(['ÁREA DE CONTROL DE CALIDAD', '', '', '', ''], 'banner', [{ startColumnIndex: 0, columnSpan: 5 }])];
+  rows.push(unifiedRow_(
+    ['PROBADO POR', 'REVISADO POR', 'APROBADO POR', 'AUTENTICIDAD', ''],
+    'header', [{ startColumnIndex: 3, columnSpan: 2 }]
+  ));
+  // Ronda 8j (2026-09-19) — a pedido explícito del usuario: se quita la
+  // columna de texto ("Verificación de autenticidad. Escanee...") al lado
+  // del QR, y la celda de datos se fusiona igual que la de encabezado
+  // (mismas 2 columnas físicas, ahora una sola celda visual) para que el
+  // QR quede centrado y del mismo tamaño de bloque que Probado/Revisado/
+  // Aprobado, no descuadrado con una columna angosta de más.
+  // Ronda 8o (2026-09-19) — Probado/Revisado pasan a llenarse en
+  // afterBuild igual que Firma/QR (antes un solo string "nombre\nfecha"
+  // sin poder darle negrita/tamaño distinto solo al nombre).
   var dataRow = unifiedRow_([
-    (probadoPor.nombre || '—') + '\n' + fmtDatePdf_(probadoPor.fecha),
-    (certificadoPor.nombre || '—') + '\n' + fmtDatePdf_(certificadoPor.fecha),
+    '', // Probado Por — se llena aparte, ver afterBuild
+    '', // Revisado Por — se llena aparte, ver afterBuild
     '', // firma del ingeniero — se llena aparte, ver afterBuild
-    ''  // QR de autenticidad — se llena aparte, ver afterBuild
-  ], 'data', []);
+    '', // QR de autenticidad — se llena aparte, ver afterBuild
+    ''  // celda fusionada con la anterior — queda vacía
+  ], 'data', [{ startColumnIndex: 3, columnSpan: 2 }]);
   rows.push(dataRow);
-  rows.colWidths = SECTION12_FOUR_COL_WIDTHS_PT_;
+  rows.colWidths = SECTION12_FIVE_COL_WIDTHS_PT_;
   return rows;
 }
 
@@ -3050,6 +3110,12 @@ function buildFirmasUnifiedRows_(probadoPor, certificadoPor) {
  *  lanza fuera de aquí: si algo falla (0 TAPs, monofásico sin base de
  *  comparación entre fases, etc.) devuelve `null` y el llamador simplemente
  *  no inserta la imagen — no debe bloquear la generación del informe. */
+/** Punto 11, ronda 8 (2026-09-17) — a pedido del cliente, pasa de barras
+ *  (desviación % por fase) a líneas: la RELACIÓN MEDIDA real
+ *  (`measuredRatio`, ya calculada por `calculateTtr_` — nunca se
+ *  inventa nada nuevo) por fase (U/V/W) a lo largo de los TAPs. La
+ *  desviación % sigue disponible en la tabla de datos (columna ERROR %),
+ *  esto es solo el gráfico. */
 function buildTtrDeviationChart_(calc, esMonofasico, sectionNum) {
   if (esMonofasico) return null;
   var tapNums = Object.keys(calc.taps || {}).map(Number).sort(function (a, b) { return a - b; });
@@ -3062,16 +3128,17 @@ function buildTtrDeviationChart_(calc, esMonofasico, sectionNum) {
       var row = ['TAP ' + tapNum];
       TTR_PHASE_ORDER_.forEach(function (k) {
         var p = tap.phases[k];
-        row.push(p && p.errorPercent != null ? p.errorPercent : 0);
+        row.push(p && p.measuredRatio != null ? p.measuredRatio : 0);
       });
       dataTable.addRow(row);
     });
-    var chart = Charts.newColumnChart()
+    var chart = Charts.newLineChart()
       .setDataTable(dataTable)
-      .setTitle((sectionNum ? sectionNum + '. ' : '') + 'DESVIACIÓN POR FASE (TTR)')
+      .setTitle((sectionNum ? sectionNum + '. ' : '') + 'RELACIÓN MEDIDA POR FASE (TTR)')
       .setDimensions(460, 240)
       .setColors([PDF_COLORS_.ACCENT, PDF_COLORS_.DANGER, PDF_COLORS_.SUCCESS])
       .setLegendPosition(Charts.Position.BOTTOM)
+      .setPointStyle(Charts.PointStyle.MEDIUM)
       .build();
     return chart.getAs('image/png');
   } catch (e) {
@@ -3108,7 +3175,11 @@ function buildInsulationCurveChart_(calc, raw, sectionNum) {
       var row = [pt.label];
       keys.forEach(function (k) {
         var m = raw.measurements[k];
-        row.push(m && m[pt.field] != null ? m[pt.field] : 0);
+        // Punto 11, ronda 8 (2026-09-17): `null` en vez de `0` para una
+        // lectura faltante — con escala logarítmica (ver setOption más
+        // abajo) un 0 real rompe el eje (log(0) no existe); `null` deja
+        // el punto sin graficar en vez de inventar un valor.
+        row.push(m && m[pt.field] != null ? m[pt.field] : null);
       });
       dataTable.addRow(row);
     });
@@ -3119,6 +3190,9 @@ function buildInsulationCurveChart_(calc, raw, sectionNum) {
       .setColors([PDF_COLORS_.ACCENT, PDF_COLORS_.DANGER, PDF_COLORS_.SUCCESS])
       .setLegendPosition(Charts.Position.BOTTOM)
       .setPointStyle(Charts.PointStyle.MEDIUM)
+      // A pedido del cliente — escala logarítmica en el eje de resistencia
+      // (MΩ), que suele crecer en órdenes de magnitud entre 30s y 10min.
+      .setOption('vAxis.logScale', true)
       .build();
     return chart.getAs('image/png');
   } catch (e) {
@@ -3444,12 +3518,38 @@ function insertOuterResultsTable_(body, beforeChild, outerRows) {
     } else if (r.kind === 'images-pair') {
       var imgLeftCell = row.getCell(0);
       styleUnifiedCell_(imgLeftCell, { role: 'banner' }, 0, UNIFIED_CELL_PADDING_);
-      (r.images || []).forEach(function (im) {
-        if (!im.blob) return;
-        var img = imgLeftCell.appendImage(im.blob);
-        if (im.widthPt) img.setWidth(im.widthPt);
-        if (im.heightPt) img.setHeight(im.heightPt);
-      });
+      var validImages = (r.images || []).filter(function (im) { return im.blob; });
+      // Ronda 8l (2026-09-19) — a pedido explícito del usuario: lado a
+      // lado en vez de apiladas (antes dejaban un hueco vertical vacío
+      // debajo, con solo 1 gráfico usando el ancho completo). La ronda 6
+      // había sacado las imágenes de cualquier tabla anidada porque una
+      // fila que necesita partirse entre páginas dibuja las imágenes
+      // fuera de su celda, montadas sobre el encabezado de la página
+      // siguiente — riesgo real, pero de partido de página, no de
+      // anidación (el límite de 3 niveles de la ronda 8d es un problema
+      // distinto). Esta tabla 1×2 queda en nivel de anidación 1 (igual
+      // que cualquier otra tabla anidada del documento), y solo hace
+      // falta 1 fila que nunca necesita partirse mientras el documento
+      // siga en 1 página — verificado con un PDF real tras este cambio.
+      if (validImages.length > 1) {
+        var imgPairTable = imgLeftCell.appendTable();
+        imgPairTable.setBorderWidth(0);
+        var imgPairRow = imgPairTable.appendTableRow();
+        validImages.forEach(function (im) {
+          var pairCell = imgPairRow.appendTableCell();
+          pairCell.setPaddingTop(0).setPaddingBottom(0).setPaddingLeft(2).setPaddingRight(2);
+          var img = pairCell.appendImage(im.blob);
+          if (im.widthPt) img.setWidth(im.widthPt);
+          if (im.heightPt) img.setHeight(im.heightPt);
+          img.getParent().asParagraph().setAlignment(DocumentApp.HorizontalAlignment.CENTER);
+        });
+      } else {
+        validImages.forEach(function (im) {
+          var img = imgLeftCell.appendImage(im.blob);
+          if (im.widthPt) img.setWidth(im.widthPt);
+          if (im.heightPt) img.setHeight(im.heightPt);
+        });
+      }
       if (r.rightRows) {
         zeroOuterCellPadding_(row.getCell(1));
         var rightNested = appendNestedTable_(row.getCell(1), r.rightRows);
@@ -3531,6 +3631,23 @@ function collectAllTables_(content, rootStartIndex, out) {
  *  que la contiene. Cada entrada de `nestedRegistry` se ubica igual, por su
  *  propio `bannerText` único. Nunca lanza — si por lo que sea no encuentra
  *  alguna tabla, esa fusión en particular se omite, el PDF igual se genera. */
+/** Encoge (nunca intenta borrar — Docs los vuelve a insertar, ver ronda
+ *  6l/6o) los párrafos vacíos que Google Docs exige antes/después de
+ *  CUALQUIER tabla dentro de una celda, a `fontSize(1)` + espaciado 0 —
+ *  extraído de `applyOuterAndNestedMerges_` (ronda 8, 2026-09-19) para
+ *  reusarlo también en sub-tablas ad-hoc que se arman fuera del pipeline
+ *  build*Rows_/appendNestedTable_ (ver el sub-layout QR+texto de
+ *  `buildFirmasUnifiedRows_`/afterBuild). */
+function shrinkEmptyBookendParagraphs_(cell) {
+  for (var pp = 0; pp < cell.getNumChildren(); pp++) {
+    var pChild = cell.getChild(pp);
+    if (pChild.getType() === DocumentApp.ElementType.PARAGRAPH && pChild.asParagraph().getText() === '') {
+      pChild.asParagraph().setSpacingBefore(0).setSpacingAfter(0).setLineSpacing(1);
+      pChild.editAsText().setFontSize(1);
+    }
+  }
+}
+
 function applyOuterAndNestedMerges_(docId, outerMarkerText, outerMergeSpecs, nestedRegistry) {
   if (!outerMarkerText) return;
   var doc = Docs.Documents.get(docId);
@@ -3595,14 +3712,49 @@ function applyOuterAndNestedMerges_(docId, outerMarkerText, outerMergeSpecs, nes
         rowRi.setMinimumHeight(0);
         for (var cc = 0; cc < rowRi.getNumCells(); cc++) {
           var cellRc = rowRi.getCell(cc);
-          for (var pp = 0; pp < cellRc.getNumChildren(); pp++) {
-            var pChild = cellRc.getChild(pp);
-            if (pChild.getType() === DocumentApp.ElementType.PARAGRAPH && pChild.asParagraph().getText() === '') {
-              pChild.asParagraph().setSpacingBefore(0).setSpacingAfter(0).setLineSpacing(1);
-              pChild.editAsText().setFontSize(1);
+          shrinkEmptyBookendParagraphs_(cellRc);
+          // Ronda 8h (2026-09-19) — el hallazgo de ronda 6o ("mergeTableCells
+          // resetea minimumHeight a ~11pt") se aplicó siempre solo a las filas
+          // de la tabla EXTERNA; las tablas ANIDADAS dentro de cada celda
+          // (Sección 1 con el rowSpan de la foto, Sección 12 con el colspan
+          // de AUTENTICIDAD) también pasan por mergeTableCells vía
+          // nestedRegistry, y sus propias filas nunca volvían a bajarse a 0
+          // después de ese merge — mismo bug, un nivel más adentro.
+          for (var nc = 0; nc < cellRc.getNumChildren(); nc++) {
+            var nestedChild = cellRc.getChild(nc);
+            if (nestedChild.getType() !== DocumentApp.ElementType.TABLE) continue;
+            var nestedT = nestedChild.asTable();
+            for (var nr = 0; nr < nestedT.getNumRows(); nr++) {
+              nestedT.getRow(nr).setMinimumHeight(0);
             }
           }
         }
+      }
+      // Ronda 8e (2026-09-19) — HALLAZGO REAL: la MISMA regla de Docs que
+      // obliga un párrafo vacío antes/después de una tabla ANIDADA dentro
+      // de una celda (ver shrinkEmptyBookendParagraphs_ arriba) aplica
+      // igual a la tabla EXTERNA dentro del BODY del documento — nunca se
+      // encogía ese párrafo vacío de después (el de antes lo absorbe el
+      // placeholder ya existente en la plantilla). Confirmado con un PDF
+      // real: sin este encogido, ese único párrafo a tamaño "Normal text"
+      // (~11pt) por defecto era el sobrante exacto que partía a una
+      // página 2 con solo el pie de página repetido, incluso ya con el
+      // gráfico a 55pt y el margen inferior a 6mm.
+      // Ronda 8f (2026-09-19) — HALLAZGO REAL (confirmado con
+      // DEBUG_BODY_TAIL sobre un informe real): NO es un solo párrafo
+      // vacío después de la tabla externa, son VARIOS consecutivos
+      // (3 en el informe de prueba) — Docs los va acumulando cada vez que
+      // esta función reabre/gu arda el documento y los vuelve a insertar.
+      // La ronda 8e solo encogía el inmediato siguiente (oi+1); los demás
+      // se quedaban a tamaño "Normal text" (~11pt) por defecto — de ahí
+      // que ni el gráfico a 55pt ni el margen a 6mm alcanzaran a cerrar
+      // el desborde. Se recorren TODOS los que sigan a la tabla, no solo
+      // el primero.
+      for (var afterIdx = oi + 1; afterIdx < bodyApp.getNumChildren(); afterIdx++) {
+        var afterEl = bodyApp.getChild(afterIdx);
+        if (afterEl.getType() !== DocumentApp.ElementType.PARAGRAPH || afterEl.asParagraph().getText() !== '') break;
+        afterEl.asParagraph().setSpacingBefore(0).setSpacingAfter(0).setLineSpacing(1);
+        afterEl.editAsText().setFontSize(1);
       }
       break;
     }
@@ -4346,7 +4498,11 @@ var PROTOCOL_MARGIN_PT_ = 14.17;
 // movió el corte de página junto con el espaciado de párrafo). Ronda 6i:
 // 9mm -> 7mm, siguiente paso dentro del mismo margen de seguridad frente a
 // los 6mm que causaron el overlap original con el pie de página del cliente.
-var PROTOCOL_MARGIN_BOTTOM_PT_ = 19.84;
+// Ronda 8f (2026-09-19): 7mm -> 6mm, el piso que el cliente autorizó
+// (5-6mm, "no 0mm") — confirmado visualmente sin overlap con el pie de
+// página real a 7mm; se prueba el último mm antes de tocar contenido de
+// nuevo para cerrar el footer duplicado en una página 2 casi vacía.
+var PROTOCOL_MARGIN_BOTTOM_PT_ = 17.01;
 
 /** Punto 11 (2026-09-15, a pedido del cliente) — fija tamaño A4 y
  *  márgenes de 8 mm en las 2 plantillas YA EXISTENTES, igual criterio que
@@ -4373,7 +4529,7 @@ function setReportTemplatesPageSize_(params, auth) {
     body.setMarginTop(PROTOCOL_MARGIN_PT_).setMarginBottom(PROTOCOL_MARGIN_BOTTOM_PT_)
       .setMarginLeft(PROTOCOL_MARGIN_PT_).setMarginRight(PROTOCOL_MARGIN_PT_);
     doc.saveAndClose();
-    results[key] = 'actualizado a A4 (210 x 297 mm), márgenes 5 mm (7 mm abajo, para el pie de página)';
+    results[key] = 'actualizado a A4 (210 x 297 mm), márgenes 5 mm (6 mm abajo, para el pie de página)';
   });
   return jsonResponse_({ status: 200, message: 'Tamaño de página y márgenes actualizados.', data: results });
 }
@@ -4675,14 +4831,35 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
   // depende de imágenes diminutas para caber en 1 página, así que se
   // suben a un tamaño legible. Verificar que se siga cabiendo en 1
   // página con este tamaño antes de dar por cerrado.
+  // Ronda 8j (2026-09-19) — a pedido del usuario ("las gráficas se ven
+  // mal, no se entienden bien"): 250x55pt deformaba la gráfica nativa
+  // (460x240, relación 1.92:1) a una relación de 4.5:1, aplastándola
+  // verticalmente. Con el espacio liberado por el rebalanceo de la
+  // Sección 1 (ronda 8i, 12→9 filas) alcanza para respetar la relación de
+  // aspecto real. Verificar que se siga cabiendo en 1 página con este
+  // tamaño antes de dar por cerrado.
+  // Ronda 8k (2026-09-19) — 230x120 (relación real 1.92:1) desbordó de
+  // nuevo a página 2 (confirmado, mismo síntoma de siempre: solo el pie
+  // repetido) — el espacio libre tras la ronda 8i no alcanzaba para la
+  // relación de aspecto exacta. Se baja a 155x80 (relación 1.94:1, casi
+  // igual de fiel) — sigue siendo mucho menos deformado que el 250x55
+  // original (4.5:1) sin volver a desbordar.
+  // Ronda 8l (2026-09-19) — a pedido del usuario, las 2 gráficas pasan de
+  // apiladas a lado a lado (ver el nuevo bloque `images-pair` más abajo,
+  // tabla 1x2 sin bordes) — con el ancho de celda ahora fijo en 270pt
+  // (mismo total que TTR_WINDING_COL_WIDTHS_PT_, ver ronda 8m), cada
+  // gráfica dispone de ~131pt de ancho real. 128x67 mantiene la relación
+  // de aspecto nativa (460x240 = 1.92:1; 128/67 = 1.91:1) — el usuario
+  // había sugerido 125x100 (relación 1.25:1), que hubiera vuelto a
+  // deformarlas, esta vez estirándolas de más a lo alto.
   var chartImages = [];
   if (willHaveTtrChart) {
     var ttrChartBlob = buildTtrDeviationChart_(ttrCalc, esMonofasico, null);
-    if (ttrChartBlob) chartImages.push({ blob: ttrChartBlob, widthPt: 250, heightPt: 62 });
+    if (ttrChartBlob) chartImages.push({ blob: ttrChartBlob, widthPt: 128, heightPt: 67 });
   }
   if (willHaveCurveChart) {
     var curveBlob = buildInsulationCurveChart_(aisCalc, aisRaw, null);
-    if (curveBlob) chartImages.push({ blob: curveBlob, widthPt: 250, heightPt: 62 });
+    if (curveBlob) chartImages.push({ blob: curveBlob, widthPt: 128, heightPt: 67 });
   }
   var devanadosCriteriaNeeded = !!(atRowsFinal || btRowsFinal);
   var aislamientoCriteriaNeeded = !!aisCalc;
@@ -4692,6 +4869,13 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
     if (devanadosCriteriaNeeded) criteriaRows = criteriaRows.concat(buildWindingCriteriaTable3Tier_());
     if (aislamientoCriteriaNeeded) criteriaRows = criteriaRows.concat(buildInsulationCriteriaRows_(aisEsSimple));
     criteriaRows.cellPadding = 0.5;
+    // Ronda 8m (2026-09-19) — HALLAZGO REAL: `Array.concat()` devuelve un
+    // arreglo NUEVO, que no hereda propiedades puestas a mano (colWidths)
+    // en los arreglos originales — el colWidths que cada build*_ dejaba
+    // en su propio `rows` (visto arriba) se perdía acá silenciosamente,
+    // dejando esta tabla combinada SIN anchos explícitos pese a que el
+    // código parecía fijarlos. Se vuelve a poner después del concat.
+    criteriaRows.colWidths = CRITERIA_COL_WIDTHS_PT_;
   }
   if (chartImages.length && criteriaRows) {
     var chartsNum = n++;
@@ -4747,49 +4931,89 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
     { nombre: ENGINEER_SIGNATURE_NAME_, fecha: signedTest.revisado_at }
   ), n++);
   outerRows.push(outerNestedFullRow_(firmaRows, function (nestedTable) {
-    var sigCell = nestedTable.getRow(2).getCell(2);
+    var dataRowRef = nestedTable.getRow(2);
+    // Ronda 8o (2026-09-19) — a pedido explícito del usuario: las 4
+    // celdas de la fila de datos quedan centradas verticalmente (antes
+    // arriba, dejando un hueco visible debajo cuando el QR —la celda más
+    // alta de la fila— sobraba espacio respecto a las demás).
+    for (var fc = 0; fc < dataRowRef.getNumCells(); fc++) {
+      dataRowRef.getCell(fc).setVerticalAlignment(DocumentApp.VerticalAlignment.CENTER);
+    }
+
+    function fillNameDateCell_(cell, nombre, fecha) {
+      var nameLine = cell.appendParagraph(nombre || '—');
+      nameLine.editAsText().setBold(true).setFontSize(10).setFontFamily(PROTOCOL_FONT_FAMILY_);
+      nameLine.setAlignment(DocumentApp.HorizontalAlignment.CENTER).setSpacingBefore(0).setSpacingAfter(0).setLineSpacing(1);
+      var dateLine = cell.appendParagraph(fmtDatePdf_(fecha));
+      dateLine.editAsText().setFontSize(8).setForegroundColor(PDF_COLORS_.TEXT_MUTED).setFontFamily(PROTOCOL_FONT_FAMILY_);
+      dateLine.setAlignment(DocumentApp.HorizontalAlignment.CENTER).setSpacingBefore(0).setSpacingAfter(0).setLineSpacing(1);
+      // appendParagraph deja un párrafo vacío inicial en la celda (el
+      // mismo que styleUnifiedCell_ suele limpiar para celdas con texto
+      // puesto por initialCells) — acá la celda arrancó vacía a propósito
+      // (ver buildFirmasUnifiedRows_), así que hay que quitarlo a mano.
+      if (cell.getNumChildren() > 2 && cell.getChild(0).getType() === DocumentApp.ElementType.PARAGRAPH && cell.getChild(0).asParagraph().getText() === '') {
+        cell.removeChild(cell.getChild(0));
+      }
+    }
+    fillNameDateCell_(dataRowRef.getCell(0), tecnicoResponsable, signedTest.created_at);
+    fillNameDateCell_(dataRowRef.getCell(1), ENGINEER_SIGNATURE_NAME_, signedTest.revisado_at);
+
+    var sigCell = dataRowRef.getCell(2);
     var engineerBlob = getEngineerSignatureBlob_();
     if (engineerBlob) {
       var simg = sigCell.appendImage(engineerBlob);
       var sratio = simg.getHeight() / simg.getWidth();
-      // Punto 11, ronda 6s (2026-09-16): 30pt resultó ilegible a pedido
-      // del cliente ("la firma no se ve bien") — mismo motivo que el
-      // tamaño de gráfico de arriba, ya no hace falta mantenerla tan
-      // chica para caber en 1 página. 60pt (primer intento) volvió a
-      // desbordar a la página 2 por muy poco (solo la cola de esta misma
-      // fila) — bajado a 45pt.
-      simg.setWidth(45);
-      simg.setHeight(Math.round(45 * sratio));
+      // Ronda 8o (2026-09-19) — a pedido explícito del usuario: el QR
+      // (100pt) le ganaba demasiado peso visual a la firma (45pt desde
+      // ronda 6s, cuando el gráfico de arriba todavía obligaba a
+      // mantenerla chica). Con el espacio liberado desde entonces
+      // (rebalanceo Sección 1 + gráficas lado a lado, rondas 8i/8l) hay
+      // margen real para subirla — 80pt, manteniendo su relación de
+      // aspecto real (nunca un 120x60 fijo, que la habría estirado).
+      // Verificar que se siga cabiendo en 1 página con este tamaño antes
+      // de dar por cerrado.
+      simg.setWidth(80);
+      simg.setHeight(Math.round(80 * sratio));
       simg.getParent().asParagraph().setAlignment(DocumentApp.HorizontalAlignment.CENTER);
     }
     var snameLine = sigCell.appendParagraph(ENGINEER_SIGNATURE_NAME_);
-    snameLine.editAsText().setBold(true).setFontSize(7).setFontFamily(PROTOCOL_FONT_FAMILY_);
+    snameLine.editAsText().setBold(true).setFontSize(10).setFontFamily(PROTOCOL_FONT_FAMILY_);
     snameLine.setAlignment(DocumentApp.HorizontalAlignment.CENTER).setSpacingBefore(0).setSpacingAfter(0).setLineSpacing(1);
     var stitleLine = sigCell.appendParagraph(ENGINEER_SIGNATURE_TITLE_);
-    stitleLine.editAsText().setFontSize(6.5).setForegroundColor(PDF_COLORS_.TEXT_MUTED).setFontFamily(PROTOCOL_FONT_FAMILY_);
+    stitleLine.editAsText().setFontSize(8).setForegroundColor(PDF_COLORS_.TEXT_MUTED).setFontFamily(PROTOCOL_FONT_FAMILY_);
     stitleLine.setAlignment(DocumentApp.HorizontalAlignment.CENTER).setSpacingBefore(0).setSpacingAfter(0).setLineSpacing(1);
 
-    var qrCell = nestedTable.getRow(2).getCell(3);
+    // Ronda 8d (2026-09-19) — HALLAZGO REAL: una sub-tabla anidada DENTRO
+    // de la celda "Autenticidad" (imagen a la izquierda, texto a la
+    // derecha) reportaba el `appendImage` como exitoso a nivel
+    // DocumentApp (blob válido de 1347 bytes, image/png, ancho/alto
+    // 120x120 correctos, celda con sus hijos — confirmado con un
+    // diagnóstico puntual) pero la imagen NUNCA aparecía en el PDF ya
+    // exportado. Un límite real de Docs con imágenes anidadas 3 niveles
+    // (tabla externa → tabla de firmas → sub-tabla), distinto del bug de
+    // partido de página de la ronda 6. Arreglado sin la sub-tabla: la
+    // tabla de firmas ahora tiene 5 columnas físicas de verdad (ver
+    // buildFirmasUnifiedRows_/SECTION12_FIVE_COL_WIDTHS_PT_) — imagen y
+    // texto son cada uno su propia celda de la MISMA tabla, sin nivel de
+    // anidación extra.
+    // Ronda 8j (2026-09-19) — a pedido explícito del usuario: sin texto al
+    // lado (celda 4 fusionada con la 3, ver buildFirmasUnifiedRows_) y
+    // tamaño reducido para verse uniforme con la firma/demás datos de la
+    // fila. Ronda 7 había confirmado 45-75pt NO escaneables (decode real
+    // sobre el PDF exportado) y 120pt como piso — 100pt es una prueba
+    // intermedia, DEBE reverificarse con el mismo test de decode antes de
+    // dar esto por bueno; si falla, subir hasta el siguiente tamaño que sí
+    // decodifique, nunca asumir por la vista.
+    var qrImgCell = dataRowRef.getCell(3);
     if (qrBlob) {
-      var qimg = qrCell.appendImage(qrBlob);
-      // Ronda 7 (2026-09-17) — 45pt no decodificaba en el PDF ya
-      // exportado (confirmado renderizando la página real a alta
-      // resolución con pdf-poppler y leyéndola con el lector de
-      // qrserver.com: "could not find/read QR Code"). El acortador de
-      // URL (is.gd) no es opción — bloquea las IPs de Apps Script,
-      // confirmado en vivo — así que la única palanca real es tamaño/
-      // resolución de la imagen. 75pt tampoco alcanzó; subido a 120pt.
-      qimg.setWidth(120);
-      qimg.setHeight(120);
+      var qimg = qrImgCell.appendImage(qrBlob);
+      qimg.setWidth(100);
+      qimg.setHeight(100);
       qimg.getParent().asParagraph().setAlignment(DocumentApp.HorizontalAlignment.CENTER);
     } else {
-      var noQr = qrCell.appendParagraph('—');
+      var noQr = qrImgCell.appendParagraph('—');
       noQr.setAlignment(DocumentApp.HorizontalAlignment.CENTER).setSpacingBefore(0).setSpacingAfter(0).setLineSpacing(1);
     }
-    // Ronda 7h (2026-09-17): se quita el texto "Escanear para verificar" —
-    // con el QR ya a 120pt (el mínimo que sí decodifica, confirmado en
-    // vivo) cada pt cuenta para volver a 1 sola página; el encabezado
-    // "AUTENTICIDAD" de la columna ya deja claro qué es.
   }));
 
   var tablePlaceholderPar = findMarkerParagraph_(body, '<<TABLA_RESULTADOS_ELECTRICOS>>');
