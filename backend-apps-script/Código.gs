@@ -5416,14 +5416,30 @@ function buildOilPcbRecomendacionesText_(section) {
   ];
 }
 
-/** Ancho (pt) de una tabla anidada a todo el ancho de página (7 columnas
- *  parejas sumando ~560pt, igual total que SECTION1_THREE_COL_WIDTHS_PT_/
- *  SECTION12_FIVE_COL_WIDTHS_PT_) — para bloques de una sola celda
- *  fusionada que NUNCA van emparejados con nada al lado (Recomendaciones,
- *  Conclusión General de Aceite). Un bloque fusionado no muestra
- *  columnas visibles, así que la proporción individual no importa, solo
- *  la SUMA total (por eso 7 valores iguales). */
-var OIL_FULL_WIDTH_COLS_PT_ = [80, 80, 80, 80, 80, 80, 80];
+/** Ronda 10 (2026-09-26) — HALLAZGO REAL, confirmado por el usuario con
+ *  el PDF real y verificado con un informe de prueba: "2. INFORMACIÓN DE
+ *  LA MUESTRA" (emparejada, 270pt) quedaba más angosta que las tablas de
+ *  ancho completo de al lado ("3. RESULTADOS...", "6. RECOMENDACIONES",
+ *  etc.), dejando un hueco visible a la derecha. La tabla EXTERNA (2
+ *  columnas) se auto-dimensiona a partir de TODAS sus filas — las filas
+ *  emparejadas (Sección 1/2, y 4/5, 9/10) declaran 270+270=540pt en
+ *  total, así que ESE es el ancho real que gobierna la tabla maestra en
+ *  Aceite, no 560pt (que sí es el total correcto para el Eléctrico,
+ *  donde SECTION1_THREE_COL_WIDTHS_PT_/SECTION12_FIVE_COL_WIDTHS_PT_ son
+ *  las que de verdad gobiernan ahí — cada informe tiene su propio total
+ *  real, no hay una constante universal). Cualquier fila de ancho
+ *  completo tiene que declarar el MISMO total (540pt) para no dejar
+ *  hueco. Un bloque fusionado no muestra columnas visibles, así que la
+ *  proporción individual entre las 7 no importa, solo la SUMA. */
+var OIL_FULL_WIDTH_COLS_PT_ = [77, 77, 77, 77, 77, 77, 78];
+/** Firmas de Aceite — mismas proporciones relativas que
+ *  SECTION12_FIVE_COL_WIDTHS_PT_ (Probado/Revisado/Aprobado/QR) pero
+ *  reescaladas a 540pt en vez de 566pt (mismo motivo que
+ *  OIL_FULL_WIDTH_COLS_PT_ arriba — 540 es el total real que gobierna la
+ *  tabla maestra de Aceite). Un array propio, nunca se toca
+ *  SECTION12_FIVE_COL_WIDTHS_PT_ — esa sigue siendo la correcta para el
+ *  Eléctrico, que gobierna su tabla maestra con 560pt, no 540pt. */
+var OIL_FIRMAS_COL_WIDTHS_PT_ = [135, 135, 135, 68, 67];
 
 /** Bloque de texto (interpretación o recomendaciones) dentro de la tabla
  *  única — una sola celda fusionada, igual criterio que "Objetivo y
@@ -5557,11 +5573,11 @@ function regenerateOilCombinedReport_(transformer, site, rawReadings, calculated
   var conclusionAndFirmaRows = conclusionRows.concat(firmaRows);
   // Ronda 8m ya había encontrado esto mismo con `criteriaRows`: `concat()`
   // devuelve un arreglo NUEVO que no hereda `colWidths` de los originales
-  // — se vuelve a poner a mano. El de Firmas (566pt, 5 columnas físicas
-  // reales) se preserva porque SÍ importan sus proporciones internas; el
-  // de Conclusión no (es una sola celda fusionada, cualquier reparto de
-  // columnas se ve igual).
-  conclusionAndFirmaRows.colWidths = SECTION12_FIVE_COL_WIDTHS_PT_;
+  // — se vuelve a poner a mano. El de Firmas (OIL_FIRMAS_COL_WIDTHS_PT_,
+  // 5 columnas físicas reales) se preserva porque SÍ importan sus
+  // proporciones internas; el de Conclusión no (es una sola celda
+  // fusionada, cualquier reparto de columnas se ve igual).
+  conclusionAndFirmaRows.colWidths = OIL_FIRMAS_COL_WIDTHS_PT_;
   var conclusionAndFirmaRow = outerNestedFullRow_(conclusionAndFirmaRows, function (nestedTable) {
     // Ronda 9g/9h (2026-09-26) — 2 intentos con un párrafo vacío entre el
     // salto de página y esta tabla (`setSpacingBefore`, después
