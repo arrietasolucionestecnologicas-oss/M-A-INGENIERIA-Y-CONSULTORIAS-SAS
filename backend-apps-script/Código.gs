@@ -1067,6 +1067,13 @@ function certifyTest_(params, auth) {
     if (testObj.test_type === 'ACEITE_DIELECTRICO') {
       // Un informe por prueba — nunca debe impedir la certificación en sí:
       // si falla la generación, la prueba igual queda Certificada, solo sin PDF.
+      // Ronda 9 (2026-09-26): regenerateOilCombinedReport_ reemplaza
+      // generateOilTestReportPdf_ — YA escribe su propia fila en
+      // DOCUMENTOS (con transformer_id/verdict/certified_by, para que el
+      // QR de autenticidad funcione igual que en Eléctrico) usando
+      // `verificationId` como `id` — el appendRow_ manual que vivía acá
+      // se quita, o quedaría una fila duplicada con un id que el QR no
+      // conoce.
       try {
         var oilTestMeta = {
           created_at: testObj.created_at,
@@ -1077,18 +1084,8 @@ function certifyTest_(params, auth) {
           instrument_used: testObj.instrument_used,
           attachment_url: testObj.attachment_file_id ? driveFileUrl_(testObj.attachment_file_id) : null
         };
-        var oilReport = generateOilTestReportPdf_(transformer, site, rawReadings, calculated, oilTestMeta, folders.certificadosFolderId);
+        var oilReport = regenerateOilCombinedReport_(transformer, site, rawReadings, calculated, oilTestMeta, folders.certificadosFolderId);
         reportFileId = oilReport.fileId;
-        appendRow_('DOCUMENTOS', {
-          id: generateId_(),
-          site_id: transformer.site_id,
-          category: 'CERTIFICADOS',
-          file_name: 'Informe_' + TEST_TYPE_LABELS_[testObj.test_type] + '_' + transformer.serial_number,
-          file_id: reportFileId,
-          mime_type: 'application/pdf',
-          uploaded_by: auth.username || 'desconocido',
-          created_at: new Date().toISOString()
-        });
       } catch (reportErr) {
         // No relanzar.
       }
@@ -1681,6 +1678,51 @@ var OIL_TENSION_INTERFACIAL_MIN_MN_M = 24; // dinas/cm == mN/m, mismo valor num�
 var OIL_RIGIDEZ_MIN_KV = 30;
 var OIL_HUMEDAD_MAX_PPM = 35;
 var OIL_PCB_LIMITE_PPM = 50; // Res. 222 de 2011, MinAmbiente
+/** Ronda 9 (2026-09-26) — Protocolo único de Aceite Dieléctrico, a pedido
+ *  explícito del usuario ("parecido al de pruebas [eléctrico], sin las
+ *  fotos"): mismos 7 parámetros que YA se capturan hoy (nunca se agregan
+ *  campos nuevos al formulario — Viscosidad/Factor de potencia/Inhibidor/
+ *  Sedimentos que trae la referencia visual quedan fuera, decisión
+ *  explícita del usuario), con el mismo método ASTM que ya usaba
+ *  `buildOilTemplateDoc_` (plantilla vieja) por parámetro — no se inventa
+ *  ningún método nuevo, se reusa el ya aprobado. `check` es null cuando el
+ *  parámetro no tiene umbral numérico definido (Examen visual/Color/
+ *  Densidad) — la fila muestra ESTADO "—" en vez de CUMPLE/NO CUMPLE
+ *  inventado.
+ */
+var OIL_FISICOQUIMICO_PARAMS_ = [
+  { key: 'examen_visual', label: 'Examen visual', metodo: 'ASTM D1524-15(2022)', unidad: '—', isText: true, check: null },
+  { key: 'color_astm', label: 'Color', metodo: 'ASTM D1500-24', unidad: '—', isText: true, check: null },
+  { key: 'densidad_relativa', label: 'Densidad relativa', metodo: 'ASTM D1298-12b(2017)e1', unidad: '—', check: null },
+  { key: 'tension_interfacial_dinas_cm', label: 'Tensión interfacial (IFT)', metodo: 'ASTM D971-20', unidad: 'mN/m', limiteText: '≥ ' + OIL_TENSION_INTERFACIAL_MIN_MN_M + ' mN/m', check: function (v) { return v >= OIL_TENSION_INTERFACIAL_MIN_MN_M; } },
+  { key: 'numero_acido_mg_koh_g', label: 'Número de acidez (TAN)', metodo: 'ASTM D974-22', unidad: 'mg KOH/g', limiteText: '≤ ' + OIL_ACIDEZ_MAX_MG_KOH_G + ' mg KOH/g', check: function (v) { return v <= OIL_ACIDEZ_MAX_MG_KOH_G; } },
+  { key: 'agua_ppm', label: 'Contenido de agua', metodo: 'ASTM D1533-20', unidad: 'ppm', limiteText: '≤ ' + OIL_HUMEDAD_MAX_PPM + ' ppm', check: function (v) { return v <= OIL_HUMEDAD_MAX_PPM; } },
+  { key: 'rigidez_dielectrica_kv', label: 'Rigidez dieléctrica', metodo: 'ASTM D1816-12(2019)', unidad: 'kV', limiteText: '≥ ' + OIL_RIGIDEZ_MIN_KV + ' kV', check: function (v) { return v >= OIL_RIGIDEZ_MIN_KV; } }
+];
+/** Método/límite de cuantificación/incertidumbre de PCB — igual que los
+ *  métodos ASTM de arriba, son datos FIJOS de la metodología de
+ *  laboratorio (no una medición por muestra), no un dato inventado por
+ *  esta app. El método ya documentado en la plantilla vieja
+ *  ("ASTM D4059-00(2018) · ente acreditado IDEAM") se reemplaza por el
+ *  que trae la referencia visual más reciente del usuario (EPA 8082 por
+ *  GC-ECD) — ambos son métodos reales para PCB en aceite, se usa el que
+ *  el usuario mostró último.
+ */
+var OIL_PCB_METODO_ = 'EPA 8082 (por GC-ECD)';
+var OIL_PCB_LOQ_PPM_ = 0.5;
+var OIL_PCB_INCERTIDUMBRE_ = '± 10 %';
+/** Clasificación real de la Resolución 0222 de 2011 (MinAmbiente,
+ *  Colombia) por concentración de PCB — regulación pública verificable,
+ *  no un umbral inventado por esta app (el único que ya estaba en código,
+ *  OIL_PCB_LIMITE_PPM=50, es exactamente el primer corte de esta misma
+ *  tabla). Se agrega completa porque la referencia visual del usuario la
+ *  trae completa. */
+var OIL_PCB_CLASIFICACION_ = [
+  { rango: '< 50', clasificacion: 'NO PCB', descripcion: 'Puede ser gestionado como residuo convencional (según aplicabilidad).' },
+  { rango: '≥ 50 y < 500', clasificacion: 'PCB - Grupo 3', descripcion: 'Equipos o desechos contaminados con PCB (baja concentración).' },
+  { rango: '≥ 500 y < 100.000', clasificacion: 'PCB - Grupo 2', descripcion: 'Equipos o desechos contaminados con PCB (concentración intermedia).' },
+  { rango: '≥ 100.000', clasificacion: 'PCB - Grupo 1', descripcion: 'Equipos o desechos contaminados con PCB (alta concentración).' }
+];
 
 var OIL_PCB_AROCLORES = ['aroclor_1016', 'aroclor_1221', 'aroclor_1232', 'aroclor_1242', 'aroclor_1248', 'aroclor_1254', 'aroclor_1260'];
 
@@ -3316,13 +3358,17 @@ function styleUnifiedCell_(cell, r, c, padding) {
 function verdictCellColor_(text) {
   var v = String(text || '').replace(' †', '').trim();
   if (!v || v === '—') return null;
-  if (v.indexOf('RECHAZADO') === 0 || v.indexOf('MALO') === 0 || v === 'NO ACEPTABLE') {
+  // Ronda 9 (2026-09-26) — 'NO CUMPLE' se revisa ANTES que 'CUMPLE' (mismo
+  // motivo que 'NO ACEPTABLE' antes que 'ACEPTABLE': contiene la palabra
+  // como substring) — terminología del protocolo de Aceite (ENSAYO/ESTADO),
+  // nunca usada por Eléctrico.
+  if (v.indexOf('RECHAZADO') === 0 || v.indexOf('MALO') === 0 || v === 'NO ACEPTABLE' || v.indexOf('NO CUMPLE') === 0) {
     return { bg: PDF_COLORS_.DANGER_BG, fg: PDF_COLORS_.DANGER };
   }
   if (v.indexOf('CUESTIONABLE') === 0) {
     return { bg: PDF_COLORS_.WARNING_BG, fg: PDF_COLORS_.WARNING };
   }
-  if (v.indexOf('APROBADO') === 0 || v.indexOf('BUENO') === 0 || v.indexOf('EXCELENTE') === 0 || v === 'ACEPTABLE') {
+  if (v.indexOf('APROBADO') === 0 || v.indexOf('BUENO') === 0 || v.indexOf('EXCELENTE') === 0 || v === 'ACEPTABLE' || v.indexOf('CUMPLE') === 0) {
     return { bg: PDF_COLORS_.SUCCESS_BG, fg: PDF_COLORS_.SUCCESS };
   }
   return null;
@@ -4535,6 +4581,46 @@ function setReportTemplatesPageSize_(params, auth) {
 }
 
 /**
+ * Ronda 9 (2026-09-26) — a pedido explícito del usuario ("podemos copiar
+ * la plantilla de prueba que tiene ya los encabezados, pie de página y
+ * marca de agua y ajustar a este"): en vez de reconstruir el encabezado/
+ * pie/watermark del Aceite desde cero (`buildOilTemplateDoc_`, que nunca
+ * tuvo watermark agregado a mano), se copia la plantilla ELÉCTRICA ya
+ * migrada — la misma que se usó todo el día de hoy, con su caja de
+ * título CÓDIGO/VERSIÓN/FECHA/PÁGINA + foto ya restructurada
+ * (`restructureElectricalTemplateTitle_`/`compactElectricalTemplateTitleBox_`,
+ * rondas 2 y 4) y su watermark agregado a mano — y se ajustan SOLO 2
+ * cosas por texto: el título del protocolo y el marcador de la tabla de
+ * resultados. Todo lo demás (header/footer/watermark/caja de título)
+ * queda intacto, tal como lo dejó el cliente. Idempotente: correrla de
+ * nuevo sobre una plantilla ya migrada simplemente no encuentra el texto
+ * viejo para reemplazar (ambos `replaceText` son no-ops), nunca falla.
+ */
+function migrateOilTemplateFromElectrical_(params, auth) {
+  if (auth.role !== 'Administrador') {
+    return jsonResponse_({ status: 403, message: 'Solo un Administrador puede modificar las plantillas' });
+  }
+  var elecTemplateId = getElectricalTemplateFileId_();
+  if (!elecTemplateId) {
+    return jsonResponse_({ status: 400, message: 'No existe la plantilla Eléctrica todavía — genérala primero desde Administración.' });
+  }
+  var copy = DriveApp.getFileById(elecTemplateId).makeCopy('PLANTILLA_INFORME_ACEITE_' + Date.now());
+  var doc = DocumentApp.openById(copy.getId());
+  var body = doc.getBody();
+  body.replaceText('PROTOCOLO DE PRUEBAS ELÉCTRICAS', TEST_TYPE_PROTOCOL_TITLE_.ACEITE_DIELECTRICO);
+  body.replaceText('<<TABLA_RESULTADOS_ELECTRICOS>>', '<<TABLA_RESULTADOS_ACEITE>>');
+  doc.saveAndClose();
+  var file = DriveApp.getFileById(copy.getId());
+  moveFileToPlantillasFolder_(file);
+  PropertiesService.getScriptProperties().setProperty('TEMPLATE_ACEITE_FILE_ID', copy.getId());
+  return jsonResponse_({
+    status: 200,
+    message: 'Plantilla de Aceite migrada desde la Eléctrica (header/pie/watermark reusados) — la plantilla vieja sigue en Drive, sin borrar, simplemente ya no está en uso.',
+    data: { aceiteUrl: file.getUrl() }
+  });
+}
+
+/**
  * Un solo PDF consolidado (TTR/Devanados/Aislamiento, solo los tipos que
  * fueron ofertados para este equipo) — SOLO se genera desde la acción
  * explícita "Certificar Pruebas Eléctricas" (certifyElectricalReport_),
@@ -5047,6 +5133,572 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
   return saved;
 }
 
+// ---------------------------------------------------------------------------
+// Punto 12, ronda 9 (2026-09-26) — Protocolo único de Aceite Dieléctrico,
+// migrado de "plantilla fija + replaceText" a la misma arquitectura de
+// tabla única que ya usa Eléctrico (regenerateElectricalCombinedReport_):
+// un solo PDF con las secciones REALMENTE activas (1, 2 o 3 de
+// Fisicoquímico/DGA/PCB), header/footer/watermark reusados de la MISMA
+// plantilla ya migrada del Eléctrico (ver migrateOilTemplateFromElectrical_
+// más abajo), firmas + QR de autenticidad con el mismo mecanismo
+// (buildFirmasUnifiedRows_, DOCUMENTOS, verificarInformeElectrico_ — ese
+// último ya era genérico por categoría/transformer_id, nunca exclusivo de
+// Eléctrico pese al nombre). A pedido explícito del usuario: SIN fotos de
+// muestra, y SOLO con los 7 parámetros de Fisicoquímico que YA se
+// capturan hoy (nunca se agregaron campos nuevos al formulario) — la
+// sección "Tendencia histórica" de la referencia visual queda para una
+// ronda aparte (cruza pruebas pasadas del mismo equipo, pieza bastante más
+// grande que el resto de este protocolo).
+// ---------------------------------------------------------------------------
+
+// Ronda 9 (2026-09-26) — HALLAZGO REAL en la verificación en vivo: estas 2
+// tablas (Fisicoquímico/PCB) van a TODO EL ANCHO (outerNestedFullRow_,
+// ~560pt), no emparejadas — un primer intento sumando solo 270pt (mismo
+// total que un bloque emparejado) dejaba la mitad derecha de la página en
+// blanco. Recalculado para sumar ~560pt.
+var OIL_RESULTS_COL_WIDTHS_PT_ = [150, 130, 55, 55, 100, 35, 35];
+// DGA también va a todo el ancho, sin emparejar — mismo criterio, columnas
+// parejas (GAS ocupa cols 0-3 fusionadas, VALOR cols 4-6 fusionadas, ver
+// buildOilDgaRows_) sumando ~560pt.
+var OIL_DGA_COL_WIDTHS_PT_ = [70, 70, 70, 70, 93, 93, 94];
+
+/** Ronda 9 (2026-09-26) — HALLAZGO REAL en la verificación en vivo: con
+ *  las 3 secciones de Aceite activas a la vez (13 secciones numeradas en
+ *  total), el informe desbordaba a 2 páginas por SOLO la fila de firmas
+ *  — mismo síntoma que la saga de la ronda 8 del Eléctrico. Causa
+ *  análoga a la ronda 8i (Sección 1 desperdiciaba espacio): 1 campo por
+ *  fila era el doble de alto de lo necesario. Se empaquetan 2 campos por
+ *  fila (etiqueta|valor|etiqueta|valor en las 7 columnas físicas) — cada
+ *  grilla pasa a la mitad de filas. `fields` es un arreglo de [etiqueta,
+ *  valor]; un número impar de campos deja el último con la mitad derecha
+ *  vacía, nunca un dato inventado. */
+function buildOilDenseInfoRows_(bannerText, fields) {
+  var rows = [unifiedBannerRow_(bannerText)];
+  var merges = [{ startColumnIndex: 1, columnSpan: 2 }, { startColumnIndex: 4, columnSpan: 3 }];
+  for (var i = 0; i < fields.length; i += 2) {
+    var left = fields[i];
+    var right = fields[i + 1] || ['', ''];
+    rows.push(unifiedLabelRow_([left[0], left[1], '', right[0], right[1], '', ''], [0, 3], merges));
+  }
+  rows.colWidths = [45, 30, 30, 45, 40, 40, 40];
+  return rows;
+}
+
+/** Cliente y equipo — igual criterio que Sección 1 del Eléctrico pero SIN
+ *  columna de foto (el equipo de Aceite no necesita la placa nameplate en
+ *  este protocolo — ver Sección de muestra para lo que sí es propio de
+ *  Aceite). Ancho total 270pt (NESTED_HALF_WIDTH_PT_), para emparejarse
+ *  sin "zigzag" con la grilla de Muestra al lado (mismo hallazgo de la
+ *  ronda 8m). */
+function buildOilClientEquipoRows_(site, transformer) {
+  return buildOilDenseInfoRows_('DATOS DEL CLIENTE Y DEL EQUIPO', [
+    ['CLIENTE', site.client_name || '—'],
+    ['NIT', site.nit || '—'],
+    ['CIUDAD', site.ciudad || '—'],
+    ['PROYECTO', site.project_name || '—'],
+    ['FABRICANTE', transformer.manufacturer || '—'],
+    ['N° DE SERIE', transformer.serial_number || '—'],
+    ['POTENCIA NOMINAL', transformer.rated_power_kva ? (String(transformer.rated_power_kva) + ' kVA') : '—'],
+    ['TENSIÓN PRIMARIA', transformer.hv_nominal_voltage ? (String(transformer.hv_nominal_voltage) + ' V') : '—'],
+    ['TENSIÓN SECUNDARIA', transformer.lv_nominal_voltage ? (String(transformer.lv_nominal_voltage) + ' V') : '—'],
+    ['AÑO DE FABRICACIÓN', transformer.manufacture_year ? String(transformer.manufacture_year) : '—']
+  ]);
+}
+
+/** Información de la muestra — mismos 4 campos que ya captura el
+ *  formulario de Aceite hoy (fecha, técnico, muestra tomada por, fecha de
+ *  muestreo) — nunca se inventan campos nuevos (código de muestra, punto
+ *  de muestreo, temperatura del aceite, condiciones ambientales, entidad
+ *  externa) que trae la referencia visual pero que el formulario no
+ *  captura todavía. */
+function buildOilMuestraRows_(testMeta, rawReadings) {
+  return buildOilDenseInfoRows_('INFORMACIÓN DE LA MUESTRA', [
+    ['FECHA DE PRUEBA', fmtDatePdf_(testMeta.created_at)],
+    ['TÉCNICO RESPONSABLE', testMeta.operador_nombre || testMeta.tested_by || '—'],
+    ['MUESTRA TOMADA POR', rawReadings.sample_taken_by || '—'],
+    ['FECHA DE MUESTREO', rawReadings.sample_date ? fmtDatePdf_(rawReadings.sample_date) : '—']
+  ]);
+}
+
+/** Tabla de resultados Fisicoquímico — ENSAYO/MÉTODO/UNIDAD/RESULTADO/
+ *  LÍMITE DE REFERENCIA/ESTADO (ESTADO fusiona las 2 últimas columnas
+ *  físicas para tener más espacio, mismo criterio que Aislamiento/
+ *  Criterios del Eléctrico). ESTADO queda '—' para los 3 parámetros sin
+ *  umbral numérico (Examen visual/Color/Densidad) — nunca CUMPLE/NO
+ *  CUMPLE inventado sin un umbral real detrás. */
+function buildOilFisicoquimicoRows_(rawReadings) {
+  var merges = [{ startColumnIndex: 5, columnSpan: 2 }];
+  var rows = [unifiedBannerRow_('RESULTADOS DEL ANÁLISIS FISICOQUÍMICO')];
+  rows.push(unifiedRow_(['ENSAYO', 'MÉTODO', 'UNIDAD', 'RESULTADO', 'LÍMITE DE REFERENCIA', 'ESTADO', ''], 'header', merges));
+  OIL_FISICOQUIMICO_PARAMS_.forEach(function (p) {
+    var raw = rawReadings[p.key];
+    var v = p.isText ? raw : optionalNumber_(raw);
+    var resultText = p.isText ? (raw || '—') : (v !== undefined ? String(v) : '—');
+    var estado = '—';
+    if (!p.isText && v !== undefined && p.check) estado = p.check(v) ? 'CUMPLE' : 'NO CUMPLE';
+    rows.push(unifiedRow_([p.label, p.metodo, p.unidad, resultText, p.limiteText || '—', estado, ''], 'data', merges));
+  });
+  rows.colWidths = OIL_RESULTS_COL_WIDTHS_PT_;
+  return rows;
+}
+
+/** Interpretación de resultados — construida a partir de los MISMOS
+ *  umbrales ya evaluados en `calculateOilAnalysis_` (nunca un umbral
+ *  nuevo): lista, en español, cuáles parámetros reales quedaron fuera de
+ *  rango. Si ninguno lo está, un párrafo de conformidad. */
+function buildOilFisicoquimicoInterpretacionText_(rawReadings, section) {
+  if (!section || !section.complete && section.verdict === 'Sin datos') {
+    return 'No hay datos suficientes de ningún parámetro fisicoquímico para interpretar el resultado.';
+  }
+  var fueraDeRango = [];
+  OIL_FISICOQUIMICO_PARAMS_.forEach(function (p) {
+    if (p.isText || !p.check) return;
+    var v = optionalNumber_(rawReadings[p.key]);
+    if (v !== undefined && !p.check(v)) fueraDeRango.push(p.label.toLowerCase());
+  });
+  if (fueraDeRango.length === 0) {
+    return 'El aceite dieléctrico presenta valores dentro de los límites de referencia establecidos para los parámetros evaluados, sin evidencia de deterioro significativo de sus propiedades dieléctricas o químicas.';
+  }
+  return 'El aceite dieléctrico presenta valores fuera de los límites de referencia establecidos en ' +
+    joinSpanishList_(fueraDeRango) + '. Estas condiciones pueden indicar deterioro del aceite, pérdida de ' +
+    'sus propiedades dieléctricas o químicas, y un mayor riesgo de fallas por humedad, envejecimiento ' +
+    'acelerado del aislamiento o reducción de la vida útil del transformador.';
+}
+
+/** Recomendaciones Fisicoquímico — texto estándar ligado a la severidad
+ *  YA calculada (1=OK, 2=REQUIERE TERMOVACÍO, 3=REQUIERE REGENERACIÓN/
+ *  CAMBIO — ver calculateOilAnalysis_), nunca a un parámetro puntual —
+ *  mismo criterio que "Objetivo y Alcance" del Eléctrico: texto fijo de
+ *  buena práctica, no un dato medido. */
+function buildOilFisicoquimicoRecomendacionesText_(section) {
+  var v = section ? String(section.verdict || '') : '';
+  if (v.indexOf('REQUIERE REGENERACIÓN') === 0) {
+    return [
+      'Realizar regeneración o cambio del aceite dieléctrico — los valores obtenidos superan el límite ' +
+      'aceptable de acidez o están por debajo del límite de tensión interfacial.',
+      'Evitar la operación prolongada del equipo sin corregir el estado del aceite.',
+      'Una vez finalizado el tratamiento, tomar una nueva muestra y repetir el análisis fisicoquímico.',
+      'Si persisten valores fuera de norma, realizar evaluación complementaria del aceite y del sistema de aislamiento sólido.'
+    ];
+  }
+  if (v.indexOf('REQUIERE TERMOVACÍO') === 0) {
+    return [
+      'Realizar tratamiento de termovacío del aceite dieléctrico para reducir el contenido de humedad y gases disueltos.',
+      'Efectuar filtración y desgasificación con equipos de alta eficiencia.',
+      'Verificar y corregir posibles fuentes de ingreso de humedad (sellos, respiradero, conservador, empaques).',
+      'Una vez finalizado el tratamiento, tomar una nueva muestra y repetir el análisis fisicoquímico.'
+    ];
+  }
+  return [
+    'Mantener la identificación del equipo con su resultado fisicoquímico.',
+    'Conservar la trazabilidad de los análisis realizados.',
+    'Continuar con el programa de mantenimiento y monitoreo del aceite.'
+  ];
+}
+
+/** Criterios de referencia (Fisicoquímico) — tabla estática de los 4
+ *  umbrales REALES ya usados por calculateOilAnalysis_ (nunca un valor
+ *  nuevo) — mismo criterio que "CALIFICACIÓN DAR/IP" del Eléctrico. */
+function buildOilCriteriosReferenciaRows_() {
+  var rows = [unifiedBannerRow_('CRITERIOS DE EVALUACIÓN (REFERENCIA)')];
+  var merges = [{ startColumnIndex: 0, columnSpan: 4 }, { startColumnIndex: 4, columnSpan: 3 }];
+  var header = new Array(UNIFIED_TABLE_COLS_).fill('');
+  header[0] = 'PARÁMETRO'; header[4] = 'LÍMITE DE REFERENCIA';
+  rows.push(unifiedRow_(header, 'header', merges));
+  OIL_FISICOQUIMICO_PARAMS_.filter(function (p) { return p.limiteText; }).forEach(function (p) {
+    var cells = new Array(UNIFIED_TABLE_COLS_).fill('');
+    cells[0] = p.label; cells[4] = p.limiteText;
+    rows.push(unifiedRow_(cells, 'legend', merges));
+  });
+  rows.cellPadding = 0.5;
+  rows.colWidths = CRITERIA_COL_WIDTHS_PT_;
+  return rows;
+}
+
+/** DGA — sin matriz de interpretación automática todavía (decisión ya
+ *  tomada, ver calculateOilAnalysis_: "Solo captura de datos") — la tabla
+ *  solo muestra los valores capturados, sin ESTADO ni veredicto. */
+function buildOilDgaRows_(rawReadings) {
+  var rows = [unifiedBannerRow_('CROMATOGRAFÍA DE GASES DISUELTOS (DGA)')];
+  var merges = [{ startColumnIndex: 0, columnSpan: 4 }, { startColumnIndex: 4, columnSpan: 3 }];
+  rows.push(unifiedRow_(['GAS', '', '', '', 'VALOR (PPM)', '', ''], 'header', merges));
+  OIL_DGA_GASES_.forEach(function (g) {
+    var cells = new Array(UNIFIED_TABLE_COLS_).fill('');
+    cells[0] = g.label; cells[4] = String(numOrDash_(rawReadings[g.key]));
+    rows.push(unifiedRow_(cells, 'data', merges));
+  });
+  var noteCells = new Array(UNIFIED_TABLE_COLS_).fill('');
+  noteCells[0] = 'Método ASTM D3612-02(2017), Método C — solo captura de datos, sin matriz de interpretación automática todavía.';
+  var noteRow = unifiedRow_(noteCells, 'data', [{ startColumnIndex: 0, columnSpan: UNIFIED_TABLE_COLS_ }]);
+  noteRow.fontSizeOverride = 6.5;
+  rows.push(noteRow);
+  rows.colWidths = OIL_DGA_COL_WIDTHS_PT_;
+  return rows;
+}
+
+/** Tabla de resultados PCB — 1 sola fila (Total PCB, suma de los 7
+ *  Aroclores YA calculada por calculateOilAnalysis_) — Método/Límite de
+ *  cuantificación/Incertidumbre son datos FIJOS de la metodología de
+ *  laboratorio (OIL_PCB_METODO_/OIL_PCB_LOQ_PPM_/OIL_PCB_INCERTIDUMBRE_),
+ *  no una medición por muestra — igual criterio que el método ASTM por
+ *  parámetro de Fisicoquímico. */
+function buildOilPcbRows_(section) {
+  var merges = [{ startColumnIndex: 5, columnSpan: 2 }];
+  var rows = [unifiedBannerRow_('RESULTADO DE ANÁLISIS CUANTITATIVO DE PCB')];
+  rows.push(unifiedRow_(['PARÁMETRO', 'MÉTODO', 'UNIDAD', 'RESULTADO', 'LÍMITE / INCERTIDUMBRE', 'ESTADO', ''], 'header', merges));
+  var contaminado = section.totalPcbPpm >= section.limitePpm;
+  var limiteText = '< ' + section.limitePpm + ' ppm  ·  ' + OIL_PCB_INCERTIDUMBRE_;
+  rows.push(unifiedRow_([
+    'Bifenilos Policlorados (PCB)', OIL_PCB_METODO_, 'ppm (mg/kg)', section.totalPcbPpm.toFixed(2),
+    limiteText, contaminado ? 'NO CUMPLE' : 'CUMPLE', ''
+  ], 'data', merges));
+  rows.colWidths = OIL_RESULTS_COL_WIDTHS_PT_;
+  return rows;
+}
+
+/** Clasificación regulatoria real (Res. 0222 de 2011) — tabla estática,
+ *  ver OIL_PCB_CLASIFICACION_. La fila que corresponde al resultado real
+ *  se resalta (mismo criterio visual que un veredicto). */
+function buildOilPcbClasificacionRows_(section) {
+  var rows = [unifiedBannerRow_('CLASIFICACIÓN — RESOLUCIÓN 0222 DE 2011 (MINAMBIENTE)')];
+  rows[0].fontSizeOverride = 8;
+  var merges = [{ startColumnIndex: 0, columnSpan: 2 }, { startColumnIndex: 2, columnSpan: 2 }, { startColumnIndex: 4, columnSpan: 3 }];
+  var header = unifiedRow_(['CONCENTRACIÓN', '', 'CLASIFICACIÓN', '', 'DESCRIPCIÓN', '', ''], 'header', merges);
+  header.fontSizeOverride = 6.5;
+  rows.push(header);
+  OIL_PCB_CLASIFICACION_.forEach(function (band) {
+    var cells = [band.rango + ' ppm', '', band.clasificacion, '', band.descripcion, '', ''];
+    var row = unifiedRow_(cells, 'legend', merges);
+    row.fontSizeOverride = 6;
+    rows.push(row);
+  });
+  rows.cellPadding = 0.5;
+  rows.colWidths = CRITERIA_COL_WIDTHS_PT_;
+  return rows;
+}
+
+/** Interpretación técnica PCB — construida a partir del resultado real
+ *  (`section.totalPcbPpm`) contra las bandas REALES de
+ *  OIL_PCB_CLASIFICACION_, nunca un umbral inventado. */
+function buildOilPcbInterpretacionText_(section) {
+  var ppm = section.totalPcbPpm;
+  var clasif = ppm < 50 ? 'NO PCB' : (ppm < 500 ? 'PCB - Grupo 3' : (ppm < 100000 ? 'PCB - Grupo 2' : 'PCB - Grupo 1'));
+  if (clasif === 'NO PCB') {
+    return 'El resultado obtenido de ' + ppm.toFixed(2) + ' ppm de PCB en el aceite dieléctrico indica que el ' +
+      'equipo se clasifica como NO PCB, de acuerdo con la Resolución 0222 de 2011, al presentar una ' +
+      'concentración inferior a 50 ppm. No se evidencia presencia significativa de PCB en el aceite ' +
+      'analizado, y el equipo puede continuar en operación, manteniendo las medidas de gestión y control ' +
+      'establecidas en el programa ambiental de la empresa.';
+  }
+  return 'El resultado obtenido de ' + ppm.toFixed(2) + ' ppm de PCB en el aceite dieléctrico clasifica el ' +
+    'equipo como ' + clasif + ', de acuerdo con la Resolución 0222 de 2011, al superar el límite de 50 ppm. ' +
+    'Se recomienda activar la gestión ambiental correspondiente y evitar la manipulación no controlada del ' +
+    'aceite hasta definir su disposición conforme a la normatividad aplicable.';
+}
+
+/** Recomendaciones PCB — texto estándar ligado al resultado (contaminado/
+ *  no contaminado), mismo criterio que Fisicoquímico. */
+function buildOilPcbRecomendacionesText_(section) {
+  var contaminado = section.totalPcbPpm >= section.limitePpm;
+  if (contaminado) {
+    return [
+      'Activar la gestión ambiental correspondiente según la Resolución 0222 de 2011.',
+      'Evitar la manipulación no controlada del aceite.',
+      'Identificar el equipo en el inventario de equipos con PCB.',
+      'Consultar los procedimientos de manejo, almacenamiento, transporte y disposición final con un gestor autorizado, según la normatividad aplicable.'
+    ];
+  }
+  return [
+    'Mantener la identificación del equipo con su resultado de PCB.',
+    'Conservar la trazabilidad de los análisis realizados.',
+    'Continuar con el programa de mantenimiento y monitoreo del aceite.',
+    'Gestionar el equipo conforme a los procedimientos ambientales de la empresa.'
+  ];
+}
+
+/** Ancho (pt) de una tabla anidada a todo el ancho de página (7 columnas
+ *  parejas sumando ~560pt, igual total que SECTION1_THREE_COL_WIDTHS_PT_/
+ *  SECTION12_FIVE_COL_WIDTHS_PT_) — para bloques de una sola celda
+ *  fusionada que NUNCA van emparejados con nada al lado (Recomendaciones,
+ *  Conclusión General de Aceite). Un bloque fusionado no muestra
+ *  columnas visibles, así que la proporción individual no importa, solo
+ *  la SUMA total (por eso 7 valores iguales). */
+var OIL_FULL_WIDTH_COLS_PT_ = [80, 80, 80, 80, 80, 80, 80];
+
+/** Bloque de texto (interpretación o recomendaciones) dentro de la tabla
+ *  única — una sola celda fusionada, igual criterio que "Objetivo y
+ *  Alcance"/"Observaciones" del Eléctrico. `lines` puede ser un string
+ *  (párrafo) o un arreglo (lista numerada, unida con saltos de línea
+ *  reales dentro de la misma celda). `fullWidth` (default false): true
+ *  cuando este bloque va SOLO a todo el ancho (Recomendaciones) — ronda 9
+ *  encontró en la verificación en vivo que reusar el ancho de 270pt
+ *  (pensado para ir emparejado, como Interpretación con Criterios) en un
+ *  bloque de ancho completo dejaba una mitad de la página en blanco. */
+function buildOilTextBlockRows_(bannerText, lines, fullWidth) {
+  var rows = [unifiedBannerRow_(bannerText)];
+  var fullMerge = [{ startColumnIndex: 0, columnSpan: UNIFIED_TABLE_COLS_ }];
+  var text = Array.isArray(lines) ? lines.map(function (l, i) { return (i + 1) + '. ' + l; }).join('\n') : lines;
+  var cells = new Array(UNIFIED_TABLE_COLS_).fill('');
+  cells[0] = text;
+  rows.push(unifiedRow_(cells, 'data', fullMerge));
+  rows.colWidths = fullWidth ? OIL_FULL_WIDTH_COLS_PT_ : TTR_WINDING_COL_WIDTHS_PT_;
+  return rows;
+}
+
+/** Conclusión general — mismo tratamiento visual que buildConclusionRows_
+ *  del Eléctrico (celda única, coloreada), pero SIN asumir que "aprobado"
+ *  siempre empieza con el texto "APROBADO": los veredictos reales de
+ *  Aceite incluyen "No contaminado" (PCB), "APROBADO (datos parciales)"
+ *  (Fisicoquímico), o "REGISTRADO" (solo DGA) — se usa verdictColor_, que
+ *  YA clasifica cualquiera de estos correctamente. Va a todo el ancho
+ *  (nunca emparejada — a diferencia de la del Eléctrico, que siempre va
+ *  al lado de Observaciones), por eso usa OIL_FULL_WIDTH_COLS_PT_, no
+ *  TTR_WINDING_COL_WIDTHS_PT_. */
+function buildOilConclusionRows_(overallVerdict) {
+  var rows = [unifiedBannerRow_('CONCLUSIÓN GENERAL')];
+  var cells = new Array(UNIFIED_TABLE_COLS_).fill('');
+  cells[0] = String(overallVerdict || '—');
+  var row = unifiedRow_(cells, 'legend', [{ startColumnIndex: 0, columnSpan: UNIFIED_TABLE_COLS_ }]);
+  var vcolors = verdictColor_(overallVerdict);
+  row.coloredCols = [{ col: 0, bg: vcolors.bg, fg: vcolors.text }];
+  row.fontSizeOverride = 9;
+  rows.push(row);
+  rows.colWidths = OIL_FULL_WIDTH_COLS_PT_;
+  return rows;
+}
+
+/** Protocolo único de Aceite Dieléctrico — reemplaza generateOilTestReportPdf_
+ *  (ronda 9, 2026-09-26). Mismo criterio de "tabla única" que
+ *  regenerateElectricalCombinedReport_: 1, 2 o 3 secciones (Fisicoquímico/
+ *  DGA/PCB) según qué esté realmente activo, reusando la MISMA plantilla
+ *  con header/footer/watermark ya migrados (ver
+ *  migrateOilTemplateFromElectrical_) y el MISMO mecanismo de firmas+QR
+ *  de autenticidad (buildFirmasUnifiedRows_/DOCUMENTOS/
+ *  verificarInformeElectrico_ — genérico por categoría, nunca exclusivo
+ *  de Eléctrico pese al nombre). `rawReadings`/`calculated`/`testMeta`
+ *  traen exactamente la misma forma que ya arma certifyTest_. */
+function regenerateOilCombinedReport_(transformer, site, rawReadings, calculated, testMeta, folderId) {
+  var templateId = getOilTemplateFileId_();
+  if (!templateId) throw new Error('No existe la plantilla del informe de aceite — genera las plantillas primero desde Administración.');
+
+  var copy = DriveApp.getFileById(templateId).makeCopy('tmp_informe_aceite_' + Date.now());
+  var doc = DocumentApp.openById(copy.getId());
+  var body = doc.getBody();
+
+  var n = 1;
+  var outerRows = [];
+  var sections = calculated.sections || {};
+
+  outerRows.push(outerNestedPairRow_(
+    numberSection_(buildOilClientEquipoRows_(site, transformer), n++),
+    numberSection_(buildOilMuestraRows_(testMeta, rawReadings), n++)
+  ));
+
+  if (sections.fisicoquimico) {
+    var fq = sections.fisicoquimico;
+    var fqRows = numberSection_(buildOilFisicoquimicoRows_(rawReadings), n++);
+    fqRows.push(nestedVerdictRow_('Veredicto Fisicoquímico', fq.verdict));
+    outerRows.push(outerNestedFullRow_(fqRows));
+
+    outerRows.push(outerNestedPairRow_(
+      numberSection_(buildOilTextBlockRows_('INTERPRETACIÓN DE RESULTADOS', buildOilFisicoquimicoInterpretacionText_(rawReadings, fq)), n++),
+      numberSection_(buildOilCriteriosReferenciaRows_(), n++)
+    ));
+    outerRows.push(outerNestedFullRow_(numberSection_(buildOilTextBlockRows_('RECOMENDACIONES', buildOilFisicoquimicoRecomendacionesText_(fq), true), n++)));
+  }
+
+  if (sections.dga) {
+    outerRows.push(outerNestedFullRow_(numberSection_(buildOilDgaRows_(rawReadings), n++)));
+  }
+
+  if (sections.pcb) {
+    var pcb = sections.pcb;
+    var pcbRows = numberSection_(buildOilPcbRows_(pcb), n++);
+    pcbRows.push(nestedVerdictRow_('Veredicto PCB', pcb.verdict));
+    outerRows.push(outerNestedFullRow_(pcbRows));
+
+    outerRows.push(outerNestedPairRow_(
+      numberSection_(buildOilPcbClasificacionRows_(pcb), n++),
+      numberSection_(buildOilTextBlockRows_('INTERPRETACIÓN TÉCNICA', buildOilPcbInterpretacionText_(pcb)), n++)
+    ));
+    outerRows.push(outerNestedFullRow_(numberSection_(buildOilTextBlockRows_('RECOMENDACIONES', buildOilPcbRecomendacionesText_(pcb), true), n++)));
+  }
+
+  // Ronda 9c/9d (2026-09-26) — HALLAZGO REAL confirmado por el usuario con
+  // el PDF real: cuando el protocolo se va a 2 páginas (los 3 análisis a
+  // la vez — caso raro, según el usuario), la fila de FIRMAS quedaba
+  // PARTIDA entre la página 1 y la 2 — Docs renderiza el texto de esa
+  // fila en la página 1 (montado sobre el pie de página) y las imágenes
+  // (firma/QR) en la página 2 (montadas sobre el encabezado) — mismo bug
+  // ya documentado en la ronda 6 del Eléctrico para filas con imágenes
+  // que no caben enteras, nunca antes disparado en Aceite porque hasta
+  // ahora nunca había desbordado a 2 páginas. Unir Conclusión+Firmas en
+  // una sola tabla anidada (intento de la ronda 9c) NO alcanzó — Docs
+  // sigue partiendo fila por fila DENTRO de esa tabla igual. El usuario
+  // pidió explícitamente resolverlo separando estas 2 secciones a su
+  // propia página cuando son los 3 análisis — la única forma real de
+  // lograr esto con DocumentApp es un salto de página EXPLÍCITO
+  // (`body.insertPageBreak`), que solo puede ir a nivel de BODY, nunca
+  // dentro de una tabla — así que esto exige una SEGUNDA tabla externa
+  // separada (ver más abajo, `isTripleCase`), no una fila más de la
+  // misma. En cualquier otro caso (1 o 2 secciones — la gran mayoría,
+  // según el usuario) todo sigue en una sola tabla continua, sin cambios.
+  var isTripleCase = !!(sections.fisicoquimico && sections.dga && sections.pcb);
+  var verificationId = generateId_();
+  var verificationUrl = ScriptApp.getService().getUrl() + '?verificar=' + verificationId;
+  var qrBlob = getQrCodeBlob_(verificationUrl);
+  var probadoPorNombre = testMeta.operador_nombre || testMeta.tested_by || '—';
+
+  var conclusionRows = numberSection_(buildOilConclusionRows_(calculated.overallVerdict), n++);
+  var firmaRows = numberSection_(buildFirmasUnifiedRows_(
+    { nombre: probadoPorNombre, fecha: testMeta.created_at },
+    { nombre: ENGINEER_SIGNATURE_NAME_, fecha: testMeta.revisado_at }
+  ), n++);
+  var conclusionAndFirmaRows = conclusionRows.concat(firmaRows);
+  // Ronda 8m ya había encontrado esto mismo con `criteriaRows`: `concat()`
+  // devuelve un arreglo NUEVO que no hereda `colWidths` de los originales
+  // — se vuelve a poner a mano. El de Firmas (566pt, 5 columnas físicas
+  // reales) se preserva porque SÍ importan sus proporciones internas; el
+  // de Conclusión no (es una sola celda fusionada, cualquier reparto de
+  // columnas se ve igual).
+  conclusionAndFirmaRows.colWidths = SECTION12_FIVE_COL_WIDTHS_PT_;
+  var conclusionAndFirmaRow = outerNestedFullRow_(conclusionAndFirmaRows, function (nestedTable) {
+    // Ronda 9g/9h (2026-09-26) — 2 intentos con un párrafo vacío entre el
+    // salto de página y esta tabla (`setSpacingBefore`, después
+    // `setFontSize` para el alto de línea) NO tuvieron efecto — Google
+    // Docs colapsa/ignora cualquier párrafo de solo espacio en blanco
+    // justo antes de una tabla. Un 3er intento (padding en la celda del
+    // banner "CONCLUSIÓN GENERAL") sí bajó la tabla, pero dejó una caja
+    // azul vacía fea encima del texto (el padding se ve con el MISMO
+    // fondo de color de la celda, ver captura real). El espacio en
+    // blanco tiene que vivir en la celda EXTERIOR (blanca, sin fondo) que
+    // contiene esta tabla anidada, no dentro de la celda de color —
+    // `nestedTable.getParent()` es esa celda exterior (la de la tabla
+    // MAESTRA, la misma que ya se deja con padding 0 en
+    // `zeroOuterCellPadding_` — acá se le agrega el padding de vuelta,
+    // solo arriba, solo para esta tabla puntual).
+    if (isTripleCase) {
+      var outerCell = nestedTable.getParent().asTableCell();
+      outerCell.setPaddingTop(57);
+    }
+    // Firmas ya no empieza en la fila 0 de esta tabla anidada — Conclusión
+    // ocupa las filas 0 (banner) y 1 (dato); Firmas pasa a 2 (banner), 3
+    // (encabezado), 4 (dato) — antes, sola en su propia tabla, la fila de
+    // dato estaba en el índice 2.
+    var dataRowRef = nestedTable.getRow(4);
+    for (var fc = 0; fc < dataRowRef.getNumCells(); fc++) {
+      dataRowRef.getCell(fc).setVerticalAlignment(DocumentApp.VerticalAlignment.CENTER);
+    }
+    function fillNameDateCell_(cell, nombre, fecha) {
+      var nameLine = cell.appendParagraph(nombre || '—');
+      nameLine.editAsText().setBold(true).setFontSize(10).setFontFamily(PROTOCOL_FONT_FAMILY_);
+      nameLine.setAlignment(DocumentApp.HorizontalAlignment.CENTER).setSpacingBefore(0).setSpacingAfter(0).setLineSpacing(1);
+      var dateLine = cell.appendParagraph(fmtDatePdf_(fecha));
+      dateLine.editAsText().setFontSize(8).setForegroundColor(PDF_COLORS_.TEXT_MUTED).setFontFamily(PROTOCOL_FONT_FAMILY_);
+      dateLine.setAlignment(DocumentApp.HorizontalAlignment.CENTER).setSpacingBefore(0).setSpacingAfter(0).setLineSpacing(1);
+      if (cell.getNumChildren() > 2 && cell.getChild(0).getType() === DocumentApp.ElementType.PARAGRAPH && cell.getChild(0).asParagraph().getText() === '') {
+        cell.removeChild(cell.getChild(0));
+      }
+    }
+    fillNameDateCell_(dataRowRef.getCell(0), probadoPorNombre, testMeta.created_at);
+    fillNameDateCell_(dataRowRef.getCell(1), ENGINEER_SIGNATURE_NAME_, testMeta.revisado_at);
+
+    var sigCell = dataRowRef.getCell(2);
+    var engineerBlob = getEngineerSignatureBlob_();
+    if (engineerBlob) {
+      var simg = sigCell.appendImage(engineerBlob);
+      var sratio = simg.getHeight() / simg.getWidth();
+      simg.setWidth(80);
+      simg.setHeight(Math.round(80 * sratio));
+      simg.getParent().asParagraph().setAlignment(DocumentApp.HorizontalAlignment.CENTER);
+    }
+    var snameLine = sigCell.appendParagraph(ENGINEER_SIGNATURE_NAME_);
+    snameLine.editAsText().setBold(true).setFontSize(10).setFontFamily(PROTOCOL_FONT_FAMILY_);
+    snameLine.setAlignment(DocumentApp.HorizontalAlignment.CENTER).setSpacingBefore(0).setSpacingAfter(0).setLineSpacing(1);
+    var stitleLine = sigCell.appendParagraph(ENGINEER_SIGNATURE_TITLE_);
+    stitleLine.editAsText().setFontSize(8).setForegroundColor(PDF_COLORS_.TEXT_MUTED).setFontFamily(PROTOCOL_FONT_FAMILY_);
+    stitleLine.setAlignment(DocumentApp.HorizontalAlignment.CENTER).setSpacingBefore(0).setSpacingAfter(0).setLineSpacing(1);
+
+    var qrImgCell = dataRowRef.getCell(3);
+    if (qrBlob) {
+      var qimg = qrImgCell.appendImage(qrBlob);
+      qimg.setWidth(100);
+      qimg.setHeight(100);
+      qimg.getParent().asParagraph().setAlignment(DocumentApp.HorizontalAlignment.CENTER);
+    } else {
+      var noQr = qrImgCell.appendParagraph('—');
+      noQr.setAlignment(DocumentApp.HorizontalAlignment.CENTER).setSpacingBefore(0).setSpacingAfter(0).setLineSpacing(1);
+    }
+  });
+
+  var tablePlaceholderPar = findMarkerParagraph_(body, '<<TABLA_RESULTADOS_ACEITE>>');
+  if (!tablePlaceholderPar) throw new Error('La plantilla de Aceite no tiene el marcador de la tabla de resultados — corre "Migrar plantilla de Aceite" desde Administración.');
+
+  var tableResults = [];
+  if (isTripleCase) {
+    // Tabla 1: todo hasta Recomendaciones de PCB (sin Conclusión/Firmas).
+    var mainResult = insertOuterResultsTable_(body, tablePlaceholderPar, outerRows);
+    body.removeChild(tablePlaceholderPar);
+    tableResults.push(mainResult);
+
+    // Salto de página EXPLÍCITO (a pedido del usuario, solo para este
+    // caso raro) + Tabla 2: Conclusión + Firmas, arrancando limpias en la
+    // página siguiente — nunca más partidas a la mitad. `insertPageBreak`
+    // es a nivel BODY, después de la tabla 1 (que termina justo antes del
+    // marcador que se acaba de borrar); se necesita un marcador temporal
+    // nuevo para poder reusar insertOuterResultsTable_ tal cual.
+    var pageBreakIndex = body.getChildIndex(mainResult.table) + 1;
+    body.insertPageBreak(pageBreakIndex);
+    // Ronda 9e/9f (2026-09-26) — 2 intentos de agregar un párrafo de
+    // separación ENTRE el salto de página y la tabla (spacingBefore,
+    // luego fontSize de línea) no funcionaron — ver el porqué en el
+    // comentario de `conclusionAndFirmaRow` más arriba: el ~1cm pedido se
+    // aplica ahí, como padding de la celda del banner, no acá.
+    var tailMarkerPar = body.insertParagraph(pageBreakIndex + 1, '<<TABLA_ACEITE_CIERRE>>');
+    tailMarkerPar.editAsText().setFontSize(1);
+    var tailResult = insertOuterResultsTable_(body, tailMarkerPar, [conclusionAndFirmaRow]);
+    body.removeChild(tailMarkerPar);
+    // Ronda 9k (2026-09-26) — a pedido explícito del usuario, confirmado
+    // con el PDF real: se veía un rectángulo gris (el borde de ESTA
+    // tabla EXTERNA, la de cierre) con el lado de arriba montado sobre
+    // el encabezado — como esta tabla externa solo tiene 1 fila (la de
+    // Conclusión+Firmas), su borde completo queda pegado arriba de esa
+    // única fila, antes del padding de separación. La tabla anidada de
+    // adentro (la que de verdad importa visualmente — las cajas de
+    // "CONCLUSIÓN GENERAL"/"ÁREA DE CONTROL DE CALIDAD") ya tiene su
+    // propio borde, así que quitarle el borde a esta envolvente no
+    // pierde nada.
+    tailResult.table.setBorderWidth(0);
+    tableResults.push(tailResult);
+  } else {
+    outerRows.push(conclusionAndFirmaRow);
+    var singleResult = insertOuterResultsTable_(body, tablePlaceholderPar, outerRows);
+    body.removeChild(tablePlaceholderPar);
+    tableResults.push(singleResult);
+  }
+
+  var fileName = 'Informe_Aceite_' + transformer.serial_number + '_' + fmtTimestampForFilename_(new Date());
+  var saved = finalizeReportPdf_(doc, folderId, fileName, tableResults.map(function (tr) {
+    return { outerMarkerText: tr.outerMarkerText, outerMergeSpecs: tr.outerMergeSpecs, nestedRegistry: tr.nestedRegistry };
+  }));
+
+  appendRow_('DOCUMENTOS', {
+    id: verificationId,
+    site_id: transformer.site_id,
+    category: 'CERTIFICADOS',
+    file_name: fileName,
+    file_id: saved.fileId,
+    mime_type: 'application/pdf',
+    uploaded_by: probadoPorNombre,
+    created_at: new Date().toISOString(),
+    transformer_id: transformer.id,
+    verdict: calculated.overallVerdict,
+    certified_by: ENGINEER_SIGNATURE_NAME_
+  });
+
+  return saved;
+}
+
 /** Aceite dieléctrico — plantilla distinta: datos de muestra en vez de
  *  instrumento de M&A, solo las secciones activas
  *  (fisicoquimico_realizado/dga_realizado/pcb_realizado). Reescrita
@@ -5054,7 +5706,10 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
  *  plantilla de Aceite, resuelve qué de las 3 secciones + el bloque de
  *  adjunto sobreviven, y reemplaza placeholders — a diferencia del
  *  Eléctrico, las 3 tablas de Aceite son de tamaño fijo, así que no hace
- *  falta insertar filas, solo reemplazar celdas de VALOR. */
+ *  falta insertar filas, solo reemplazar celdas de VALOR.
+ *  ** REEMPLAZADA por regenerateOilCombinedReport_ (ronda 9, 2026-09-26)
+ *  — se deja sin borrar por ahora, sin llamadores, hasta confirmar en
+ *  vivo que la nueva función cubre todos los casos. */
 function generateOilTestReportPdf_(transformer, site, rawReadings, calculated, testMeta, folderId) {
   var templateId = getOilTemplateFileId_();
   if (!templateId) throw new Error('No existe la plantilla del informe de aceite — genera las plantillas primero desde Administración.');
@@ -5153,10 +5808,17 @@ function finalizeReportPdf_(doc, folderId, fileName, unifiedTableMerge) {
   var footer = doc.getFooter();
   if (footer) footer.replaceText('<<FECHA_GENERACION>>', fmtDatePdf_(new Date().toISOString()));
   doc.saveAndClose();
-  if (unifiedTableMerge) {
-    try { applyOuterAndNestedMerges_(doc.getId(), unifiedTableMerge.outerMarkerText, unifiedTableMerge.outerMergeSpecs, unifiedTableMerge.nestedRegistry); }
+  // Ronda 9c (2026-09-26) — Aceite, caso de los 3 análisis a la vez:
+  // `unifiedTableMerge` puede venir como un ARREGLO (más de una tabla
+  // externa en el mismo documento, ver regenerateOilCombinedReport_ — un
+  // salto de página forzado entre "Conclusión + Firmas" y el resto exige
+  // 2 tablas externas separadas, no 1 continua) — Eléctrico sigue
+  // pasando un solo objeto, sin cambios.
+  var merges = Array.isArray(unifiedTableMerge) ? unifiedTableMerge : (unifiedTableMerge ? [unifiedTableMerge] : []);
+  merges.forEach(function (m) {
+    try { applyOuterAndNestedMerges_(doc.getId(), m.outerMarkerText, m.outerMergeSpecs, m.nestedRegistry); }
     catch (mergeErr) { /* No relanzar — el PDF igual se genera, solo sin fusionar celdas. */ }
-  }
+  });
   try { pinResultsTableHeaders_(doc.getId()); } catch (pinErr) { /* No relanzar — el PDF igual se genera sin encabezado repetido. */ }
   var docFile = DriveApp.getFileById(doc.getId());
   var pdfBlob = docFile.getAs('application/pdf').setName(fileName + '.pdf');
@@ -6029,6 +6691,7 @@ var POST_ACTIONS = {
   removeElectricalTemplateBakedSignature: removeElectricalTemplateBakedSignature_,
   compactElectricalTemplateTitleBox: compactElectricalTemplateTitleBox_,
   setReportTemplatesPageSize: setReportTemplatesPageSize_,
+  migrateOilTemplateFromElectrical: migrateOilTemplateFromElectrical_,
   rejectTest: rejectTest_,
   updateTestDraft: updateTestDraft_,
   uploadDocument: uploadDocument_,

@@ -4203,3 +4203,128 @@ párrafos cada vez que el documento se reabre) — implementarlo a ciegas
 habría reintroducido ese bug. Subir el margen a 50pt (más de 4x el 6mm/
 17pt actual) muy probablemente desbordaría a 2 páginas de nuevo, dado lo
 ajustado que ya queda el documento. No se tocó nada de esto.
+
+## Punto 12 (2026-09-26) — Protocolo único de Aceite Dieléctrico (ronda 9)
+
+A pedido explícito del usuario, con 2 referencias visuales reales (un
+protocolo de PCB y uno de Fisicoquímico): reconstruir el informe de
+Aceite Dieléctrico para que se vea "parecido al de Pruebas [Eléctrico]"
+— mismo header/pie/watermark, mismo nivel de detalle (tabla de
+resultados con método/límite/estado, interpretación, criterios de
+referencia, recomendaciones, conclusión, firmas con QR) — pero **sin**
+fotos de muestra (a diferencia de las referencias, que sí las traían).
+
+**Decisiones de alcance, confirmadas explícitamente con el usuario antes
+de construir:**
+- Solo los 7 parámetros de Fisicoquímico que YA captura el formulario
+  hoy (agua, rigidez, tensión interfacial, acidez, densidad, color,
+  examen visual) — las referencias visuales traían Viscosidad/Factor de
+  potencia/Contenido de inhibidor/Contenido de sedimentos/Apariencia,
+  que el usuario decidió NO agregar todavía al formulario de captura.
+- La sección "Tendencia histórica" (gráficas año por año cruzando
+  pruebas pasadas del mismo equipo) queda para una ronda aparte — pieza
+  bastante más grande, necesita cruzar el historial de pruebas.
+- QR de autenticidad SIEMPRE presente (uniforme con Eléctrico), aunque
+  una de las 2 referencias no lo traía (traía un cintillo publicitario
+  en su lugar) — decisión explícita del usuario ("QR siempre, uniforme").
+
+**Arquitectura**: se migra de "plantilla fija + `body.replaceText()`"
+(que tenía `generateOilTestReportPdf_`/`buildOilTemplateDoc_`, ambas
+**reemplazadas, no borradas** — sin llamadores desde esta ronda) a la
+MISMA arquitectura de tabla única que ya usa Eléctrico
+(`regenerateOilCombinedReport_`, `buildOil*Rows_`): 1, 2 o 3 secciones
+(Fisicoquímico/DGA/PCB) según qué esté realmente activo, cada una banner
++ tabla + interpretación + criterios + recomendaciones + veredicto,
+reusando `unifiedRow_`/`styleUnifiedCell_`/`outerNestedFullRow_`/
+`outerNestedPairRow_`/`insertOuterResultsTable_`/
+`applyOuterAndNestedMerges_` tal cual, sin duplicar nada.
+
+**Plantilla reusada, no reconstruida desde cero**: en vez de rehacer el
+header/pie/watermark de Aceite a mano (nunca los había tenido bien
+puestos), `migrateOilTemplateFromElectrical_` (acción admin, correrla
+una sola vez) **copia la plantilla ELÉCTRICA ya migrada** (con su
+watermark/header/pie agregados a mano por el cliente, y su caja de
+título CÓDIGO/VERSIÓN/FECHA/PÁGINA ya restructurada) y solo le cambia 2
+textos: el título (`body.replaceText('PROTOCOLO DE PRUEBAS ELÉCTRICAS',
+'PROTOCOLO DE ANÁLISIS DE ACEITE DIELÉCTRICO')`) y el marcador de la
+tabla de resultados (`<<TABLA_RESULTADOS_ELECTRICOS>>` →
+`<<TABLA_RESULTADOS_ACEITE>>`). Guarda el nuevo file id en
+`TEMPLATE_ACEITE_FILE_ID` — la plantilla vieja queda intacta en Drive,
+simplemente deja de estar en uso. **Si se vuelve a correr esta acción,
+apunta a otra copia nueva de la Eléctrica** — el link de "ver plantilla
+de Aceite" en Administración cambia cada vez que se corre, algo a tener
+en cuenta si alguna vez hay que rehacerla.
+
+**Datos fijos vs. inventados** — mismo criterio que todo el proyecto:
+los métodos ASTM por parámetro (ya existían en la plantilla vieja,
+reusados tal cual: D1533-20 agua, D1816-12 rigidez, D971-20 tensión,
+D974-22 acidez, D1298-12b densidad, D1500-24 color, D1524-15 examen
+visual) y el método de PCB (`OIL_PCB_METODO_` = "EPA 8082 (por GC-ECD)",
+LOQ 0.5 ppm, incertidumbre ±10% — de la referencia visual del usuario,
+reemplazando el "ASTM D4059-00(2018)" de la nota vieja) son datos FIJOS
+de la metodología de laboratorio, no una medición por muestra — igual
+que "Instrumento: Megger TTR300" en Eléctrico. La tabla de clasificación
+PCB (Resolución 0222 de 2011, `OIL_PCB_CLASIFICACION_`) es regulación
+pública real, con el mismo primer corte (50ppm) que ya usaba
+`OIL_PCB_LIMITE_PPM` desde antes de esta ronda — nunca un umbral
+inventado. Los ENSAYOS sin umbral numérico (Examen visual/Color/
+Densidad) muestran ESTADO "—", nunca un CUMPLE/NO CUMPLE fabricado.
+`verdictCellColor_` se extendió para reconocer "CUMPLE"/"NO CUMPLE"
+(antes solo APROBADO/RECHAZADO/MALO/BUENO/etc. — terminología nueva,
+propia de Aceite).
+
+**El caso raro de los 3 análisis a la vez — 4 rondas de ajuste real,
+cada una verificada con un PDF real antes de seguir:**
+1. Con los 3 activos (13 secciones numeradas), el documento desborda a
+   2 páginas — la fila de FIRMAS quedaba PARTIDA entre página 1 y 2
+   (Docs dibuja el texto en la página 1, montado sobre el pie de
+   página, y las imágenes —firma/QR— en la página 2, montadas sobre el
+   encabezado — mismo bug de la ronda 6 del Eléctrico para filas con
+   imágenes que no caben enteras, nunca antes disparado en Aceite
+   porque nunca había desbordado a 2 páginas). Unir Conclusión+Firmas
+   en una sola tabla anidada (para que Docs las mueva juntas) NO
+   alcanzó — Docs sigue partiendo fila por fila DENTRO de esa tabla
+   igual.
+2. El usuario pidió, explícitamente, separar Conclusión+Firmas a su
+   propia página 2 cuando son los 3 análisis — la única forma real con
+   DocumentApp es un salto de página EXPLÍCITO
+   (`body.insertPageBreak`), que solo existe a nivel BODY, nunca dentro
+   de una tabla — exige una SEGUNDA tabla externa separada
+   (`isTripleCase`), no una fila más de la misma. `finalizeReportPdf_`
+   se generalizó para aceptar un ARREGLO de `unifiedTableMerge` (antes
+   un solo objeto) porque ahora puede haber más de 1 tabla externa en
+   el mismo documento — Eléctrico sigue pasando un objeto suelto, sin
+   cambios para él.
+3. La tabla de cierre quedaba pegada al encabezado de la página 2 — 2
+   intentos con un párrafo de separación (`setSpacingBefore(28)`,
+   después `setFontSize(24)` de alto de línea) **NO tuvieron ningún
+   efecto**, confirmado con 2 PDFs reales pixel-idénticos: Google Docs
+   colapsa/ignora cualquier párrafo de solo espacio en blanco
+   INMEDIATAMENTE antes de una tabla, sin importar spacing o tamaño de
+   fuente. Lo que sí funcionó: padding real de celda (geometría de
+   tabla, no un párrafo). Un primer intento puso el padding en la celda
+   del BANNER "CONCLUSIÓN GENERAL" (color) — subió la tabla, pero dejó
+   una caja de color vacía fea encima del texto. Se corrigió aplicando
+   el padding a la celda EXTERIOR blanca que contiene la tabla anidada
+   (`nestedTable.getParent().asTableCell()`), no a la celda de color de
+   adentro — así el espacio en blanco se ve como espacio en blanco de
+   verdad. Ajustado a pedido del usuario de 1cm (28pt) a 2cm (57pt).
+4. Con el padding ya puesto, apareció un rectángulo gris (el borde de
+   la tabla EXTERNA de cierre — como solo tiene 1 fila, su borde
+   completo queda pegado arriba de esa fila, antes del padding,
+   montado sobre el encabezado). Se quita con
+   `tailResult.table.setBorderWidth(0)` — el borde visual que de
+   verdad importa (las cajas de "CONCLUSIÓN GENERAL"/"ÁREA DE CONTROL
+   DE CALIDAD") lo sigue dando la tabla ANIDADA de adentro, intacta.
+
+**Verificado de punta a punta con datos reales** (sitios/transformadores
+demo creados y borrados en cada ronda, nunca tocando los 13
+clientes/proyectos reales): Fisicoquímico solo → 1 página. Fisicoquímico
++ PCB (el caso más común, según el usuario) → 1 página. Los 3 a la vez
+(caso raro) → 2 páginas, Conclusión+Firmas limpias en la página 2 sin
+invadir encabezado ni pie. QR escaneable y página de verificación
+funcionando en los 3 casos — mismo mecanismo genérico de
+`verificarInformeElectrico_`, sin cambios ahí (ya validaba por
+`category`/`transformer_id`, nunca exclusivo de Eléctrico pese al
+nombre) — solo se agregaron `transformer_id`/`verdict`/`certified_by` al
+`appendRow_('DOCUMENTOS', ...)` de Aceite, que antes no los tenía.
