@@ -2864,7 +2864,7 @@ function updateWrPhase(key, value) {
   var phases = state.wr.readings[state.wr.currentTap].phases;
   if (!phases[key]) phases[key] = { resistanceOhm: 0, repetida: false, nota: '', valorAnterior: null };
   phases[key].resistanceOhm = v;
-  refreshWinding();
+  refreshWindingLight_();
 }
 
 function toggleWrRepeat_(phaseKey, checked) {
@@ -2883,13 +2883,13 @@ function toggleWrRepeat_(phaseKey, checked) {
 
 function updateWrNote_(phaseKey, value) {
   state.wr.readings[state.wr.currentTap].phases[phaseKey].nota = value;
-  refreshWinding();
+  refreshWindingLight_();
 }
 
 function updateWrTemp(value) {
   var v = parseDecimal_(value); if (isNaN(v)) v = 0;
   state.wr.readings[state.wr.currentTap].windingTemperatureC = v;
-  refreshWinding();
+  refreshWindingLight_();
 }
 
 function renderWrSecondaryPhaseEntries() {
@@ -2911,7 +2911,7 @@ function updateWrSecondaryPhase_(key, value) {
   var phases = state.wr.secondary.phases;
   if (!phases[key]) phases[key] = { resistanceOhm: 0, repetida: false, nota: '', valorAnterior: null };
   phases[key].resistanceOhm = v;
-  refreshWinding();
+  refreshWindingLight_();
 }
 
 function toggleWrSecondaryRepeat_(phaseKey, checked) {
@@ -2930,13 +2930,13 @@ function toggleWrSecondaryRepeat_(phaseKey, checked) {
 
 function updateWrSecondaryNote_(phaseKey, value) {
   state.wr.secondary.phases[phaseKey].nota = value;
-  refreshWinding();
+  refreshWindingLight_();
 }
 
 function updateWrSecondaryTemp(value) {
   var v = parseDecimal_(value); if (isNaN(v)) v = 0;
   state.wr.secondary.windingTemperatureC = v;
-  refreshWinding();
+  refreshWindingLight_();
 }
 
 function addWrTap() {
@@ -3036,8 +3036,26 @@ function buildWindingRequestBody() {
 function refreshWinding() {
   renderWrTapChips();
   renderWrPhaseEntries();
-  renderWindingPreview();
   renderWrSecondaryPhaseEntries();
+  refreshWindingLight_();
+}
+
+/** Bug real reportado por el usuario (2026-09-26, cliente probando desde
+ *  celular): cada tecla escrita en un campo de valor llamaba a
+ *  `refreshWinding()`, que reconstruye TODO el HTML de las filas
+ *  (`renderWrPhaseEntries`/`renderWrSecondaryPhaseEntries`/
+ *  `renderWrTapChips`) — eso reemplaza el `<input>` con foco por un
+ *  nodo NUEVO, así que el teclado del celular se cerraba después de
+ *  CADA carácter. Los manejadores de texto (`updateWrPhase`/
+ *  `updateWrTemp`/`updateWrNote_`/etc.) ya no llaman a `refreshWinding()`
+ *  completo — solo a esta versión liviana (actualiza la vista previa y
+ *  guarda el borrador, nunca reconstruye los `<input>` ya en pantalla).
+ *  `refreshWinding()` completo se reserva para cambios ESTRUCTURALES
+ *  (cambiar de TAP, activar/desactivar Primario o Secundario) donde SÍ
+ *  hace falta reconstruir. Mismo patrón que TTR (`refreshTtr()`), que
+ *  nunca tuvo este bug porque ya separaba las 2 cosas. */
+function refreshWindingLight_() {
+  renderWindingPreview();
   renderWindingSecondaryPreview();
   saveDraft_('mya_draft_wr_' + state.currentTransformerId, {
     readings: state.wr.readings,
@@ -3511,18 +3529,18 @@ function renderInsulationCombinationEntries() {
 function updateInsulationCombination_(key, field, value) {
   var v = parseDecimal_(value); if (isNaN(v)) v = 0;
   state.insulation.combinations[key][field] = v;
-  refreshInsulation();
+  refreshInsulationLight_();
 }
 
 function updateInsulationSimpleValue_(key, value) {
   var v = parseDecimal_(value); if (isNaN(v)) v = 0;
   state.insulation.combinations[key].resistenciaValor = v;
-  refreshInsulation();
+  refreshInsulationLight_();
 }
 
 function updateInsulationSimpleUnidad_(key, value) {
   state.insulation.combinations[key].resistenciaUnidad = value;
-  refreshInsulation();
+  refreshInsulationLight_();
 }
 
 function toggleInsulationRepeat_(key, checked) {
@@ -3544,13 +3562,13 @@ function toggleInsulationRepeat_(key, checked) {
 
 function updateInsulationNote_(key, value) {
   state.insulation.combinations[key].nota = value;
-  refreshInsulation();
+  refreshInsulationLight_();
 }
 
 function updateInsulationTemp(value) {
   var v = parseDecimal_(value); if (isNaN(v)) v = 0;
   state.insulation.windingTemperatureC = v;
-  refreshInsulation();
+  refreshInsulationLight_();
 }
 
 function computeInsulationPreview() {
@@ -3636,6 +3654,14 @@ function buildInsulationRequestBody() {
 
 function refreshInsulation() {
   renderInsulationCombinationEntries();
+  refreshInsulationLight_();
+}
+
+/** Mismo bug y mismo arreglo que refreshWindingLight_ (ver ese comentario)
+ *  — cada tecla escrita llamaba a refreshInsulation() completo, que
+ *  reconstruye el HTML de las filas y le cierra el teclado del celular
+ *  al cliente. Los manejadores de texto usan esta versión liviana. */
+function refreshInsulationLight_() {
   renderInsulationPreview();
   saveDraft_('mya_draft_insulation_' + state.currentTransformerId, state.insulation);
 }
