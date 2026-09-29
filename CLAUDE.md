@@ -4328,3 +4328,142 @@ funcionando en los 3 casos — mismo mecanismo genérico de
 `category`/`transformer_id`, nunca exclusivo de Eléctrico pese al
 nombre) — solo se agregaron `transformer_id`/`verdict`/`certified_by` al
 `appendRow_('DOCUMENTOS', ...)` de Aceite, que antes no los tenía.
+
+## Ronda 10 (2026-09-27) — ajustes post-Aceite y bugs reales de producción
+
+**Corrección de alineación en Aceite**: "tabla 2" (Información de la
+Muestra) no coincidía en el borde derecho con las tablas de ancho
+completo. Causa real: las secciones pareadas de Aceite (Cliente/Equipo +
+Muestra, 270+270pt) suman 540pt, pero las secciones de ancho completo
+(`OIL_FULL_WIDTH_COLS_PT_`, Firmas) seguían usando 560/566pt, prestados
+de las constantes del Eléctrico (que sí se rige por ese total, pero
+Aceite no). Arreglado con constantes PROPIAS de Aceite recalculadas a
+540pt (`OIL_FULL_WIDTH_COLS_PT_` = `[77,77,77,77,77,77,78]`,
+`OIL_FIRMAS_COL_WIDTHS_PT_` = `[135,135,135,68,67]`) — verificado con PDF
+real, bordes ya alinean. **Lección que queda para cualquier informe
+nuevo**: cada informe tiene su PROPIO ancho total real (el que gobiernan
+sus secciones pareadas), nunca se debe asumir el de otro informe aunque
+comparta plantilla/arquitectura.
+
+**Panel "Plantillas de informes" eliminado de la app** (a pedido
+explícito: "quita esa vista de la app original que maneja el cliente
+para que él no manipule eso... las plantillas las manejaremos con
+códigos"). Se borraron los botones "Ver plantillas actuales"/"Generar
+plantillas de informes" y las funciones `handleViewReportTemplates_`/
+`handleGenerateReportTemplates_` de `app.js` — las acciones de backend
+(`generateReportTemplates`, `migrateOilTemplateFromElectrical`, etc.)
+siguen existiendo, solo dejaron de tener botón en el frontend; de ahora
+en adelante se disparan directo desde el navegador (`callApi(...)`) por
+quien mantiene el código, nunca desde la UI del cliente.
+
+**3 bugs reales reportados por el cliente en producción, mientras
+probaba desde el celular:**
+
+1. **"Selecciono GΩ pero dice que la unidad no es válida"** (Aislamiento,
+   método Simple) — NO era un problema de codificación de Ω (verificado
+   con Node que frontend/backend usan el mismo `U+03A9`). Causa real:
+   *drift* de esquema en borradores viejos — un borrador (`localStorage`
+   o una prueba `Borrador` del servidor) guardado ANTES de que existieran
+   los campos `resistenciaValor`/`resistenciaUnidad` los deja
+   `undefined`, y un `<select>` sin ninguna `option` marcada `selected`
+   muestra visualmente su PRIMERA opción en el navegador aunque el
+   estado real sea `undefined` — parecía que GΩ estaba seleccionado, pero
+   el backend recibía `undefined`. Arreglado con
+   `ensureInsulationCombinationsShape_(combinations)`, aplicado tanto al
+   cargar un borrador de `localStorage` como al reabrir un borrador del
+   servidor (`handleEditTestDraft_`) — rellena `resistenciaValor: 0`/
+   `resistenciaUnidad: 'MΩ'` cuando faltan.
+2. **Teclado del celular se cierra después de cada letra** (Resistencia
+   de Devanados y Aislamiento) — causa real: los manejadores `oninput`
+   por cada tecla (`updateWrPhase`, `updateInsulationCombination_`, etc.)
+   llamaban siempre a la función de refresco COMPLETA, que reconstruye
+   todo el contenedor de fases/combinaciones vía `innerHTML =` —
+   destruyendo y recreando el `<input>` enfocado en cada tecla. TTR nunca
+   tuvo este bug (su `refreshTtr()` ya solo llama preview + guardar
+   borrador, nunca reconstruye HTML al tipear) ni Aceite (campos
+   estáticos, nunca se reconstruyen). Arreglado dividiendo cada refresco
+   en una versión "completa" (agrega/quita TAPs o combinaciones — sigue
+   con los manejadores estructurales) y una "liviana"
+   (`refreshWindingLight_`/`refreshInsulationLight_`: solo preview +
+   guardar borrador, nunca toca `innerHTML`) — los manejadores por tecla
+   pasan a usar la versión liviana. Verificado en vivo comparando el
+   nodo DOM del `<input>` enfocado antes/después de una tecla
+   (`sameNode: true`).
+3. **"Metí TTR y Devanados pero no aparece el protocolo, solo la foto"**
+   — resultó SER el comportamiento correcto, no un bug: la regla ya
+   existente (una sola vez certificado TODO lo `_ofertado` del equipo se
+   genera el PDF combinado) estaba bloqueando la generación porque a ese
+   equipo real le faltaba Aislamiento certificado, aunque
+   `aislamiento_ofertado: true`. Se explicó la causa real al usuario en
+   vez de "arreglar" algo que no estaba roto. Quedó pendiente su
+   decisión sobre si desmarcar `aislamiento_ofertado` para ese equipo
+   específico, y aparte (explícitamente aplazado por el usuario) si vale
+   la pena relajar el bloqueo duro a un aviso+continuar.
+
+## Informe de Historial de Pruebas (2026-09-29)
+
+Primer "informe standalone" de la app — hasta ahora solo existían 2
+patrones: panel embebido sin PDF (Comportamiento anual, siempre visible
+en el detalle) y PDF de certificación por protocolo (Eléctrico/Aceite,
+uno por envío/trabajo). Este es un tercer patrón: un PDF que agrega TODO
+el histórico de pruebas Certificadas de un equipo, a través de los años,
+disparado por un botón nuevo ("Generar informe de historial") en el
+detalle del transformador — no certifica nada nuevo, solo lee lo que ya
+fue certificado.
+
+**Contenido**: "Datos del cliente y del equipo" (con periodo cubierto y
+total de pruebas certificadas) + hasta 3 pares de gráficas lado a lado
+(mismo mecanismo `outerImagesPairRow_` que ya usaba la Sección 8 del
+Eléctrico para evitar el bug de imágenes partidas entre páginas):
+- Resistencia de aislamiento — DAR e IP por combinación de devanado
+  (mismo cálculo que el panel "Comportamiento anual" de app.js, PORTADO
+  al backend porque `Charts.newLineChart` no existe en el navegador).
+- Aceite dieléctrico — rigidez dieléctrica y número de acidez promedio
+  (mismo cálculo que el panel, portado igual).
+- **Nuevo, no existía en ningún lado**: TTR y Resistencia de Devanados,
+  ambos FIJOS en la posición de TAP nominal del equipo
+  (`transformer.posicion_tap_nominal`, con fallback a
+  `tap_config.neutralPosition`) — para comparar siempre el mismo punto
+  de operación entre años, nunca TAPs distintos entre sí. Si el equipo
+  no tiene TAP nominal definido, esta sección se reemplaza por un aviso
+  pidiendo configurarlo en "Editar equipo".
+
+**A propósito, este informe NO lleva QR de autenticidad ni bloque de
+Firmas**: no es un evento de certificación nuevo — cada uno de los
+informes originales que agrega ya tiene su propio QR. Se registra en
+`DOCUMENTOS` como categoría `GENERALES` (no `CERTIFICADOS`), guardado en
+la carpeta "Documentos Generales" del Sitio (no en "Certificados de
+Pruebas") — y por eso mismo nunca aparecerá como "verificable" en
+`verificarInformeElectrico_`, que exige `category === 'CERTIFICADOS'`.
+
+**Plantilla**: `migrateHistoryTemplateFromElectrical_` (acción admin, se
+corre una sola vez) copia la plantilla YA migrada del Eléctrico —mismo
+patrón que `migrateOilTemplateFromElectrical_`— cambiando el título a
+"INFORME DE HISTORIAL DE PRUEBAS" y el marcador a
+`<<CONTENIDO_HISTORIAL>>`. Ancho total propio
+(`HISTORY_INFO_COL_WIDTHS_PT_`, 560pt, igual al de la Sección 1 del
+Eléctrico) — mismo criterio de la ronda 10 de arriba: nunca se reusó el
+540pt de Aceite ni ningún otro ancho ajeno.
+
+**Sin restricción de rol** (ni frontend ni backend): no certifica nada
+nuevo, así que cualquier rol que pueda ver el detalle del equipo puede
+generarlo — mismo criterio que ya podía ver el panel "Comportamiento
+anual" en pantalla.
+
+**Verificación con datos reales** (sitio/transformador DEMO,
+`DEMO - Verificacion Historial`/`DEMO-HIST-01`, TAP nominal 3,
+Dyn5/13200/208V): se certificaron TTR + Resistencia de Devanados +
+Aislamiento + Aceite en 2 años distintos (2023 y 2026, con 2024/2025
+vacíos a propósito para probar que Charts deja un HUECO real en vez de
+interpolar o forzar 0 — `buildYearlyTrendChart_` manda `null` a la
+`DataTable` para el año sin dato). Verificación end-to-end con PDF real
+pendiente de confirmar en esta misma sesión (ver el chat) antes de dar
+esto por cerrado — no declarar terminado sin haber renderizado el PDF y
+confirmado visualmente los 3 pares de gráficas.
+
+**Temporal, pendiente de borrar**: se agregó `debugSetTestCreatedAt_`
+(acción admin, backdatea el `created_at` de una prueba DEMO) solo para
+poder armar el escenario de 2 años sin esperar 3 años reales de datos —
+debe borrarse (código + entrada en `POST_ACTIONS`) en cuanto la
+verificación de este informe quede confirmada, mismo criterio que
+`debugReadScriptProp_` de rondas anteriores (ya borrada).

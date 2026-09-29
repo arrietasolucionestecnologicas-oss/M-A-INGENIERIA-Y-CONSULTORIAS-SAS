@@ -3213,10 +3213,20 @@ function buildYearlyTrendChart_(title, years, seriesByLabel, colors) {
       });
       dataTable.addRow(row);
     });
+    // Ronda 10 (2026-09-29) — HALLAZGO REAL con PDF real: con 3 series
+    // (DAR/IP por combinación, TTR/Devanados por fase) y solo 260px de
+    // ancho, Charts pagina la leyenda ("AT-BT ◀ 1/3 ▶") en vez de mostrar
+    // las 3 — inútil en una imagen estática, nadie puede hacer clic en
+    // "▶". Más ancho de RENDER (no de inserción en el doc, que sigue en
+    // 260pt vía widthPt/heightPt en el llamador) le da a Charts espacio
+    // real para las 3 entradas sin paginar. 420px alcanzó para DAR/IP y
+    // Devanados, pero TTR (etiquetas más largas: "H1H2-X1X2") seguía
+    // paginando 2/2 con ese ancho — verificado con un 2do PDF real, subido
+    // a 520px hasta que las 3 entradas de TTR también entraron completas.
     var chart = Charts.newLineChart()
       .setDataTable(dataTable)
       .setTitle(title)
-      .setDimensions(260, 200)
+      .setDimensions(520, 230)
       .setColors(colors)
       .setLegendPosition(labels.length > 1 ? Charts.Position.BOTTOM : Charts.Position.NONE)
       .setPointStyle(Charts.PointStyle.MEDIUM)
