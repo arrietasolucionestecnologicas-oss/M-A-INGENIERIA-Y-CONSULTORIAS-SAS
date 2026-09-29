@@ -4450,20 +4450,95 @@ nuevo, así que cualquier rol que pueda ver el detalle del equipo puede
 generarlo — mismo criterio que ya podía ver el panel "Comportamiento
 anual" en pantalla.
 
-**Verificación con datos reales** (sitio/transformador DEMO,
+**Verificación con datos reales, CONFIRMADA** (sitio/transformador DEMO,
 `DEMO - Verificacion Historial`/`DEMO-HIST-01`, TAP nominal 3,
-Dyn5/13200/208V): se certificaron TTR + Resistencia de Devanados +
-Aislamiento + Aceite en 2 años distintos (2023 y 2026, con 2024/2025
-vacíos a propósito para probar que Charts deja un HUECO real en vez de
-interpolar o forzar 0 — `buildYearlyTrendChart_` manda `null` a la
-`DataTable` para el año sin dato). Verificación end-to-end con PDF real
-pendiente de confirmar en esta misma sesión (ver el chat) antes de dar
-esto por cerrado — no declarar terminado sin haber renderizado el PDF y
-confirmado visualmente los 3 pares de gráficas.
+Dyn5/13200/208V, borrado al terminar): se certificaron TTR + Resistencia
+de Devanados + Aislamiento + Aceite en 2 años distintos (2023 y 2026, con
+2024/2025 vacíos a propósito para probar que Charts deja un HUECO real en
+vez de interpolar o forzar 0 — `buildYearlyTrendChart_` manda `null` a la
+`DataTable` para el año sin dato, confirmado con 3 PDFs reales que el
+hueco se respeta). Los 3 pares de gráficas se renderizaron y confirmaron
+visualmente, todo en 1 sola página.
 
-**Temporal, pendiente de borrar**: se agregó `debugSetTestCreatedAt_`
-(acción admin, backdatea el `created_at` de una prueba DEMO) solo para
-poder armar el escenario de 2 años sin esperar 3 años reales de datos —
-debe borrarse (código + entrada en `POST_ACTIONS`) en cuanto la
-verificación de este informe quede confirmada, mismo criterio que
-`debugReadScriptProp_` de rondas anteriores (ya borrada).
+**Bug real encontrado y corregido en esta misma verificación**: con 3
+series por gráfica (DAR/IP por combinación, TTR/Devanados por fase), la
+leyenda salía PAGINADA ("AT-BT ◀ 1/3 ▶") — inútil en una imagen estática
+(nadie puede hacer clic en "▶"). Causa: muy poco ancho de RENDER
+(`setDimensions`, 260px) para que Charts acomode 3 entradas de leyenda.
+Subido a 420px (alcanzó para DAR/IP y Devanados) y luego a 520px (TTR
+tiene etiquetas más largas, "H1H2-X1X2", que a 420px seguían paginando
+2/2) — verificado con 3 PDFs reales sucesivos hasta confirmar las 3
+entradas completas en las 3 gráficas de 3 series. El ancho de INSERCIÓN
+en el documento (`widthPt`/`heightPt` en el llamador) no cambió, solo el
+de render interno del servicio Charts.
+
+**Temporal, ya borrado**: `debugSetTestCreatedAt_` (acción admin,
+backdateaba el `created_at` de una prueba DEMO para poder armar el
+escenario de 2 años sin esperar 3 años reales) cumplió su propósito y se
+borró (código + entrada en `POST_ACTIONS`) en cuanto la verificación
+quedó confirmada — mismo criterio que `debugReadScriptProp_` de rondas
+anteriores.
+
+## Ronda 10b (2026-09-29) — resto de la limpieza pedida por el usuario
+
+A pedido explícito, en la misma sesión del Informe de Historial:
+
+**1. Corregidas las últimas 2 constantes de ancho de Aceite que seguían
+en 560pt** (`OIL_RESULTS_COL_WIDTHS_PT_`, usada por las tablas de
+resultados Fisicoquímico y PCB, y `OIL_DGA_COL_WIDTHS_PT_`) — mismo
+hallazgo/fix que ya se había aplicado a `OIL_FULL_WIDTH_COLS_PT_`/
+`OIL_FIRMAS_COL_WIDTHS_PT_` en la ronda 10 original: el total real que
+gobierna la tabla maestra de Aceite es 540pt, nunca 560 (prestado del
+Eléctrico). Reescaladas proporcionalmente:
+`OIL_RESULTS_COL_WIDTHS_PT_ = [145,125,53,53,96,34,34]`,
+`OIL_DGA_COL_WIDTHS_PT_ = [67,67,68,68,90,90,90]`. Verificado con un PDF
+real (Fisicoquímico + DGA + PCB, los 3 a la vez) que las 3 tablas de
+resultados ya alinean en el borde derecho con el resto del informe.
+
+**2. Corregido el badge de color de la página pública de verificación**
+(`verificationPageHtml_`) que pintaba en ROJO veredictos válidos de
+Aceite que no empiezan con "APROBADO" (ej. "No contaminado", el
+veredicto de PCB cuando no está contaminado) — el dato mostrado siempre
+fue correcto, solo el color engañaba. Se extrajo `classifyVerdict_`
+(misma clasificación de 4 categorías que ya usaba `verdictColor_` para
+pintar el PDF: success/danger/warning/neutral) y la página de
+verificación ahora la reusa, con 2 clases CSS nuevas (`.warn` ámbar,
+`.neutral` gris) además de las 2 que ya existían (`.ok` verde, `.bad`
+rojo). Verificado con un PDF/QR real: un veredicto PCB "No contaminado"
+certificado de verdad, escaneado contra la página pública, ya sale en
+verde.
+
+**3. Borrada la arquitectura vieja de Aceite** (`generateOilTestReportPdf_`/
+`buildOilTemplateDoc_`, reemplazadas por `regenerateOilCombinedReport_`
+desde la ronda 9, dejadas sin borrar "hasta confirmar en vivo que la
+nueva función cubre todos los casos" — ya confirmado, con semanas de uso
+real). Al rastrear sus dependencias se encontraron 10 funciones/
+constantes MÁS que solo esas 2 usaban (`appendSectionTitle_`,
+`appendDenseInfoGrid_`, `appendResultsTable_`, `appendReportHeader_`,
+`appendClientEquipoGrid_`, `appendVerdictBanner_`,
+`appendSignatureSection_`, `appendBlockStart_`/`appendBlockEnd_`,
+`blockMarker_`, `resolveTemplateBlock_`, `findCellByPlaceholder_`,
+`setVerdictBannerColor_`, `TEMPLATE_SITE_`/`TEMPLATE_TRANSFORMER_`) — se
+confirmó cada una por separado (grep de todos los call sites, no solo
+"parece que ya no se usa") antes de borrarla, para no tocar nada que
+`buildElectricalTemplateDoc_` (que SÍ sigue armando la plantilla
+Eléctrica desde cero) todavía necesitara — `appendProtocolTitle_`,
+`appendPageHeader_`, `appendPlaceholderWarningBanner_`, `numOrDash_` y
+`findMarkerParagraph_` sí tienen otro llamador real, se dejaron intactas.
+
+**Bug latente real encontrado de paso, también corregido**:
+`crearPlantillasInformes_` (la acción "Generar plantillas de informes")
+todavía llamaba a `buildOilTemplateDoc_()` y pisaba
+`TEMPLATE_ACEITE_FILE_ID` con su resultado — si esta acción se hubiera
+vuelto a correr alguna vez (ej. para regenerar la plantilla Eléctrica
+tras perderla), habría roto Aceite silenciosamente, reemplazando su
+plantilla migrada (con el marcador `<<TABLA_RESULTADOS_ACEITE>>` que
+`regenerateOilCombinedReport_` necesita) por la plantilla vieja de
+placeholders campo-por-campo. Ahora `crearPlantillasInformes_` solo
+genera y persiste la plantilla Eléctrica — Aceite/Historial se migran
+aparte, con sus propias acciones (`migrateOilTemplateFromElectrical`/
+`migrateHistoryTemplateFromElectrical`), nunca con esta.
+
+Verificado con `node --check` (sintaxis) y un despliegue real que generó
+correctamente un informe de Aceite con las 3 secciones tras el borrado
+— nada quedó roto.

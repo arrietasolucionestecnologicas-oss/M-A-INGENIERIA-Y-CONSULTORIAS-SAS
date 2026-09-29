@@ -284,7 +284,8 @@ function verificationPageHtml_(valido, datos) {
     'padding:6px 0;border-bottom:1px solid #E5E8EA;font-size:13px;} .label{color:#404040;} ' +
     '.value{font-weight:bold;text-align:right;} .badge{display:inline-block;padding:4px 10px;' +
     'border-radius:4px;font-weight:bold;font-size:13px;} .ok{background:#C6EFCE;color:#006100;} ' +
-    '.bad{background:#F4CCCC;color:#9C0006;}';
+    '.bad{background:#F4CCCC;color:#9C0006;} .warn{background:#FFEB9C;color:#9C6500;} ' +
+    '.neutral{background:#E5E8EA;color:#404040;}';
   if (!valido) {
     return '<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
       '<style>' + style + '</style></head><body><div class="card">' +
@@ -293,7 +294,12 @@ function verificationPageHtml_(valido, datos) {
       '<p style="font-size:13px;color:#404040;margin-top:12px;">Este código no corresponde a ningún ' +
       'informe certificado por M&amp;A Ingeniería y Consultoría SAS.</p></div></body></html>';
   }
-  var badgeClass = String(datos.veredicto).indexOf('APROBADO') === 0 ? 'ok' : 'bad';
+  // Ronda 10 (2026-09-29) — antes: indexOf('APROBADO')===0 ? 'ok' : 'bad',
+  // que pintaba en rojo veredictos válidos de Aceite sin ese prefijo (ej.
+  // "No contaminado"). Ahora reusa classifyVerdict_ (mismo semáforo que ya
+  // pinta el PDF vía verdictColor_), con las 4 categorías reales.
+  var badgeClassMap = { success: 'ok', danger: 'bad', warning: 'warn', neutral: 'neutral' };
+  var badgeClass = badgeClassMap[classifyVerdict_(datos.veredicto)];
   return '<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
     '<style>' + style + '</style></head><body><div class="card">' +
     '<h1>M&amp;A Ingeniería y Consultoría SAS</h1>' +
@@ -1914,11 +1920,24 @@ var TEST_TYPE_PROTOCOL_TITLE_ = {
  *  (success/warning/danger) — mapea cualquier veredicto de los 4 módulos de
  *  prueba a un color. REGISTRADO (Aceite con solo DGA, sin veredicto
  *  propio) y cualquier valor no reconocido caen en neutro. */
-function verdictColor_(verdict) {
+/** Categoría semántica de un veredicto — extraído de verdictColor_ (ronda
+ *  10, 2026-09-29) para que verificationPageHtml_ (página pública del QR)
+ *  pinte el mismo semáforo que ya usa el PDF, en vez de su propio chequeo
+ *  ingenuo `indexOf('APROBADO') === 0` que pintaba en rojo veredictos
+ *  válidos de Aceite como "No contaminado" (HALLAZGO real, ver CLAUDE.md). */
+function classifyVerdict_(verdict) {
   var v = String(verdict || '');
-  if (v.indexOf('APROBADO') === 0 || v === 'No contaminado') return { bg: PDF_COLORS_.SUCCESS_BG, text: PDF_COLORS_.SUCCESS };
-  if (v === 'RECHAZADO' || v.indexOf('REQUIERE REGENERACIÓN') === 0 || v.indexOf('Contaminado') === 0) return { bg: PDF_COLORS_.DANGER_BG, text: PDF_COLORS_.DANGER };
-  if (v === 'OBSERVADO' || v.indexOf('REQUIERE TERMOVACÍO') === 0) return { bg: PDF_COLORS_.WARNING_BG, text: PDF_COLORS_.WARNING };
+  if (v.indexOf('APROBADO') === 0 || v === 'No contaminado') return 'success';
+  if (v === 'RECHAZADO' || v.indexOf('REQUIERE REGENERACIÓN') === 0 || v.indexOf('Contaminado') === 0) return 'danger';
+  if (v === 'OBSERVADO' || v.indexOf('REQUIERE TERMOVACÍO') === 0) return 'warning';
+  return 'neutral';
+}
+
+function verdictColor_(verdict) {
+  var category = classifyVerdict_(verdict);
+  if (category === 'success') return { bg: PDF_COLORS_.SUCCESS_BG, text: PDF_COLORS_.SUCCESS };
+  if (category === 'danger') return { bg: PDF_COLORS_.DANGER_BG, text: PDF_COLORS_.DANGER };
+  if (category === 'warning') return { bg: PDF_COLORS_.WARNING_BG, text: PDF_COLORS_.WARNING };
   return { bg: PDF_COLORS_.NEUTRAL_BG, text: PDF_COLORS_.TEXT_MUTED };
 }
 
@@ -2115,29 +2134,6 @@ function numOrDash_(v) {
   return (typeof v === 'number' && !isNaN(v)) ? v : '—';
 }
 
-/** Barra de sección — fondo acento sólido, texto blanco en mayúsculas,
- *  ancho completo — mismo tratamiento que el protocolo de referencia dado
- *  por el usuario (secciones como "DATOS DEL TRANSFORMADOR" en barra de
- *  color, no solo texto resaltado). Usada solo al ARMAR LAS PLANTILLAS
- *  (ver buildElectricalTemplateDoc_/buildOilTemplateDoc_ más abajo) —
- *  desde el cambio de arquitectura de plantillas (2026-09-12) los informes
- *  reales ya no arman su documento desde cero, copian la plantilla. */
-function appendSectionTitle_(body, text) {
-  var table = body.appendTable([[text.toUpperCase()]]);
-  table.setBorderWidth(0);
-  var cell = table.getRow(0).getCell(0);
-  cell.setBackgroundColor(PDF_COLORS_.ACCENT);
-  cell.editAsText().setBold(true).setFontSize(9).setForegroundColor('#ffffff');
-  cell.setPaddingTop(1).setPaddingBottom(1).setPaddingLeft(2).setPaddingRight(2);
-  // Punto 11, ronda 6f (2026-09-16): mismo ajuste de espaciado de párrafo
-  // que styleUnifiedCell_ (ver appendSignatureSection_) — esta tabla-título
-  // nunca pasaba por ahí.
-  if (cell.getNumChildren() > 0 && cell.getChild(0).getType() === DocumentApp.ElementType.PARAGRAPH) {
-    cell.getChild(0).asParagraph().setSpacingBefore(0).setSpacingAfter(0).setLineSpacing(1);
-  }
-  return table;
-}
-
 /** Caja de título del protocolo — fondo acento sólido, texto blanco
  *  centrado (2026-09-15, "prompt maestro" del cliente — antes era fondo
  *  claro con texto de color, ver el mismo cambio de paleta en
@@ -2151,63 +2147,6 @@ function appendProtocolTitle_(body, text) {
   var par = cell.getChild(0).asParagraph();
   par.setAlignment(DocumentApp.HorizontalAlignment.CENTER);
   cell.editAsText().setBold(true).setFontSize(15).setFontFamily(PROTOCOL_FONT_FAMILY_).setForegroundColor('#ffffff');
-  return table;
-}
-
-/** Grilla densa de 4 columnas (etiqueta/valor × 2 por fila) — mismo
- *  criterio de densidad que el protocolo de referencia (MARCA | valor |
- *  POTENCIA | valor, en vez de una etiqueta por fila). Etiquetas en
- *  mayúsculas con fondo gris claro. `rows` es un arreglo de arreglos de 4
- *  strings: [etiqueta, valor, etiqueta, valor]. Solo usada al armar
- *  plantillas — en el informe real, esos mismos valores ya quedan
- *  horneados como placeholders y se llenan con `body.replaceText()`. */
-function appendDenseInfoGrid_(body, rows) {
-  var table = body.appendTable(rows);
-  table.setBorderColor(PDF_COLORS_.BORDER);
-  for (var r = 0; r < table.getNumRows(); r++) {
-    var row = table.getRow(r);
-    // El ancho de la columna de etiqueta se reparte según cuántos pares
-    // etiqueta/valor tiene ESTA fila (115 para 2 pares, como siempre;
-    // menos para filas más anchas como la grilla compartida de "Datos
-    // generales de la prueba", de 3 pares — si no, las 3 etiquetas se
-    // comen casi todo el ancho de página y los valores quedan sin espacio).
-    var pairsInRow = row.getNumCells() / 2;
-    var labelWidth = pairsInRow > 2 ? 78 : 115;
-    for (var c = 0; c < row.getNumCells(); c++) {
-      var cell = row.getCell(c);
-      if (c % 2 === 0) {
-        cell.setBackgroundColor(PDF_COLORS_.NEUTRAL_BG);
-        cell.setWidth(labelWidth);
-        cell.editAsText().setBold(true).setFontSize(7).setForegroundColor(PDF_COLORS_.TEXT);
-      } else {
-        cell.editAsText().setFontSize(7).setForegroundColor(PDF_COLORS_.TEXT);
-      }
-    }
-  }
-  return table;
-}
-
-/** Tabla de resultados con encabezado resaltado (fondo acento, texto
- *  blanco). Desde la tabla única de resultados eléctricos (2026-09-13),
- *  solo la usa `buildOilTemplateDoc_` para las 3 tablas de Aceite
- *  (Fisicoquímico/DGA/PCB — filas fijas, con celdas de VALOR en
- *  placeholder); TTR/Devanados/Aislamiento ya no tienen ninguna tabla
- *  horneada en la plantilla, se insertan enteras en tiempo de generación
- *  real (ver insertOuterResultsTable_). Nunca se usa en el armado del
- *  informe REAL de Aceite tampoco, que solo copia la plantilla. */
-function appendResultsTable_(body, rows) {
-  var table = body.appendTable(rows);
-  table.setBorderColor(PDF_COLORS_.BORDER);
-  var header = table.getRow(0);
-  for (var c = 0; c < header.getNumCells(); c++) {
-    header.getCell(c).setBackgroundColor(PDF_COLORS_.ACCENT);
-    header.getCell(c).editAsText().setBold(true).setFontSize(7).setForegroundColor('#ffffff');
-  }
-  for (var r = 1; r < table.getNumRows(); r++) {
-    for (var c2 = 0; c2 < table.getRow(r).getNumCells(); c2++) {
-      table.getRow(r).getCell(c2).editAsText().setFontSize(7);
-    }
-  }
   return table;
 }
 
@@ -2256,135 +2195,6 @@ function appendPageHeader_(doc) {
   var nameCell = headTable.getRow(0).getCell(1);
   nameCell.setVerticalAlignment(DocumentApp.VerticalAlignment.CENTER);
   nameCell.editAsText().setBold(true).setFontSize(14).setForegroundColor(PDF_COLORS_.TEXT);
-}
-
-/** Caja de título del protocolo — solo usada al armar plantillas (ver
- *  appendPageHeader_ arriba para el mismo criterio). Hasta el 2026-09-13
- *  también armaba acá mismo la grilla "Datos del cliente y del equipo"
- *  (ver appendClientEquipoGrid_ más abajo); para el informe Eléctrico esa
- *  grilla se separó porque ahora vive DENTRO de la tabla única de
- *  resultados (ver "Tabla única de resultados eléctricos" — el cliente
- *  pidió que ni siquiera esa grilla tenga espacio antes de la tabla de
- *  resultados). Aceite sigue usando appendClientEquipoGrid_ tal cual,
- *  como una grilla aparte — no le pidieron ese cambio. */
-function appendReportHeader_(body, site, transformer, protocolTitle) {
-  appendProtocolTitle_(body, protocolTitle);
-  body.appendParagraph('');
-  appendClientEquipoGrid_(body, site, transformer);
-}
-
-/** La grilla "Datos del cliente y del equipo" en sí, separada de
- *  appendReportHeader_ (ver comentario ahí) para que el informe Eléctrico
- *  pueda omitirla como grilla aparte y construirla en cambio como más
- *  filas de la tabla única (ver buildClientEquipoUnifiedRows_). Solo
- *  usada tal cual por buildOilTemplateDoc_ (Aceite). */
-function appendClientEquipoGrid_(body, site, transformer) {
-  appendSectionTitle_(body, 'Datos del cliente y del equipo');
-  appendDenseInfoGrid_(body, [
-    ['CLIENTE', site.client_name || '—', 'NIT', site.nit || '—'],
-    ['CIUDAD', site.ciudad || '—', 'PROYECTO', site.project_name || '—'],
-    ['FABRICANTE', transformer.manufacturer || '—', 'N° DE SERIE', transformer.serial_number || '—'],
-    ['GRUPO DE CONEXIÓN', transformer.vector_group || '—', 'POTENCIA NOMINAL', transformer.rated_power_kva ? (String(transformer.rated_power_kva) + ' kVA') : '—'],
-    ['TENSIÓN PRIMARIA', transformer.hv_nominal_voltage ? (String(transformer.hv_nominal_voltage) + ' V') : '—', 'TENSIÓN SECUNDARIA', transformer.lv_nominal_voltage ? (String(transformer.lv_nominal_voltage) + ' V') : '—'],
-    ['REFRIGERACIÓN', transformer.cooling_type || '—', 'AÑO DE FABRICACIÓN', transformer.manufacture_year ? String(transformer.manufacture_year) : '—']
-  ]);
-}
-
-/** Banner de veredicto — el elemento más visible del informe, mismo color
- *  que ya usa la app en pantalla (verdictColor_). Solo usada al armar
- *  plantillas, con un placeholder de texto en vez del veredicto real — el
- *  color real se fija en tiempo de generación (ver setVerdictBannerColor_,
- *  porque `body.replaceText()` cambia texto, nunca estilo de celda). */
-function appendVerdictBanner_(body, label, verdict) {
-  var colors = verdictColor_(verdict);
-  var table = body.appendTable([[label + ': ' + verdict]]);
-  table.setBorderWidth(0);
-  var cell = table.getRow(0).getCell(0);
-  cell.setBackgroundColor(colors.bg);
-  cell.editAsText().setBold(true).setFontSize(13).setForegroundColor(colors.text);
-}
-
-/** "Área de control de calidad" — mismo nombre y ubicación (al final,
- *  junto a las firmas) que el protocolo de referencia original. La firma
- *  del ingeniero responsable (imagen + nombre + cargo, columna "APROBADO
- *  POR") queda horneada en la plantilla — nunca cambia entre informes, así
- *  que ya no se inserta en tiempo de generación (antes del cambio de
- *  arquitectura de plantillas se insertaba en cada PDF individualmente).
- *  `probadoPor`/`certificadoPor` son objetos `{ nombre, fecha }` — al
- *  armar la plantilla llevan placeholders de texto; en el informe real
- *  esos 4 valores se llenan con `body.replaceText()`.
- *
- *  **Salto de página forzado — QUITADO (2026-09-13)**: originalmente este
- *  bloque forzaba su propio salto de página porque, sin él, se veía
- *  partido entre dos páginas (`Paragraph`/`TableRow` no exponen ningún
- *  "mantener junto" en Apps Script, no existe equivalente a
- *  `page-break-inside: avoid` para tablas en este servicio). A pedido
- *  explícito del cliente (quiere el informe completo en una sola hoja,
- *  comparado contra un certificado real de otra empresa que sí lo logra)
- *  se quitó el salto forzado — junto con la compactación de fuente/
- *  espaciado de los puntos 7/8 y la fusión de las 3 grillas de "Datos de
- *  la prueba" en una sola (`appendSharedTestMetaSection_`), el bloque de
- *  firmas debería quedar en la misma página como el resto en el caso
- *  normal. Riesgo aceptado explícitamente: en un equipo con muchos TAPs
- *  las firmas podrían volver a partirse entre páginas — decisión del
- *  cliente, no un descuido. */
-function appendSignatureSection_(body, probadoPor, certificadoPor) {
-  appendSectionTitle_(body, 'Área de control de calidad');
-  var table = body.appendTable([
-    ['PROBADO POR', 'CERTIFICADO POR', 'APROBADO POR'],
-    [
-      (probadoPor.nombre || '—') + '\n' + fmtDatePdf_(probadoPor.fecha),
-      (certificadoPor.nombre || '—') + '\n' + fmtDatePdf_(certificadoPor.fecha),
-      ''
-    ]
-  ]);
-  table.setBorderColor(PDF_COLORS_.BORDER);
-  // Punto 11, ronda 6j (2026-09-16): padding 2/3pt -> 1/2pt — con el
-  // informe real ya a SOLO esta tabla (Sección 12) de caber en 1 página
-  // (todo lo demás, 1-11, ya cabe), sigue el mismo criterio de piso
-  // 0.5-2pt que el resto del documento.
-  for (var c = 0; c < 3; c++) {
-    table.getRow(0).getCell(c).setBackgroundColor(PDF_COLORS_.NEUTRAL_BG);
-    table.getRow(0).getCell(c).editAsText().setBold(true).setFontSize(6.5).setFontFamily(PROTOCOL_FONT_FAMILY_);
-    table.getRow(1).getCell(c).editAsText().setFontFamily(PROTOCOL_FONT_FAMILY_);
-    table.getRow(0).getCell(c).setPaddingTop(1).setPaddingBottom(1).setPaddingLeft(2).setPaddingRight(2);
-    table.getRow(1).getCell(c).setPaddingTop(1).setPaddingBottom(1).setPaddingLeft(2).setPaddingRight(2);
-  }
-  table.getRow(1).getCell(0).editAsText().setFontSize(7);
-  table.getRow(1).getCell(1).editAsText().setFontSize(7);
-
-  var aprobadoCell = table.getRow(1).getCell(2);
-  var engineerBlob = getEngineerSignatureBlob_();
-  if (engineerBlob) {
-    var img = aprobadoCell.appendImage(engineerBlob);
-    var ratio = img.getHeight() / img.getWidth();
-    // Punto 11, ronda 6j (2026-09-16): 35 -> 26pt — sigue siendo, con
-    // diferencia, el elemento más alto de la fila; el resto (nombre+cargo)
-    // apenas suma ~14pt.
-    img.setWidth(26);
-    img.setHeight(Math.round(26 * ratio));
-  }
-  var nameLine = aprobadoCell.appendParagraph(ENGINEER_SIGNATURE_NAME_);
-  nameLine.editAsText().setBold(true).setFontSize(7);
-  var titleLine = aprobadoCell.appendParagraph(ENGINEER_SIGNATURE_TITLE_);
-  titleLine.editAsText().setFontSize(6.5).setForegroundColor(PDF_COLORS_.TEXT_MUTED);
-
-  // Punto 11, ronda 6f (2026-09-16) — esta tabla de firmas NUNCA pasaba por
-  // `styleUnifiedCell_` (es contenido de plantilla armado aparte, no parte
-  // de la tabla unificada), así que ninguno de sus párrafos tenía el
-  // espaciado antes/después ni el interlineado normalizados — el mismo
-  // ajuste que en la ronda 6c sí movió el corte de página real cuando se
-  // aplicó a la tabla unificada. Se replica acá, a las 3 celdas (incluida
-  // `aprobadoCell`, que además tiene 2 párrafos propios de nombre/cargo).
-  [table.getRow(0).getCell(0), table.getRow(0).getCell(1), table.getRow(0).getCell(2),
-   table.getRow(1).getCell(0), table.getRow(1).getCell(1), table.getRow(1).getCell(2)].forEach(function (cell) {
-    for (var pi = 0; pi < cell.getNumChildren(); pi++) {
-      var pchild = cell.getChild(pi);
-      if (pchild.getType() === DocumentApp.ElementType.PARAGRAPH) {
-        pchild.asParagraph().setSpacingBefore(0).setSpacingAfter(0).setLineSpacing(1);
-      }
-    }
-  });
 }
 
 var TEST_TYPE_DISPLAY_LABEL_ = {
@@ -4107,37 +3917,6 @@ function fmtTimestampForFilename_(date) {
 //    DocumentApp antes de diseñar esto.
 // ---------------------------------------------------------------------------
 
-/** Objetos de datos "de mentira" — cada campo es literalmente el texto
- *  `<<...>>` que queda horneado en la plantilla. Truco central de este
- *  diseño: appendReportHeader_/appendSharedTestMetaSection_/appendSignatureSection_
- *  (las MISMAS funciones que arman el informe real hasta este cambio) arman
- *  la plantilla sin tocarlas — la única diferencia es qué objeto de datos
- *  reciben. Esto reduce el riesgo de que la plantilla se desalinee
- *  visualmente del informe real, porque literalmente comparten el código
- *  de armado. */
-var TEMPLATE_SITE_ = { client_name: '<<CLIENTE>>', nit: '<<NIT>>', ciudad: '<<CIUDAD>>', project_name: '<<PROYECTO>>' };
-var TEMPLATE_TRANSFORMER_ = {
-  manufacturer: '<<FABRICANTE>>', serial_number: '<<NUMERO_SERIE>>', vector_group: '<<GRUPO_CONEXION>>',
-  rated_power_kva: '<<POTENCIA_NOMINAL>>', hv_nominal_voltage: '<<TENSION_PRIMARIA>>', lv_nominal_voltage: '<<TENSION_SECUNDARIA>>',
-  cooling_type: '<<REFRIGERACION>>', manufacture_year: '<<ANO_FABRICACION>>'
-};
-/** Marcador de bloque opcional — un párrafo propio, invisible (tamaño de
- *  fuente 1) porque siempre se borra antes de exportar a PDF, nunca debe
- *  verse. `body.findText()` los ubica por su texto exacto. */
-function blockMarker_(name, which) {
-  return '<<BLOQUE_' + name + '_' + which + '>>';
-}
-function appendBlockStart_(body, name) {
-  var p = body.appendParagraph(blockMarker_(name, 'INICIO'));
-  p.editAsText().setFontSize(1);
-  return p;
-}
-function appendBlockEnd_(body, name) {
-  var p = body.appendParagraph(blockMarker_(name, 'FIN'));
-  p.editAsText().setFontSize(1);
-  return p;
-}
-
 /** Sube por los padres desde el `Text` que encontró `findText` hasta llegar
  *  al `Paragraph` que lo contiene — un marcador de bloque siempre es su
  *  propio párrafo (nunca vive dentro de una celda de tabla), así que ese
@@ -4152,57 +3931,6 @@ function findMarkerParagraph_(body, markerText) {
     if (!el) return null;
   }
   return el.asParagraph();
-}
-
-/** Resuelve un bloque opcional de la plantilla ya copiada: si `keep` es
- *  false, borra TODO el rango entre los 2 marcadores (inclusive) — de atrás
- *  hacia adelante, para no invalidar los índices todavía por procesar. Si
- *  `keep` es true, deja el contenido intacto y solo borra los 2 marcadores
- *  (ya cumplieron su función, no deben sobrevivir al PDF final). Si algún
- *  marcador no aparece (plantilla desactualizada / bloque ya resuelto antes)
- *  no hace nada — nunca lanza. */
-function resolveTemplateBlock_(body, name, keep) {
-  var startPar = findMarkerParagraph_(body, blockMarker_(name, 'INICIO'));
-  var endPar = findMarkerParagraph_(body, blockMarker_(name, 'FIN'));
-  if (!startPar || !endPar) return;
-  if (keep) {
-    body.removeChild(endPar);
-    body.removeChild(startPar);
-    return;
-  }
-  var startIdx = body.getChildIndex(startPar);
-  var endIdx = body.getChildIndex(endPar);
-  for (var i = endIdx; i >= startIdx; i--) {
-    body.removeChild(body.getChild(i));
-  }
-}
-
-/** Ubica la celda de tabla que contiene un placeholder de texto dado — se
- *  usa para fijar el COLOR real de un banner de veredicto/aviso antes de
- *  reemplazar su texto (`body.replaceText()` cambia texto, nunca estilo;
- *  por eso hay que ubicar la celda primero, con el placeholder todavía
- *  intacto, y solo después reemplazar el texto). */
-function findCellByPlaceholder_(body, placeholderText) {
-  var found = body.findText(placeholderText);
-  if (!found) return null;
-  var el = found.getElement();
-  while (el && el.getType() !== DocumentApp.ElementType.TABLE_CELL) {
-    el = el.getParent();
-    if (!el) return null;
-  }
-  return el.asTableCell();
-}
-
-/** Fija el color real (verdictColor_) de un banner cuyo texto todavía es un
- *  placeholder — llamar SIEMPRE antes del `body.replaceText()` de ese mismo
- *  placeholder (una vez reemplazado el texto, ya no se puede volver a
- *  ubicar por el placeholder). */
-function setVerdictBannerColor_(body, placeholderText, verdict) {
-  var cell = findCellByPlaceholder_(body, placeholderText);
-  if (!cell) return;
-  var colors = verdictColor_(verdict);
-  cell.setBackgroundColor(colors.bg);
-  cell.editAsText().setForegroundColor(colors.text);
 }
 
 /** Mueve un archivo recién creado (DocumentApp.create() siempre lo deja en
@@ -4296,113 +4024,29 @@ function buildElectricalTemplateDoc_() {
   return doc.getId();
 }
 
-/** Arma la plantilla del informe de Aceite Dieléctrico — mismo criterio que
- *  la Eléctrica. A diferencia de TTR/Devanados/Aislamiento, las 3 tablas de
- *  Aceite (Fisicoquímico/DGA/PCB) SÍ tienen cantidad de filas fija — llevan
- *  un placeholder por cada celda de VALOR, no una tabla "header-only". */
-function buildOilTemplateDoc_() {
-  var doc = DocumentApp.create('PLANTILLA_INFORME_ACEITE_' + Date.now());
-  var body = doc.getBody();
-  body.setMarginTop(PROTOCOL_MARGIN_PT_).setMarginBottom(PROTOCOL_MARGIN_BOTTOM_PT_)
-    .setMarginLeft(PROTOCOL_MARGIN_PT_).setMarginRight(PROTOCOL_MARGIN_PT_);
-  body.setPageWidth(PROTOCOL_PAGE_WIDTH_PT_).setPageHeight(PROTOCOL_PAGE_HEIGHT_PT_);
-
-  appendPageHeader_(doc);
-  appendReportHeader_(body, TEMPLATE_SITE_, TEMPLATE_TRANSFORMER_, TEST_TYPE_PROTOCOL_TITLE_.ACEITE_DIELECTRICO);
-
-  appendSectionTitle_(body, 'Datos de la muestra');
-  appendDenseInfoGrid_(body, [
-    ['FECHA', '<<FECHA_MUESTRA>>', 'TÉCNICO RESPONSABLE', '<<TECNICO_MUESTRA>>'],
-    ['MUESTRA TOMADA POR', '<<MUESTRA_TOMADA_POR>>', 'FECHA DE MUESTREO', '<<FECHA_MUESTREO>>']
-  ]);
-
-  appendBlockStart_(body, 'FISICOQUIMICO');
-  appendSectionTitle_(body, 'Fisicoquímico');
-  appendResultsTable_(body, [
-    ['ENSAYO', 'VALOR', 'MÉTODO ASTM'],
-    ['Agua', '<<AGUA_PPM>> ppm', 'ASTM D1533-20'],
-    ['Rigidez dieléctrica', '<<RIGIDEZ_KV>> kV', 'ASTM D1816-12(2019)'],
-    ['Tensión interfacial', '<<TENSION_INTERFACIAL>> dinas/cm', 'ASTM D971-20'],
-    ['Número ácido', '<<NUMERO_ACIDO>> mg KOH/g', 'ASTM D974-22'],
-    ['Densidad relativa', '<<DENSIDAD_RELATIVA>>', 'ASTM D1298-12b(2017)e1'],
-    ['Color', '<<COLOR_ASTM>>', 'ASTM D1500-24'],
-    ['Examen visual', '<<EXAMEN_VISUAL>>', 'ASTM D1524-15(2022)']
-  ]);
-  appendVerdictBanner_(body, 'Fisicoquímico', '<<VEREDICTO_FISICOQUIMICO>>');
-  appendBlockEnd_(body, 'FISICOQUIMICO');
-
-  appendBlockStart_(body, 'DGA');
-  appendSectionTitle_(body, 'Cromatografía de Gases Disueltos (DGA)');
-  var dgaRows = [['GAS', 'VALOR (PPM)']];
-  OIL_DGA_GASES_.forEach(function (g) {
-    dgaRows.push([g.label, '<<DGA_' + g.key.toUpperCase() + '>>']);
-  });
-  appendResultsTable_(body, dgaRows);
-  var note = body.appendParagraph('Método ASTM D3612-02(2017), Método C — solo captura de datos, sin matriz de interpretación automática todavía.');
-  note.editAsText().setItalic(true).setFontSize(8).setForegroundColor(PDF_COLORS_.TEXT_MUTED);
-  appendBlockEnd_(body, 'DGA');
-
-  appendBlockStart_(body, 'PCB');
-  appendSectionTitle_(body, 'Cromatografía de PCB');
-  var pcbRows = [['AROCLOR', 'VALOR (PPM)']];
-  OIL_PCB_AROCLORES.forEach(function (key) {
-    pcbRows.push([key.replace('aroclor_', 'Aroclor '), '<<PCB_' + key.toUpperCase() + '>>']);
-  });
-  pcbRows.push(['Total PCB', '<<PCB_TOTAL>> ppm']);
-  appendResultsTable_(body, pcbRows);
-  var pcbNote = body.appendParagraph('Método ASTM D4059-00(2018) · ente acreditado IDEAM.');
-  pcbNote.editAsText().setItalic(true).setFontSize(8).setForegroundColor(PDF_COLORS_.TEXT_MUTED);
-  appendVerdictBanner_(body, 'PCB', '<<VEREDICTO_PCB>>');
-  appendBlockEnd_(body, 'PCB');
-
-  appendBlockStart_(body, 'ADJUNTO');
-  body.appendParagraph('');
-  var certPar = body.appendParagraph('Certificado del laboratorio acreditado: <<URL_ADJUNTO>>');
-  certPar.editAsText().setFontSize(9).setForegroundColor(PDF_COLORS_.ACCENT);
-  var noteReplace = body.appendParagraph('Este informe es un resumen/interpretación de los resultados — no reemplaza el certificado del laboratorio acreditado.');
-  noteReplace.editAsText().setItalic(true).setFontSize(8).setForegroundColor(PDF_COLORS_.TEXT_MUTED);
-  appendBlockEnd_(body, 'ADJUNTO');
-
-  appendVerdictBanner_(body, 'Veredicto general', '<<VEREDICTO_GENERAL>>');
-  appendSignatureSection_(body,
-    { nombre: '<<PROBADO_POR_NOMBRE>>', fecha: '<<PROBADO_POR_FECHA>>' },
-    { nombre: '<<CERTIFICADO_POR_NOMBRE>>', fecha: '<<CERTIFICADO_POR_FECHA>>' }
-  );
-
-  var footer = doc.addFooter();
-  var footerPar = footer.appendParagraph('M&A Ingeniería y Consultoría SAS · Informe generado vía Gestión de Pruebas el <<FECHA_GENERACION>>');
-  footerPar.setAlignment(DocumentApp.HorizontalAlignment.CENTER);
-  footerPar.editAsText().setFontSize(7).setForegroundColor(PDF_COLORS_.TEXT_MUTED);
-
-  doc.saveAndClose();
-  return doc.getId();
-}
-
 /** Acción de Administración, solo Administrador — corre UNA sola vez (o de
- *  nuevo si alguna vez se necesita rehacer las plantillas). Genera los 2
- *  documentos, los mueve a la carpeta "Plantillas de Informes", los
- *  comparte con el mismo criterio "cualquiera con el enlace puede editar"
- *  de siempre, y persiste sus fileId en Propiedades del script — el
- *  usuario solo necesita las URLs devueltas para abrirlas y agregar el
- *  watermark a mano; no hace falta que copie ningún ID de vuelta. */
+ *  nuevo si alguna vez se necesita rehacer la plantilla base). Genera SOLO
+ *  la plantilla Eléctrica (la que de verdad se arma "desde cero" con
+ *  DocumentApp) — Aceite e Historial ya NO se construyen aparte, se migran
+ *  a partir de esta con migrateOilTemplateFromElectrical_/
+ *  migrateHistoryTemplateFromElectrical_ (ronda 9/Informe de Historial), así
+ *  que corrent esta acción NUNCA debe pisar sus TEMPLATE_ACEITE_FILE_ID/
+ *  TEMPLATE_HISTORIAL_FILE_ID — antes de la ronda 10 (2026-09-29) sí lo
+ *  hacía (llamaba a la ya borrada buildOilTemplateDoc_), un bug latente real
+ *  que habría roto Aceite si esta acción se hubiera vuelto a correr. */
 function crearPlantillasInformes_(params, auth) {
   if (auth.role !== 'Administrador') {
     return jsonResponse_({ status: 403, message: 'Solo un Administrador puede generar las plantillas de informes' });
   }
   var elecId = buildElectricalTemplateDoc_();
-  var oilId = buildOilTemplateDoc_();
   var elecFile = DriveApp.getFileById(elecId);
-  var oilFile = DriveApp.getFileById(oilId);
   moveFileToPlantillasFolder_(elecFile);
-  moveFileToPlantillasFolder_(oilFile);
   shareForEditAnyone_(elecFile);
-  shareForEditAnyone_(oilFile);
   PropertiesService.getScriptProperties().setProperty('TEMPLATE_ELECTRICO_FILE_ID', elecId);
-  PropertiesService.getScriptProperties().setProperty('TEMPLATE_ACEITE_FILE_ID', oilId);
   return jsonResponse_({
     status: 200,
-    message: 'Plantillas generadas — ábrelas y agrega el watermark del logo a mano en cada una (Insertar imagen → Detrás del texto → transparencia 85-92% → centrada)',
-    data: { electricoUrl: elecFile.getUrl(), aceiteUrl: oilFile.getUrl() }
+    message: 'Plantilla Eléctrica generada — ábrela y agrega el watermark del logo a mano (Insertar imagen → Detrás del texto → transparencia 85-92% → centrada). Después, migra Aceite/Historial desde Administración para que reusen el mismo header/pie/watermark.',
+    data: { electricoUrl: elecFile.getUrl() }
   });
 }
 
@@ -5369,15 +5013,20 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
 // ---------------------------------------------------------------------------
 
 // Ronda 9 (2026-09-26) — HALLAZGO REAL en la verificación en vivo: estas 2
-// tablas (Fisicoquímico/PCB) van a TODO EL ANCHO (outerNestedFullRow_,
-// ~560pt), no emparejadas — un primer intento sumando solo 270pt (mismo
-// total que un bloque emparejado) dejaba la mitad derecha de la página en
-// blanco. Recalculado para sumar ~560pt.
-var OIL_RESULTS_COL_WIDTHS_PT_ = [150, 130, 55, 55, 100, 35, 35];
+// tablas (Fisicoquímico/PCB) van a TODO EL ANCHO (outerNestedFullRow_),
+// no emparejadas — un primer intento sumando solo 270pt (mismo total que
+// un bloque emparejado) dejaba la mitad derecha de la página en blanco.
+// Ronda 10 (2026-09-29) — CORREGIDO: se habían recalculado sumando 560pt
+// (prestado del total del Eléctrico, ver el mismo hallazgo ya corregido
+// en OIL_FULL_WIDTH_COLS_PT_/OIL_FIRMAS_COL_WIDTHS_PT_ más abajo), pero
+// el total real que gobierna la tabla maestra de Aceite es 540pt — mismo
+// reescalado proporcional que ya se le aplicó a Firmas. Verificado con
+// PDF real que ambas tablas ya alinean con el resto.
+var OIL_RESULTS_COL_WIDTHS_PT_ = [145, 125, 53, 53, 96, 34, 34];
 // DGA también va a todo el ancho, sin emparejar — mismo criterio, columnas
 // parejas (GAS ocupa cols 0-3 fusionadas, VALOR cols 4-6 fusionadas, ver
-// buildOilDgaRows_) sumando ~560pt.
-var OIL_DGA_COL_WIDTHS_PT_ = [70, 70, 70, 70, 93, 93, 94];
+// buildOilDgaRows_), reescalado a 540pt igual que arriba (ronda 10).
+var OIL_DGA_COL_WIDTHS_PT_ = [67, 67, 68, 68, 90, 90, 90];
 
 /** Ronda 9 (2026-09-26) — HALLAZGO REAL en la verificación en vivo: con
  *  las 3 secciones de Aceite activas a la vez (13 secciones numeradas en
@@ -6128,93 +5777,6 @@ function generateYearlyHistoryReport_(params, auth) {
       return jsonResponse_({ status: 400, message: e.message || 'No se pudo generar el informe de historial' });
     }
   });
-}
-
-/** Aceite dieléctrico — plantilla distinta: datos de muestra en vez de
- *  instrumento de M&A, solo las secciones activas
- *  (fisicoquimico_realizado/dga_realizado/pcb_realizado). Reescrita
- *  (2026-09-12) sobre el cambio de arquitectura de plantillas: copia la
- *  plantilla de Aceite, resuelve qué de las 3 secciones + el bloque de
- *  adjunto sobreviven, y reemplaza placeholders — a diferencia del
- *  Eléctrico, las 3 tablas de Aceite son de tamaño fijo, así que no hace
- *  falta insertar filas, solo reemplazar celdas de VALOR.
- *  ** REEMPLAZADA por regenerateOilCombinedReport_ (ronda 9, 2026-09-26)
- *  — se deja sin borrar por ahora, sin llamadores, hasta confirmar en
- *  vivo que la nueva función cubre todos los casos. */
-function generateOilTestReportPdf_(transformer, site, rawReadings, calculated, testMeta, folderId) {
-  var templateId = getOilTemplateFileId_();
-  if (!templateId) throw new Error('No existe la plantilla del informe de aceite — genera las plantillas primero desde Administración.');
-
-  var copy = DriveApp.getFileById(templateId).makeCopy('tmp_informe_aceite_' + Date.now());
-  var doc = DocumentApp.openById(copy.getId());
-  var body = doc.getBody();
-
-  body.replaceText('<<CLIENTE>>', site.client_name || '—');
-  body.replaceText('<<NIT>>', site.nit || '—');
-  body.replaceText('<<CIUDAD>>', site.ciudad || '—');
-  body.replaceText('<<PROYECTO>>', site.project_name || '—');
-  body.replaceText('<<FABRICANTE>>', transformer.manufacturer || '—');
-  body.replaceText('<<NUMERO_SERIE>>', transformer.serial_number || '—');
-  body.replaceText('<<GRUPO_CONEXION>>', transformer.vector_group || '—');
-  body.replaceText('<<POTENCIA_NOMINAL>>', transformer.rated_power_kva ? String(transformer.rated_power_kva) : '—');
-  body.replaceText('<<TENSION_PRIMARIA>>', transformer.hv_nominal_voltage ? String(transformer.hv_nominal_voltage) : '—');
-  body.replaceText('<<TENSION_SECUNDARIA>>', transformer.lv_nominal_voltage ? String(transformer.lv_nominal_voltage) : '—');
-  body.replaceText('<<REFRIGERACION>>', transformer.cooling_type || '—');
-  body.replaceText('<<ANO_FABRICACION>>', transformer.manufacture_year ? String(transformer.manufacture_year) : '—');
-
-  body.replaceText('<<FECHA_MUESTRA>>', fmtDatePdf_(testMeta.created_at));
-  body.replaceText('<<TECNICO_MUESTRA>>', testMeta.tested_by || '—');
-  body.replaceText('<<MUESTRA_TOMADA_POR>>', rawReadings.sample_taken_by || '—');
-  body.replaceText('<<FECHA_MUESTREO>>', rawReadings.sample_date ? fmtDatePdf_(rawReadings.sample_date) : '—');
-
-  resolveTemplateBlock_(body, 'FISICOQUIMICO', !!calculated.sections.fisicoquimico);
-  if (calculated.sections.fisicoquimico) {
-    setVerdictBannerColor_(body, '<<VEREDICTO_FISICOQUIMICO>>', calculated.sections.fisicoquimico.verdict);
-    body.replaceText('<<VEREDICTO_FISICOQUIMICO>>', calculated.sections.fisicoquimico.verdict);
-    body.replaceText('<<AGUA_PPM>>', String(numOrDash_(rawReadings.agua_ppm)));
-    body.replaceText('<<RIGIDEZ_KV>>', String(numOrDash_(rawReadings.rigidez_dielectrica_kv)));
-    body.replaceText('<<TENSION_INTERFACIAL>>', String(numOrDash_(rawReadings.tension_interfacial_dinas_cm)));
-    body.replaceText('<<NUMERO_ACIDO>>', String(numOrDash_(rawReadings.numero_acido_mg_koh_g)));
-    body.replaceText('<<DENSIDAD_RELATIVA>>', String(numOrDash_(rawReadings.densidad_relativa)));
-    body.replaceText('<<COLOR_ASTM>>', rawReadings.color_astm || '—');
-    body.replaceText('<<EXAMEN_VISUAL>>', rawReadings.examen_visual || '—');
-  }
-
-  resolveTemplateBlock_(body, 'DGA', !!calculated.sections.dga);
-  if (calculated.sections.dga) {
-    OIL_DGA_GASES_.forEach(function (g) {
-      body.replaceText('<<DGA_' + g.key.toUpperCase() + '>>', String(numOrDash_(rawReadings[g.key])));
-    });
-  }
-
-  resolveTemplateBlock_(body, 'PCB', !!calculated.sections.pcb);
-  if (calculated.sections.pcb) {
-    setVerdictBannerColor_(body, '<<VEREDICTO_PCB>>', calculated.sections.pcb.verdict);
-    body.replaceText('<<VEREDICTO_PCB>>', calculated.sections.pcb.verdict);
-    OIL_PCB_AROCLORES.forEach(function (key) {
-      body.replaceText('<<PCB_' + key.toUpperCase() + '>>', String(numOrDash_(rawReadings[key])));
-    });
-    body.replaceText('<<PCB_TOTAL>>', calculated.sections.pcb.totalPcbPpm.toFixed(2));
-  }
-
-  resolveTemplateBlock_(body, 'ADJUNTO', !!testMeta.attachment_url);
-  if (testMeta.attachment_url) {
-    body.replaceText('<<URL_ADJUNTO>>', testMeta.attachment_url);
-  }
-
-  setVerdictBannerColor_(body, '<<VEREDICTO_GENERAL>>', calculated.overallVerdict);
-  body.replaceText('<<VEREDICTO_GENERAL>>', calculated.overallVerdict);
-
-  // Mismo criterio que el eléctrico (2026-09-13): PROBADO POR usa
-  // operador_nombre (quien realmente hizo la prueba en campo), no
-  // tested_by (la cuenta de login compartida); CERTIFICADO POR queda
-  // fijo en el ingeniero responsable, igual que APROBADO POR.
-  body.replaceText('<<PROBADO_POR_NOMBRE>>', testMeta.operador_nombre || testMeta.tested_by || '—');
-  body.replaceText('<<PROBADO_POR_FECHA>>', fmtDatePdf_(testMeta.created_at));
-  body.replaceText('<<CERTIFICADO_POR_NOMBRE>>', ENGINEER_SIGNATURE_NAME_);
-  body.replaceText('<<CERTIFICADO_POR_FECHA>>', fmtDatePdf_(testMeta.revisado_at));
-
-  return finalizeReportPdf_(doc, folderId, 'Informe_Aceite_' + transformer.serial_number);
 }
 
 /** Exporta el Doc a PDF, lo guarda en la carpeta destino, y manda el Doc
