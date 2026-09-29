@@ -1906,7 +1906,8 @@ var PDF_COLORS_ = {
  *  (regenerateElectricalCombinedReport_); solo Aceite sigue siendo un
  *  informe independiente por envío. */
 var TEST_TYPE_PROTOCOL_TITLE_ = {
-  ACEITE_DIELECTRICO: 'PROTOCOLO DE ANÁLISIS DE ACEITE DIELÉCTRICO'
+  ACEITE_DIELECTRICO: 'PROTOCOLO DE ANÁLISIS DE ACEITE DIELÉCTRICO',
+  HISTORIAL: 'INFORME DE HISTORIAL DE PRUEBAS'
 };
 
 /** Mismo criterio de severidad que ya usa la app para pintar pills
@@ -3188,6 +3189,44 @@ function buildTtrDeviationChart_(calc, esMonofasico, sectionNum) {
   }
 }
 
+/** Gráfica de líneas genérica para tendencias año a año — Informe de
+ *  Historial (2026-09-29). Mismo servicio Charts y mismo criterio de
+ *  nunca-lanzar que buildTtrDeviationChart_ (si algo falla devuelve null,
+ *  nunca bloquea el informe). `seriesByLabel` es {etiqueta: {año: valor|
+ *  null}} — un año sin dato en una serie se manda como `null` a la
+ *  DataTable de Charts, que respeta el hueco (no dibuja un 0 falso, a
+ *  diferencia de buildTtrDeviationChart_, que sí lo hace pero ahí "TAP sin
+ *  medir dentro de la misma prueba" es un caso distinto a "año sin ninguna
+ *  prueba"). Verificado con un PDF real que Charts.newLineChart sí deja el
+ *  hueco en vez de interpolar o forzar 0. */
+function buildYearlyTrendChart_(title, years, seriesByLabel, colors) {
+  var labels = Object.keys(seriesByLabel || {});
+  if (labels.length === 0) return null;
+  try {
+    var dataTable = Charts.newDataTable().addColumn(Charts.ColumnType.STRING, 'Año');
+    labels.forEach(function (l) { dataTable.addColumn(Charts.ColumnType.NUMBER, l); });
+    years.forEach(function (y) {
+      var row = [String(y)];
+      labels.forEach(function (l) {
+        var v = seriesByLabel[l][y];
+        row.push(typeof v === 'number' && !isNaN(v) ? v : null);
+      });
+      dataTable.addRow(row);
+    });
+    var chart = Charts.newLineChart()
+      .setDataTable(dataTable)
+      .setTitle(title)
+      .setDimensions(260, 200)
+      .setColors(colors)
+      .setLegendPosition(labels.length > 1 ? Charts.Position.BOTTOM : Charts.Position.NONE)
+      .setPointStyle(Charts.PointStyle.MEDIUM)
+      .build();
+    return chart.getAs('image/png');
+  } catch (e) {
+    return null;
+  }
+}
+
 /** Gráfica de curva de aislamiento (Punto 11, ronda 3, 2026-09-15 — a
  *  pedido del "prompt maestro" del cliente): NO es una curva continua —
  *  la app solo captura 3 lecturas por combinación (30 s / 60 s / 10 min,
@@ -3866,6 +3905,142 @@ function findLatestElectricalTestsByType_(transformerId) {
   return latest;
 }
 
+/** TODAS las pruebas Certificadas de un transformador (cualquier tipo,
+ *  incluye Aceite dieléctrico a propósito — a diferencia de
+ *  findLatestElectricalTestsByType_, que sí lo excluye porque ese es solo
+ *  para el combinado eléctrico) — fuente de datos del Informe de Historial
+ *  (ver generateYearlyHistoryReportPdf_). `raw_readings`/`calculated_results`
+ *  se parsean acá mismo (mismo criterio que listTests_ en modo completo) —
+ *  esta función nunca se llama en modo "light", el informe de historial
+ *  siempre necesita los datos completos. */
+function findAllCertifiedTestsByTransformer_(transformerId) {
+  var sheet = getSheet_('PRUEBAS');
+  var data = sheet.getDataRange().getValues();
+  var transformerCol = HEADERS.PRUEBAS.indexOf('transformer_id');
+  var result = [];
+  for (var r = 1; r < data.length; r++) {
+    if (data[r][transformerCol] !== transformerId) continue;
+    var obj = rowToObject_(data[r], 'PRUEBAS', r + 1);
+    if (normalizeEstadoCertificacion_(obj.estado_certificacion) !== 'Certificada') continue;
+    result.push({
+      test_type: obj.test_type,
+      created_at: obj.created_at,
+      raw_readings: safeParseJson_(obj.raw_readings_json),
+      calculated_results: safeParseJson_(obj.calculated_results_json)
+    });
+  }
+  return result;
+}
+
+/** Agrupa por año calendario de `created_at` — mismo criterio que
+ *  renderYearlyBehaviorChart_ en app.js (ver CLAUDE.md), portado acá para
+ *  que el Informe de Historial (PDF, servidor) calcule exactamente las
+ *  mismas tendencias que ya ve el usuario en pantalla. */
+function groupTestsByYear_(tests) {
+  var byYear = {};
+  tests.forEach(function (t) {
+    var year = new Date(t.created_at).getFullYear();
+    if (!byYear[year]) byYear[year] = [];
+    byYear[year].push(t);
+  });
+  var years = Object.keys(byYear).map(Number).sort(function (a, b) { return a - b; });
+  return { byYear: byYear, years: years };
+}
+
+function average_(values) {
+  return values.reduce(function (a, b) { return a + b; }, 0) / values.length;
+}
+
+/** Puerto exacto de computeYearlyInsulationTrend_ (app.js) — mismo
+ *  algoritmo, corriendo en el servidor para poder dibujar la gráfica como
+ *  imagen embebida en el PDF (Charts.newLineChart no existe en el
+ *  navegador). Series por combinación de devanado, NO promediadas entre
+ *  sí — ver comentario original en app.js sobre por qué. */
+function computeYearlyInsulationTrend_(byYear, years) {
+  var combos = ['AT-BT', 'AT-Tierra', 'BT-Tierra'];
+  var dar = {}, ip = {};
+  combos.forEach(function (c) { dar[c] = {}; ip[c] = {}; });
+  var any = false;
+  years.forEach(function (y) {
+    var darPerCombo = {}, ipPerCombo = {};
+    combos.forEach(function (c) { darPerCombo[c] = []; ipPerCombo[c] = []; });
+    byYear[y].forEach(function (t) {
+      if (t.test_type !== 'AISLAMIENTO') return;
+      var calc = t.calculated_results;
+      if (!calc || !calc.measurements) return;
+      combos.forEach(function (c) {
+        var m = calc.measurements[c];
+        if (!m) return;
+        if (typeof m.dar === 'number' && !isNaN(m.dar)) darPerCombo[c].push(m.dar);
+        if (typeof m.ip === 'number' && !isNaN(m.ip)) ipPerCombo[c].push(m.ip);
+      });
+    });
+    combos.forEach(function (c) {
+      if (darPerCombo[c].length) { dar[c][y] = average_(darPerCombo[c]); any = true; } else { dar[c][y] = null; }
+      if (ipPerCombo[c].length) { ip[c][y] = average_(ipPerCombo[c]); any = true; } else { ip[c][y] = null; }
+    });
+  });
+  return any ? { dar: dar, ip: ip } : null;
+}
+
+/** Puerto exacto de computeYearlyOilTrend_ (app.js) — ver ahí para el
+ *  porqué de leer raw_readings y no calculated_results. */
+function computeYearlyOilTrend_(byYear, years) {
+  var rigidezValues = {}, acidezValues = {};
+  var any = false;
+  years.forEach(function (y) {
+    var rigidezPerTest = [], acidezPerTest = [];
+    byYear[y].forEach(function (t) {
+      if (t.test_type !== 'ACEITE_DIELECTRICO') return;
+      var raw = t.raw_readings;
+      if (!raw || !raw.fisicoquimico_realizado) return;
+      if (typeof raw.rigidez_dielectrica_kv === 'number' && !isNaN(raw.rigidez_dielectrica_kv)) rigidezPerTest.push(raw.rigidez_dielectrica_kv);
+      if (typeof raw.numero_acido_mg_koh_g === 'number' && !isNaN(raw.numero_acido_mg_koh_g)) acidezPerTest.push(raw.numero_acido_mg_koh_g);
+    });
+    if (rigidezPerTest.length) { rigidezValues[y] = average_(rigidezPerTest); any = true; } else { rigidezValues[y] = null; }
+    if (acidezPerTest.length) { acidezValues[y] = average_(acidezPerTest); any = true; } else { acidezValues[y] = null; }
+  });
+  return any ? { rigidez: rigidezValues, acidez: acidezValues } : null;
+}
+
+/** Nuevo (no existía en app.js) — tendencia anual de TTR o Resistencia de
+ *  Devanados, SOLO en la posición de TAP nominal del equipo (para que la
+ *  serie compare siempre el mismo punto de operación a través de los años,
+ *  nunca TAPs distintos entre sí). `getTapPhases(calc)` resuelve la
+ *  diferencia real de forma entre los dos tipos (TTR: `calc.taps` es un
+ *  OBJETO keyed por string de TAP; Devanados: `calc.taps` es un ARREGLO,
+ *  hay que buscar por `.tapPosition` — ver calculateTtr_/
+ *  calculateWindingResistance_) y devuelve {faseKey: valorNumérico} o
+ *  `null` si esa prueba no midió el TAP nominal. Igual que las 2 funciones
+ *  de arriba: promedia si hay más de una prueba certificada el mismo año,
+ *  un año sin dato queda `null` (hueco real, no un 0 inventado). */
+function computeYearlyTapPhaseTrend_(byYear, years, testType, getTapPhases) {
+  var result = {};
+  var any = false;
+  years.forEach(function (y) {
+    var perPhase = {};
+    byYear[y].forEach(function (t) {
+      if (t.test_type !== testType) return;
+      var calc = t.calculated_results;
+      if (!calc) return;
+      var phases = getTapPhases(calc);
+      if (!phases) return;
+      Object.keys(phases).forEach(function (pk) {
+        var v = phases[pk];
+        if (typeof v !== 'number' || isNaN(v)) return;
+        if (!perPhase[pk]) perPhase[pk] = [];
+        perPhase[pk].push(v);
+      });
+    });
+    Object.keys(perPhase).forEach(function (pk) {
+      if (!result[pk]) result[pk] = {};
+      result[pk][y] = average_(perPhase[pk]);
+      any = true;
+    });
+  });
+  return any ? result : null;
+}
+
 /** Timestamp seguro para nombre de archivo, en el timezone del script
  *  (America/Bogota, ver appsscript.json) — mismo cuidado de timezone que
  *  fmtDatePdf_, formateado con Utilities.formatDate en vez de toISOString()
@@ -4037,6 +4212,9 @@ function getElectricalTemplateFileId_() {
 }
 function getOilTemplateFileId_() {
   return PropertiesService.getScriptProperties().getProperty('TEMPLATE_ACEITE_FILE_ID');
+}
+function getHistoryTemplateFileId_() {
+  return PropertiesService.getScriptProperties().getProperty('TEMPLATE_HISTORIAL_FILE_ID');
 }
 
 /** Solo LEE los links de las plantillas ya existentes — a diferencia de
@@ -4617,6 +4795,35 @@ function migrateOilTemplateFromElectrical_(params, auth) {
     status: 200,
     message: 'Plantilla de Aceite migrada desde la Eléctrica (header/pie/watermark reusados) — la plantilla vieja sigue en Drive, sin borrar, simplemente ya no está en uso.',
     data: { aceiteUrl: file.getUrl() }
+  });
+}
+
+/** Mismo patrón que migrateOilTemplateFromElectrical_ — Informe de
+ *  Historial (2026-09-29): reusa header/pie/watermark del Eléctrico, solo
+ *  cambia el título y el marcador de contenido (acá no es una "tabla de
+ *  resultados" sino una sección de gráficas de tendencia + datos del
+ *  cliente/equipo, ver generateYearlyHistoryReportPdf_). */
+function migrateHistoryTemplateFromElectrical_(params, auth) {
+  if (auth.role !== 'Administrador') {
+    return jsonResponse_({ status: 403, message: 'Solo un Administrador puede modificar las plantillas' });
+  }
+  var elecTemplateId = getElectricalTemplateFileId_();
+  if (!elecTemplateId) {
+    return jsonResponse_({ status: 400, message: 'No existe la plantilla Eléctrica todavía — genérala primero desde Administración.' });
+  }
+  var copy = DriveApp.getFileById(elecTemplateId).makeCopy('PLANTILLA_INFORME_HISTORIAL_' + Date.now());
+  var doc = DocumentApp.openById(copy.getId());
+  var body = doc.getBody();
+  body.replaceText('PROTOCOLO DE PRUEBAS ELÉCTRICAS', TEST_TYPE_PROTOCOL_TITLE_.HISTORIAL);
+  body.replaceText('<<TABLA_RESULTADOS_ELECTRICOS>>', '<<CONTENIDO_HISTORIAL>>');
+  doc.saveAndClose();
+  var file = DriveApp.getFileById(copy.getId());
+  moveFileToPlantillasFolder_(file);
+  PropertiesService.getScriptProperties().setProperty('TEMPLATE_HISTORIAL_FILE_ID', copy.getId());
+  return jsonResponse_({
+    status: 200,
+    message: 'Plantilla de Historial migrada desde la Eléctrica (header/pie/watermark reusados) — la plantilla vieja sigue en Drive, sin borrar, simplemente ya no está en uso.',
+    data: { historialUrl: file.getUrl() }
   });
 }
 
@@ -5715,6 +5922,204 @@ function regenerateOilCombinedReport_(transformer, site, rawReadings, calculated
   return saved;
 }
 
+/** Ancho total real (pt) del Informe de Historial — la plantilla es una
+ *  copia de la Eléctrica (ver migrateHistoryTemplateFromElectrical_), así
+ *  que hereda sus mismos márgenes; 560pt es el mismo total que gobierna la
+ *  Sección 1 del Eléctrico (SECTION1_THREE_COL_WIDTHS_PT_). Un array
+ *  PROPIO, nunca se reusa OIL_FULL_WIDTH_COLS_PT_ (540, el total real de
+ *  Aceite) — mismo criterio ya aprendido con el bug de desalineación de
+ *  Aceite: cada informe tiene su propio total real, nunca se asume el de
+ *  otro. */
+var HISTORY_INFO_COL_WIDTHS_PT_ = [80, 80, 80, 80, 80, 80, 80];
+
+/** Grilla etiqueta/valor de "Datos del cliente y del equipo" del Informe de
+ *  Historial — mismo patrón que buildOilDenseInfoRows_ (2 campos por fila)
+ *  pero con su PROPIO ancho total (ver HISTORY_INFO_COL_WIDTHS_PT_ arriba):
+ *  no se reusa buildOilDenseInfoRows_ directamente porque esa función tiene
+ *  hardcodeado el ancho de 270pt (pensado para ir emparejada con otra
+ *  grilla al lado), y acá esta sección va sola, a todo el ancho. */
+function buildHistoryInfoRows_(bannerText, fields) {
+  var rows = [unifiedBannerRow_(bannerText)];
+  var merges = [{ startColumnIndex: 1, columnSpan: 2 }, { startColumnIndex: 4, columnSpan: 3 }];
+  for (var i = 0; i < fields.length; i += 2) {
+    var left = fields[i];
+    var right = fields[i + 1] || ['', ''];
+    rows.push(unifiedLabelRow_([left[0], left[1], '', right[0], right[1], '', ''], [0, 3], merges));
+  }
+  rows.colWidths = HISTORY_INFO_COL_WIDTHS_PT_;
+  return rows;
+}
+
+/** Bloque de texto a todo el ancho del Informe de Historial — mismo
+ *  criterio que buildOilTextBlockRows_(..., true), pero con el ancho propio
+ *  de este informe (ver HISTORY_INFO_COL_WIDTHS_PT_). Usado solo para el
+ *  aviso de "sin TAP nominal definido" y el de "sin datos suficientes". */
+function buildHistoryTextBlockRows_(bannerText, text) {
+  var rows = [unifiedBannerRow_(bannerText)];
+  var fullMerge = [{ startColumnIndex: 0, columnSpan: UNIFIED_TABLE_COLS_ }];
+  var cells = new Array(UNIFIED_TABLE_COLS_).fill('');
+  cells[0] = text;
+  rows.push(unifiedRow_(cells, 'data', fullMerge));
+  rows.colWidths = HISTORY_INFO_COL_WIDTHS_PT_;
+  return rows;
+}
+
+/**
+ * Informe de Historial de Pruebas (2026-09-29) — PRIMER "informe standalone"
+ * de la app, distinto de los 2 patrones que ya existían (panel embebido sin
+ * PDF / PDF de certificación por protocolo): agrega TODAS las pruebas
+ * Certificadas de un transformador, sin importar el año, y arma un PDF con
+ * las mismas 2 tendencias que ya se ven en pantalla (Aislamiento DAR/IP,
+ * Aceite rigidez/acidez — ver renderYearlyBehaviorChart_ en app.js) MÁS 2
+ * tendencias nuevas que no existían en ningún lado (TTR y Resistencia de
+ * Devanados, ambas fijas en la posición de TAP nominal del equipo, para
+ * comparar siempre el mismo punto de operación entre años).
+ *
+ * A propósito NO lleva QR de autenticidad ni bloque de Firmas: no es un
+ * evento de certificación nuevo (no hay un ingeniero aprobando un resultado
+ * puntual acá), es una agregación de lectura de resultados que YA fueron
+ * certificados individualmente — cada uno de esos informes originales ya
+ * tiene su propio QR. Se guarda en DOCUMENTOS como categoría GENERALES (no
+ * CERTIFICADOS) por el mismo motivo: verificarInformeElectrico_ exige
+ * category === 'CERTIFICADOS', y este informe no debe ser "verificable" por
+ * QR porque no tiene ninguno.
+ */
+function generateYearlyHistoryReportPdf_(transformer, site, folderId, auth) {
+  var templateId = getHistoryTemplateFileId_();
+  if (!templateId) throw new Error('No existe la plantilla del informe de historial — corre "Migrar plantilla de Historial" desde Administración.');
+
+  var tests = findAllCertifiedTestsByTransformer_(transformer.id);
+  if (tests.length === 0) throw new Error('Este equipo todavía no tiene ninguna prueba certificada — no hay historial que mostrar.');
+
+  var grouped = groupTestsByYear_(tests);
+  var byYear = grouped.byYear, years = grouped.years;
+  // `transformer` acá es la fila cruda (findTransformerRow_, no
+  // transformerRowToJson_) — tap_config_json todavía sin parsear, a
+  // diferencia de lo que ve el frontend (transformer.tap_config).
+  var tapConfig = safeParseJson_(transformer.tap_config_json);
+  var nominalTap = transformer.posicion_tap_nominal || (tapConfig && tapConfig.neutralPosition) || null;
+
+  var copy = DriveApp.getFileById(templateId).makeCopy('tmp_informe_historial_' + Date.now());
+  var doc = DocumentApp.openById(copy.getId());
+  var body = doc.getBody();
+
+  var n = 1;
+  var outerRows = [];
+  var periodoText = years[0] === years[years.length - 1] ? String(years[0]) : (years[0] + ' – ' + years[years.length - 1]);
+
+  outerRows.push(outerNestedFullRow_(numberSection_(buildHistoryInfoRows_('DATOS DEL CLIENTE Y DEL EQUIPO', [
+    ['CLIENTE', site.client_name || '—'],
+    ['NIT', site.nit || '—'],
+    ['PROYECTO', site.project_name || '—'],
+    ['FABRICANTE', transformer.manufacturer || '—'],
+    ['N° DE SERIE', transformer.serial_number || '—'],
+    ['POSICIÓN DE TAP NOMINAL', nominalTap ? ('TAP ' + nominalTap) : 'No definida'],
+    ['PERIODO CUBIERTO', periodoText],
+    ['TOTAL DE PRUEBAS CERTIFICADAS', String(tests.length)]
+  ]), n++)));
+
+  var insulationTrend = computeYearlyInsulationTrend_(byYear, years);
+  if (insulationTrend) {
+    var insulationColors = [PDF_COLORS_.ACCENT, PDF_COLORS_.DANGER, PDF_COLORS_.WARNING];
+    var darChart = buildYearlyTrendChart_('DAR POR COMBINACIÓN DE DEVANADO', years, insulationTrend.dar, insulationColors);
+    var ipChart = buildYearlyTrendChart_('IP POR COMBINACIÓN DE DEVANADO', years, insulationTrend.ip, insulationColors);
+    outerRows.push(outerImagesPairRow_(
+      n++ + '. RESISTENCIA DE AISLAMIENTO — TENDENCIA ANUAL',
+      [{ blob: darChart, widthPt: 260, heightPt: 200 }, { blob: ipChart, widthPt: 260, heightPt: 200 }],
+      null
+    ));
+  }
+
+  var oilTrend = computeYearlyOilTrend_(byYear, years);
+  if (oilTrend) {
+    var rigidezChart = buildYearlyTrendChart_('RIGIDEZ DIELÉCTRICA PROMEDIO (kV)', years, { 'Rigidez (kV)': oilTrend.rigidez }, [PDF_COLORS_.ACCENT]);
+    var acidezChart = buildYearlyTrendChart_('NÚMERO DE ACIDEZ PROMEDIO (mg KOH/g)', years, { 'Acidez (mg KOH/g)': oilTrend.acidez }, [PDF_COLORS_.DANGER]);
+    outerRows.push(outerImagesPairRow_(
+      n++ + '. ACEITE DIELÉCTRICO — TENDENCIA ANUAL',
+      [{ blob: rigidezChart, widthPt: 260, heightPt: 200 }, { blob: acidezChart, widthPt: 260, heightPt: 200 }],
+      null
+    ));
+  }
+
+  if (nominalTap != null) {
+    var tapPhaseColors = [PDF_COLORS_.ACCENT, PDF_COLORS_.DANGER, PDF_COLORS_.WARNING];
+    var ttrTrend = computeYearlyTapPhaseTrend_(byYear, years, 'TTR', function (calc) {
+      var tap = calc.taps && calc.taps[String(nominalTap)];
+      if (!tap || !tap.phases) return null;
+      var out = {};
+      Object.keys(tap.phases).forEach(function (pk) { out[pk] = tap.phases[pk].measuredRatio; });
+      return out;
+    });
+    var windingTrend = computeYearlyTapPhaseTrend_(byYear, years, 'RESISTENCIA_DEVANADOS', function (calc) {
+      var taps = calc.taps || [];
+      var entry = null;
+      for (var i = 0; i < taps.length; i++) { if (taps[i].tapPosition === nominalTap) { entry = taps[i]; break; } }
+      if (!entry || !entry.phases) return null;
+      var out = {};
+      Object.keys(entry.phases).forEach(function (pk) { out[pk] = entry.phases[pk].resistanceOhm; });
+      return out;
+    });
+    if (ttrTrend || windingTrend) {
+      var images = [];
+      if (ttrTrend) images.push({ blob: buildYearlyTrendChart_('TTR — RELACIÓN MEDIDA EN TAP ' + nominalTap, years, ttrTrend, tapPhaseColors), widthPt: 260, heightPt: 200 });
+      if (windingTrend) images.push({ blob: buildYearlyTrendChart_('RESISTENCIA DE DEVANADOS EN TAP ' + nominalTap + ' (Ω)', years, windingTrend, tapPhaseColors), widthPt: 260, heightPt: 200 });
+      outerRows.push(outerImagesPairRow_(n++ + '. TTR Y RESISTENCIA DE DEVANADOS EN TAP NOMINAL — TENDENCIA ANUAL', images, null));
+    }
+  } else {
+    outerRows.push(outerNestedFullRow_(numberSection_(buildHistoryTextBlockRows_('TTR Y RESISTENCIA DE DEVANADOS EN TAP NOMINAL',
+      'No fue posible determinar la posición de TAP nominal de este equipo — configúrela desde "Editar equipo" para incluir esta tendencia en el próximo informe.'
+    ), n++)));
+  }
+
+  if (outerRows.length === 1) {
+    outerRows.push(outerNestedFullRow_(numberSection_(buildHistoryTextBlockRows_('TENDENCIAS',
+      'No hay suficientes datos numéricos en las pruebas certificadas de este equipo para construir ninguna gráfica de tendencia todavía.'
+    ), n++)));
+  }
+
+  var contentPlaceholderPar = findMarkerParagraph_(body, '<<CONTENIDO_HISTORIAL>>');
+  if (!contentPlaceholderPar) throw new Error('La plantilla de Historial no tiene su marcador — corre "Migrar plantilla de Historial" desde Administración.');
+  var tableResult = insertOuterResultsTable_(body, contentPlaceholderPar, outerRows);
+  body.removeChild(contentPlaceholderPar);
+
+  var fileName = 'Informe_Historial_' + transformer.serial_number + '_' + fmtTimestampForFilename_(new Date());
+  var saved = finalizeReportPdf_(doc, folderId, fileName, { outerMarkerText: tableResult.outerMarkerText, outerMergeSpecs: tableResult.outerMergeSpecs, nestedRegistry: tableResult.nestedRegistry });
+
+  appendRow_('DOCUMENTOS', {
+    id: generateId_(),
+    site_id: transformer.site_id,
+    category: 'GENERALES',
+    file_name: fileName,
+    file_id: saved.fileId,
+    mime_type: 'application/pdf',
+    uploaded_by: (auth && auth.username) || 'sistema',
+    created_at: new Date().toISOString()
+  });
+
+  return saved;
+}
+
+/** Acción POST — sin restricción de rol a propósito: no certifica nada
+ *  nuevo, solo agrega resultados que YA fueron certificados por un
+ *  Supervisor/Administrador; un Técnico puede generarlo igual que puede ver
+ *  el panel "Comportamiento anual" en pantalla. */
+function generateYearlyHistoryReport_(params, auth) {
+  return withLock_(function () {
+    if (!params.transformer_id) return jsonResponse_({ status: 400, message: 'transformer_id es obligatorio' });
+    var transformer = findTransformerRow_(params.transformer_id);
+    if (!transformer) return jsonResponse_({ status: 404, message: 'Transformador no encontrado' });
+    var site = findSiteRow_(transformer.site_id);
+    if (!site) return jsonResponse_({ status: 404, message: 'Cliente/Proyecto no encontrado' });
+    var folders = ensureSiteFolders_(site);
+    try {
+      var saved = generateYearlyHistoryReportPdf_(transformer, site, folders.documentosFolderId, auth);
+      return jsonResponse_({ status: 200, message: 'Informe de historial generado', data: { report_url: saved.url } });
+    } catch (e) {
+      return jsonResponse_({ status: 400, message: e.message || 'No se pudo generar el informe de historial' });
+    }
+  });
+}
+
 /** Aceite dieléctrico — plantilla distinta: datos de muestra en vez de
  *  instrumento de M&A, solo las secciones activas
  *  (fisicoquimico_realizado/dga_realizado/pcb_realizado). Reescrita
@@ -6708,6 +7113,8 @@ var POST_ACTIONS = {
   compactElectricalTemplateTitleBox: compactElectricalTemplateTitleBox_,
   setReportTemplatesPageSize: setReportTemplatesPageSize_,
   migrateOilTemplateFromElectrical: migrateOilTemplateFromElectrical_,
+  migrateHistoryTemplateFromElectrical: migrateHistoryTemplateFromElectrical_,
+  generateYearlyHistoryReport: generateYearlyHistoryReport_,
   rejectTest: rejectTest_,
   updateTestDraft: updateTestDraft_,
   uploadDocument: uploadDocument_,

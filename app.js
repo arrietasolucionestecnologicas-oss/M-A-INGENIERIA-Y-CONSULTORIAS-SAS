@@ -2064,6 +2064,32 @@ function handleCertifyElectricalReport_() {
     });
 }
 
+/** Informe de Historial de Pruebas (2026-09-29) — a diferencia de
+ *  "Certificar Pruebas Eléctricas", no certifica nada nuevo: solo agrega en
+ *  un PDF las pruebas YA certificadas de este equipo a través de los años
+ *  (mismas tendencias del panel "Comportamiento anual" de arriba, más TTR/
+ *  Resistencia de Devanados en el TAP nominal, que no existían en pantalla
+ *  todavía). Por eso no hay chequeo de rol acá ni en el backend — cualquier
+ *  usuario que puede ver el detalle del equipo puede generarlo. */
+function handleGenerateYearlyHistoryReport_() {
+  if (!confirm('¿Generar el informe de historial de pruebas de este equipo? Incluye todas las pruebas certificadas a través de los años.')) return;
+  var btn = document.getElementById('generateHistoryReportBtn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Generando…'; }
+
+  callApi('generateYearlyHistoryReport', 'POST', { transformer_id: state.currentTransformerId })
+    .then(function (data) {
+      if (data && data.report_url) window.open(data.report_url, '_blank');
+      showToast_('Informe de historial generado', 'success');
+    })
+    .catch(function (err) {
+      if (err && (err.status === 402 || err.status === 403)) return;
+      alert((err && err.message) || 'No se pudo generar el informe de historial.');
+    })
+    .finally(function () {
+      if (btn) { btn.disabled = false; btn.textContent = 'Generar informe de historial'; }
+    });
+}
+
 /** Rechazo terminal: el registro permanece (nunca se borra), pero nunca
  *  genera PDF ni entra al informe combinado. */
 function handleRejectTest_(testId) {
