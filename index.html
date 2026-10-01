@@ -673,6 +673,15 @@
           </select>
           <div class="field-note">"Solo la posición actual" deja un único TAP listo para digitar (el que está en servicio hoy). "Todas las posiciones" habilita agregar/quitar TAPs para un levantamiento completo.</div>
         </div>
+        <div class="field" style="max-width:220px;">
+          <label>Unidad de resistencia</label>
+          <select id="wrResistanceUnitSelect" onchange="updateWrResistanceUnit_(this.value)">
+            <option value="ohm">&Omega; (ohmios)</option>
+            <option value="milliohm">m&Omega; (miliohmios)</option>
+            <option value="microohm">&micro;&Omega; (microohmios)</option>
+          </select>
+          <div class="field-note">Según lo que muestre tu micro-ohmetro — el informe siempre se guarda y se ve en Ω, esto solo cambia en qué unidad digitas.</div>
+        </div>
 
         <div class="test-grid">
           <div class="panel" id="wrPanelPrimario">

@@ -1016,75 +1016,80 @@ function handleCreateTransformerSubmit(e) {
   }
   var btn = document.getElementById('createTransformerBtn');
   var siteId = state.currentSiteId;
-  btn.disabled = true;
-  setStatus_(status, 'Verificando número de serie…', false);
+  setStatus_(status, '', false);
 
   var nominalForTaps = isNaN(hv) ? 0 : hv;
+  var payload = {
+    site_id: siteId,
+    serial_number: serial,
+    manufacturer: manufacturer,
+    phase_type: phaseType,
+    vector_group: vectorGroup,
+    hv_nominal_voltage: isNaN(hv) ? null : hv,
+    lv_nominal_voltage: isNaN(lv) ? null : lv,
+    manufacture_year: year || null,
+    rated_power_kva: isNaN(power) ? null : power,
+    cooling_type: cooling,
+    impedance_percent: isNaN(impedance) ? null : impedance,
+    insulation_type: insulation,
+    at_devanado_material: atMaterial,
+    bt_devanado_material: btMaterial,
+    numero_posiciones_tap: tapPositionsCount,
+    posicion_tap_nominal: posTapNominal,
+    posicion_actual_tap: posActualTap,
+    is_special_design: false,
+    ttr_ofertado: document.getElementById('newTrfTtrOfertado').checked,
+    resistencia_devanados_ofertado: document.getElementById('newTrfDevanadosOfertado').checked,
+    aislamiento_ofertado: document.getElementById('newTrfAislamientoOfertado').checked,
+    tap_config: {
+      nominalVoltage: nominalForTaps,
+      stepPercentage: 2.5,
+      numPositions: effectiveTapCount,
+      neutralPosition: posTapNominal || Math.ceil(effectiveTapCount / 2),
+      positions: buildDefaultTapPositions_(nominalForTaps, effectiveTapCount, posTapNominal)
+    }
+  };
 
-  // La deduplicación por serial se queda síncrona/bloqueante (lectura rápida y
-  // crítica para la integridad de datos); solo el POST de creación pasa a
-  // segundo plano una vez descartado un duplicado.
+  // Local-first INMEDIATO (2026-10-01, caso real en campo: "se demora mucho
+  // en crear el equipo"). Antes, checkSerialExists_ (una llamada de red más,
+  // con la MISMA latencia que cualquier otra esta sesión — nunca fue
+  // realmente "rápida" pese al comentario original) bloqueaba la pantalla
+  // ANTES de mostrar nada. Ahora el equipo aparece de una vez en la lista;
+  // la verificación de duplicado y el POST real corren después, en segundo
+  // plano — si de verdad hay un duplicado (caso raro), se revierte la fila
+  // optimista y se avisa, en vez de hacer esperar a todo el mundo por eso.
+  var tempId = 'tmp_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+  state.transformers.push(Object.assign({
+    id: tempId, updated_at: new Date().toISOString(), estado_equipo: 'Activo', _pending: true
+  }, payload));
+  saveDraft_('mya_cache_transformers_' + siteId, state.transformers);
+  renderDashboard();
+  document.getElementById('createTransformerForm').reset();
+
+  function revertOptimisticTrf_() {
+    state.transformers = state.transformers.filter(function (t) { return t.id !== tempId; });
+    saveDraft_('mya_cache_transformers_' + siteId, state.transformers);
+    if (state.currentSiteId === siteId) renderDashboard();
+  }
+
   checkSerialExists_(serial)
     .then(function (existing) {
       if (existing && existing.site_id === state.currentSiteId) {
-        setStatus_(status, 'Este equipo ya existe — abriéndolo…', true);
-        btn.disabled = false;
+        revertOptimisticTrf_();
+        showToast_('Este equipo ya existe — abriéndolo…', 'success');
         return openTransformer(existing.id).then(function () { return Promise.reject({ __handled: true }); });
       }
       if (existing) {
         return resolveSiteLabel_(existing.site_id).then(function (label) {
-          setStatus_(status, 'Ese número de serie ya está registrado en ' + label + '. No se puede duplicar.', false, true);
-          btn.disabled = false;
+          revertOptimisticTrf_();
+          showToast_('Ese número de serie ya está registrado en ' + label + '. No se puede duplicar.', 'error');
           return Promise.reject({ __handled: true });
         });
       }
       return readFileAsBase64_(document.getElementById('newTrfPlatePhoto'));
     })
     .then(function (photo) {
-      setStatus_(status, '', false);
-      var payload = {
-        site_id: siteId,
-        serial_number: serial,
-        manufacturer: manufacturer,
-        phase_type: phaseType,
-        vector_group: vectorGroup,
-        hv_nominal_voltage: isNaN(hv) ? null : hv,
-        lv_nominal_voltage: isNaN(lv) ? null : lv,
-        manufacture_year: year || null,
-        rated_power_kva: isNaN(power) ? null : power,
-        cooling_type: cooling,
-        impedance_percent: isNaN(impedance) ? null : impedance,
-        insulation_type: insulation,
-        at_devanado_material: atMaterial,
-        bt_devanado_material: btMaterial,
-        numero_posiciones_tap: tapPositionsCount,
-        posicion_tap_nominal: posTapNominal,
-        posicion_actual_tap: posActualTap,
-        is_special_design: false,
-        ttr_ofertado: document.getElementById('newTrfTtrOfertado').checked,
-        resistencia_devanados_ofertado: document.getElementById('newTrfDevanadosOfertado').checked,
-        aislamiento_ofertado: document.getElementById('newTrfAislamientoOfertado').checked,
-        tap_config: {
-          nominalVoltage: nominalForTaps,
-          stepPercentage: 2.5,
-          numPositions: effectiveTapCount,
-          neutralPosition: posTapNominal || Math.ceil(effectiveTapCount / 2),
-          positions: buildDefaultTapPositions_(nominalForTaps, effectiveTapCount, posTapNominal)
-        },
-        file_base64: photo ? photo.base64 : null,
-        file_mime_type: photo ? photo.mimeType : null
-      };
-
-      // Local-first: el equipo aparece de inmediato en el panel con id temporal;
-      // el POST real (incluida la foto de placa) corre en segundo plano.
-      var tempId = 'tmp_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
-      state.transformers.push(Object.assign({
-        id: tempId, updated_at: new Date().toISOString(), estado_equipo: 'Activo', _pending: true
-      }, payload));
-      saveDraft_('mya_cache_transformers_' + siteId, state.transformers);
-      renderDashboard();
-      document.getElementById('createTransformerForm').reset();
-      btn.disabled = false;
+      if (photo) { payload.file_base64 = photo.base64; payload.file_mime_type = photo.mimeType; }
 
       callApi('createTransformer', 'POST', payload)
         .then(function () { return callApi('listTransformers', 'GET', { site_id: siteId }); })
@@ -1097,9 +1102,7 @@ function handleCreateTransformerSubmit(e) {
         })
         .catch(function (err) {
           if (err.status === 402 || err.status === 403) {
-            state.transformers = state.transformers.filter(function (t) { return t.id !== tempId; });
-            saveDraft_('mya_cache_transformers_' + siteId, state.transformers);
-            if (state.currentSiteId === siteId) renderDashboard();
+            revertOptimisticTrf_();
             return;
           }
           var rec = state.transformers.filter(function (t) { return t.id === tempId; })[0];
@@ -1110,9 +1113,18 @@ function handleCreateTransformerSubmit(e) {
         });
     })
     .catch(function (err) {
-      if (err && err.__handled) return; // ya se mostró el mensaje de duplicado/reapertura
-      btn.disabled = false;
-      if (!err || (err.status !== 402 && err.status !== 403)) setStatus_(status, formatNetworkAwareError_(err || {}), false, true);
+      if (err && err.__handled) return; // ya se mostró el mensaje de duplicado/reapertura, fila optimista ya revertida
+      // checkSerialExists_ o la lectura de la foto fallaron ANTES de llegar al
+      // POST real — la fila optimista ya está en pantalla (ver arriba) y acá
+      // nunca se tocó, así que no puede quedar pegada en "pendiente" para
+      // siempre: se marca con error y reintento, mismo criterio que si el
+      // POST real hubiera fallado.
+      if (err && (err.status === 402 || err.status === 403)) { revertOptimisticTrf_(); return; }
+      var rec = state.transformers.filter(function (t) { return t.id === tempId; })[0];
+      if (rec) { rec._pending = false; rec._error = true; rec._errorMessage = formatNetworkAwareError_(err || {}); rec._retryAction = 'createTransformer'; rec._retryPayload = payload; }
+      saveDraft_('mya_cache_transformers_' + siteId, state.transformers);
+      if (state.currentSiteId === siteId) renderDashboard();
+      showToast_('No se pudo guardar el equipo "' + serial + '". Quedó pendiente de sincronizar.', 'error');
     });
 }
 
@@ -1801,15 +1813,33 @@ function renderDetail() {
   document.getElementById('detailBadges').innerHTML = badges.join('');
 
   var certifyBtn = document.getElementById('certifyElectricalBtn');
+  // 2026-10-01, caso real en campo: el motivo de por qué este botón está
+  // deshabilitado solo vivía en el `title` (tooltip al pasar el mouse) —
+  // invisible en celular (sin hover) y fácil de no notar. Ahora también se
+  // muestra como texto fijo debajo del botón mientras falte algo, para que
+  // no quede la duda de "le doy certificar y no pasa nada".
+  var certifyHint = document.getElementById('certifyElectricalStatus');
   if (state.role === 'Tecnico') {
     certifyBtn.hidden = true;
+    if (certifyHint) certifyHint.hidden = true;
   } else {
     certifyBtn.hidden = false;
     var allElectricalDone = requiredElectricalTypes.length > 0 && requiredElectricalTypes.every(function (k) { return electricalCertified[k]; });
+    var missingTypes = requiredElectricalTypes.filter(function (k) { return !electricalCertified[k]; });
     certifyBtn.disabled = !allElectricalDone;
     certifyBtn.title = requiredElectricalTypes.length === 0
       ? 'Este equipo no tiene pruebas eléctricas marcadas como ofertadas — revisa "Editar equipo"'
       : (allElectricalDone ? 'Genera el informe eléctrico consolidado con las pruebas ofertadas' : 'Faltan pruebas ofertadas por certificar');
+    if (certifyHint) {
+      if (requiredElectricalTypes.length === 0) {
+        setStatus_(certifyHint, 'Este equipo no tiene pruebas eléctricas marcadas como ofertadas — revisa "Editar equipo".', false, true);
+      } else if (!allElectricalDone) {
+        var missingLabels = missingTypes.map(function (k) { return electricalLabels_[k]; }).join(', ');
+        setStatus_(certifyHint, 'Falta certificar individualmente en "Historial de pruebas": ' + missingLabels + ' — ya fue enviada, solo falta que un Supervisor/Administrador la certifique ahí antes de poder certificar el combinado.', false, true);
+      } else {
+        certifyHint.hidden = true;
+      }
+    }
   }
 
   var cfg = t.tap_config || {};
@@ -2199,6 +2229,7 @@ function handleEditTestDraft_(testId) {
     // Editando un borrador ya enviado: nunca restringir a un solo TAP aunque
     // tenga solo uno — el técnico podría querer agregar más al corregirlo.
     state.wr.scope = 'all';
+    state.wr.resistanceUnit = 'ohm';
     showView('winding-form');
     syncWrScopeUI_();
     document.getElementById('wrInstrument').value = test.instrument_used || '';
@@ -2909,12 +2940,34 @@ function defaultWrSecondary_() {
   return { windingTemperatureC: 25, phases: phases };
 }
 
+/** 2026-10-01, a pedido explícito del cliente en vivo: algunos
+ *  micro-ohmetros miden/muestran en mΩ o µΩ (resistencias de devanado bajas,
+ *  típico en BT) — antes el campo solo aceptaba Ω, obligando al técnico a
+ *  convertir a mano. El dato CANÓNICO guardado y enviado al backend sigue
+ *  siendo siempre Ω (`resistanceOhm`, sin tocar `calculateWindingResistance_`
+ *  ni el informe) — el selector solo cambia qué unidad ve/digita el técnico;
+ *  la conversión pasa en `updateWrPhase_`/`updateWrSecondaryPhase_` (al
+ *  guardar) y en los renders (al mostrar). El desbalance % es relativo entre
+ *  fases, así que es matemáticamente indiferente a la unidad — ninguna
+ *  fórmula de veredicto cambia. */
+var WR_RESISTANCE_UNIT_FACTORS_ = { ohm: 1, milliohm: 0.001, microohm: 0.000001 };
+var WR_RESISTANCE_UNIT_LABELS_ = { ohm: 'Ω', milliohm: 'mΩ', microohm: 'µΩ' };
+function wrResistanceUnitFactor_() {
+  return WR_RESISTANCE_UNIT_FACTORS_[state.wr.resistanceUnit] || 1;
+}
+function updateWrResistanceUnit_(unit) {
+  state.wr.resistanceUnit = WR_RESISTANCE_UNIT_FACTORS_[unit] ? unit : 'ohm';
+  renderWrPhaseEntries();
+  renderWrSecondaryPhaseEntries();
+}
+
 /** Punto 4 (2026-09-13): primario y secundario ahora son cada uno opcional
  *  — el técnico marca solo lo que probó en esta visita. Ambos empiezan
  *  marcados por defecto (comportamiento histórico: siempre se pedían los
  *  dos), el técnico desmarca el que no aplique. */
 function resetWindingStateFromTransformer() {
   var firstTap = suggestedStartingTap_() || 1;
+  state.wr.resistanceUnit = 'ohm';
   var draft = loadDraft_('mya_draft_wr_' + state.currentTransformerId);
   if (draft && draft.readings && Object.keys(draft.readings).length) {
     state.wr.readings = draft.readings;
@@ -2951,6 +3004,8 @@ function syncWrScopeUI_() {
   if (select) select.value = state.wr.scope || 'current';
   var actionsRow = document.getElementById('wrTapActionsRow');
   if (actionsRow) actionsRow.style.display = (state.wr.scope === 'all') ? '' : 'none';
+  var unitSelect = document.getElementById('wrResistanceUnitSelect');
+  if (unitSelect) unitSelect.value = state.wr.resistanceUnit || 'ohm';
 }
 
 /** Cambio manual de alcance desde el selector del formulario. Pasar a
@@ -3021,11 +3076,13 @@ function renderWrPhaseEntries() {
   document.getElementById('wrTemp').value = tap.windingTemperatureC;
   document.getElementById('wrTempTapLabel').textContent = state.wr.currentTap;
   document.getElementById('wrPreviewTapLabel').textContent = state.wr.currentTap;
+  var unitFactor = wrResistanceUnitFactor_();
+  var unitLabel = WR_RESISTANCE_UNIT_LABELS_[state.wr.resistanceUnit] || 'Ω';
   wrap.innerHTML = Object.keys(tap.phases).map(function (k) {
     var r = tap.phases[k];
     return '<div class="phase-entry">' +
       '<div class="ph-name">' + phaseDisplayLabel_(k) + '</div>' +
-      '<div class="field"><label>Resistencia (&Omega;)</label><input class="mono" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*" value="' + r.resistanceOhm + '" oninput="updateWrPhase(\'' + k + '\',this.value)"></div>' +
+      '<div class="field"><label>Resistencia (' + unitLabel + ')</label><input class="mono" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*" value="' + (r.resistanceOhm / unitFactor) + '" oninput="updateWrPhase(\'' + k + '\',this.value)"></div>' +
       renderRepeatToggle_('toggleWrRepeat_', 'updateWrNote_', k, r) +
       '</div>';
   }).join('');
@@ -3035,7 +3092,7 @@ function updateWrPhase(key, value) {
   var v = parseDecimal_(value); if (isNaN(v)) v = 0;
   var phases = state.wr.readings[state.wr.currentTap].phases;
   if (!phases[key]) phases[key] = { resistanceOhm: 0, repetida: false, nota: '', valorAnterior: null };
-  phases[key].resistanceOhm = v;
+  phases[key].resistanceOhm = v * wrResistanceUnitFactor_();
   refreshWindingLight_();
 }
 
@@ -3068,11 +3125,13 @@ function renderWrSecondaryPhaseEntries() {
   var wrap = document.getElementById('wrSecondaryPhaseEntries');
   if (!wrap) return;
   document.getElementById('wrSecondaryTemp').value = state.wr.secondary.windingTemperatureC;
+  var unitFactor2 = wrResistanceUnitFactor_();
+  var unitLabel2 = WR_RESISTANCE_UNIT_LABELS_[state.wr.resistanceUnit] || 'Ω';
   wrap.innerHTML = Object.keys(state.wr.secondary.phases).map(function (k) {
     var r = state.wr.secondary.phases[k];
     return '<div class="phase-entry">' +
       '<div class="ph-name">' + phaseDisplayLabel_(k) + '</div>' +
-      '<div class="field"><label>Resistencia (&Omega;)</label><input class="mono" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*" value="' + r.resistanceOhm + '" oninput="updateWrSecondaryPhase_(\'' + k + '\',this.value)"></div>' +
+      '<div class="field"><label>Resistencia (' + unitLabel2 + ')</label><input class="mono" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*" value="' + (r.resistanceOhm / unitFactor2) + '" oninput="updateWrSecondaryPhase_(\'' + k + '\',this.value)"></div>' +
       renderRepeatToggle_('toggleWrSecondaryRepeat_', 'updateWrSecondaryNote_', k, r) +
       '</div>';
   }).join('');
@@ -3082,7 +3141,7 @@ function updateWrSecondaryPhase_(key, value) {
   var v = parseDecimal_(value); if (isNaN(v)) v = 0;
   var phases = state.wr.secondary.phases;
   if (!phases[key]) phases[key] = { resistanceOhm: 0, repetida: false, nota: '', valorAnterior: null };
-  phases[key].resistanceOhm = v;
+  phases[key].resistanceOhm = v * wrResistanceUnitFactor_();
   refreshWindingLight_();
 }
 
