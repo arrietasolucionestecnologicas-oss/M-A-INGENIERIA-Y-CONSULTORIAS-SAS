@@ -21,6 +21,7 @@ const APP_ID = "MYA_PRUEBAS";
 
 const TOLERANCE_PERCENT = 0.5;
 const UNBALANCE_THRESHOLD = 5.0;
+const UNBALANCE_OBSERVE_THRESHOLD = 2.0;
 
 /** Debe reflejar exactamente VECTOR_GROUP_MULTIPLIERS en Código.gs (calculateTtr_) —
  *  es la vista previa local del mismo cálculo que hace el backend al guardar. Si
@@ -3189,16 +3190,24 @@ function removeWrTap() {
 
 /** Desbalance entre fases — misma fórmula para el primario (por TAP) y el
  *  secundario (una sola medición): reusada en vez de duplicada. */
+/** 2026-10-01: espejo exacto de computePhaseUnbalance_ en Código.gs (cascada
+ *  de 3 niveles: ≤2% APROBADO, 2-5% OBSERVADO, >5% RECHAZADO — ver
+ *  UNBALANCE_OBSERVE_THRESHOLD/UNBALANCE_THRESHOLD) — esta es solo la vista
+ *  previa LOCAL, el veredicto real/oficial sigue siendo el que calcula el
+ *  servidor al enviar la prueba. */
 function computePhaseUnbalancePreview_(phases) {
   var keys = Object.keys(phases);
   var values = keys.map(function (k) { return phases[k].resistanceOhm; });
   var avg = values.reduce(function (a, b) { return a + b; }, 0) / values.length;
   var rows = keys.map(function (k) {
     var dev = avg !== 0 ? ((phases[k].resistanceOhm - avg) / avg) * 100 : 0;
-    return { key: k, value: phases[k].resistanceOhm, deviation: dev, status: Math.abs(dev) <= UNBALANCE_THRESHOLD ? 'APROBADO' : 'RECHAZADO' };
+    var absDev = Math.abs(dev);
+    var status = absDev > UNBALANCE_THRESHOLD ? 'RECHAZADO' : (absDev > UNBALANCE_OBSERVE_THRESHOLD ? 'OBSERVADO' : 'APROBADO');
+    return { key: k, value: phases[k].resistanceOhm, deviation: dev, status: status };
   });
   var maxUnbalance = rows.length > 1 ? Math.max.apply(null, rows.map(function (r) { return Math.abs(r.deviation); })) : 0;
-  var verdict = maxUnbalance <= UNBALANCE_THRESHOLD ? 'APROBADO' : 'RECHAZADO';
+  var verdict = rows.some(function (r) { return r.status === 'RECHAZADO'; }) ? 'RECHAZADO'
+    : rows.some(function (r) { return r.status === 'OBSERVADO'; }) ? 'OBSERVADO' : 'APROBADO';
   return { rows: rows, average: avg, maxUnbalance: maxUnbalance, verdict: verdict };
 }
 
@@ -3210,18 +3219,26 @@ function computeWindingSecondaryPreview() {
   return computePhaseUnbalancePreview_(state.wr.secondary.phases);
 }
 
+/** 2026-10-01: clases compartidas entre primario/secundario para el 3er
+ *  nivel OBSERVADO — evita duplicar el mismo ternario 2 veces. */
+function unbalanceRowCls_(status) {
+  return status === 'APROBADO' ? 'ok' : (status === 'OBSERVADO' ? 'warn' : 'bad');
+}
+function unbalanceBannerCls_(verdict) {
+  return verdict === 'APROBADO' ? 'success' : (verdict === 'OBSERVADO' ? 'warning' : 'danger');
+}
+
 function renderWindingPreview() {
   var result = computeWindingPreview(state.wr.currentTap);
   document.getElementById('wrPreviewRows').innerHTML = result.rows.map(function (r) {
-    var cls = r.status === 'APROBADO' ? 'ok' : 'bad';
     return '<div class="preview-row"><span class="phase-name">' + phaseDisplayLabel_(r.key) + '</span>' +
       '<span class="num">' + r.value.toFixed(4) + ' &Omega; &middot; prom. ' + result.average.toFixed(4) + ' &Omega;</span>' +
-      '<span class="err ' + cls + '">' + (r.deviation >= 0 ? '+' : '') + r.deviation.toFixed(2) + ' %</span></div>';
+      '<span class="err ' + unbalanceRowCls_(r.status) + '">' + (r.deviation >= 0 ? '+' : '') + r.deviation.toFixed(2) + ' %</span></div>';
   }).join('');
   var banner = document.getElementById('wrVerdictBanner');
-  banner.className = 'verdict-banner ' + (result.verdict === 'APROBADO' ? 'success' : 'danger');
+  banner.className = 'verdict-banner ' + unbalanceBannerCls_(result.verdict);
   banner.innerHTML = 'Veredicto TAP ' + state.wr.currentTap + ': ' + result.verdict +
-    '<span class="tol">desbalance máx. ' + result.maxUnbalance.toFixed(2) + ' % &middot; umbral 5&nbsp;%</span>';
+    '<span class="tol">desbalance máx. ' + result.maxUnbalance.toFixed(2) + ' % &middot; ≤2% aprobado · 2-5% observado · >5% rechazado</span>';
 }
 
 function renderWindingSecondaryPreview() {
@@ -3229,15 +3246,14 @@ function renderWindingSecondaryPreview() {
   var rowsEl = document.getElementById('wrSecondaryPreviewRows');
   if (!rowsEl) return;
   rowsEl.innerHTML = result.rows.map(function (r) {
-    var cls = r.status === 'APROBADO' ? 'ok' : 'bad';
     return '<div class="preview-row"><span class="phase-name">' + phaseDisplayLabel_(r.key) + '</span>' +
       '<span class="num">' + r.value.toFixed(4) + ' &Omega; &middot; prom. ' + result.average.toFixed(4) + ' &Omega;</span>' +
-      '<span class="err ' + cls + '">' + (r.deviation >= 0 ? '+' : '') + r.deviation.toFixed(2) + ' %</span></div>';
+      '<span class="err ' + unbalanceRowCls_(r.status) + '">' + (r.deviation >= 0 ? '+' : '') + r.deviation.toFixed(2) + ' %</span></div>';
   }).join('');
   var banner = document.getElementById('wrSecondaryVerdictBanner');
-  banner.className = 'verdict-banner ' + (result.verdict === 'APROBADO' ? 'success' : 'danger');
+  banner.className = 'verdict-banner ' + unbalanceBannerCls_(result.verdict);
   banner.innerHTML = 'Veredicto secundario: ' + result.verdict +
-    '<span class="tol">desbalance máx. ' + result.maxUnbalance.toFixed(2) + ' % &middot; umbral 5&nbsp;%</span>';
+    '<span class="tol">desbalance máx. ' + result.maxUnbalance.toFixed(2) + ' % &middot; ≤2% aprobado · 2-5% observado · >5% rechazado</span>';
 }
 
 /** Punto 4 (2026-09-13): `measurements`/`secondary` solo se incluyen si su

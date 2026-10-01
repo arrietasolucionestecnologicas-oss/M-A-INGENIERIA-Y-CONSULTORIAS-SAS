@@ -172,7 +172,17 @@ var DRIVE_ROOT_FOLDER_NAME = 'M&A Ingeniería y Consultoría SAS';
 var DRIVE_CALIBRACIONES_FOLDER_NAME = 'Calibraciones';
 var DRIVE_PROSPECTOS_FOLDER_NAME = 'Comercial - Prospectos sin cliente';
 var TOLERANCE_PERCENT = 0.5;
+// 2026-10-01, decisión explícita del cliente tras consultar normas (IEEE
+// C57.125 / IEC 60076-1 citan ≤2% como ideal entre fases) vs. la práctica
+// real de campo en Barranquilla: desensamblar un transformador de
+// distribución en aluminio por un desbalance de 3-4% (común por oxidación
+// Al2O3 en las uniones y termofluencia del aluminio, no necesariamente una
+// falla) cuesta más que el equipo. Se mantiene 5% como el límite real de
+// RECHAZADO (criterio operativo ya usado, no se cambia), pero entre 2% y 5%
+// el veredicto pasa a 'OBSERVADO' (aprobado con nota explícita de la norma)
+// en vez de 'APROBADO' silencioso — ver computePhaseUnbalance_.
 var UNBALANCE_THRESHOLD_PERCENT = 5.0;
+var UNBALANCE_OBSERVE_THRESHOLD_PERCENT = 2.0;
 
 /** Valores válidos de estado_equipo (Transformador). Cualquier valor legado
  *  ('ACTIVO' mayúsculas, de antes de este campo tenerse en cuenta) o vacío
@@ -1511,9 +1521,22 @@ function calculateTtr_(transformer, readings) {
 // Resistencia de devanados — multi-TAP (réplica de WindingResistanceCalculator.kt)
 // ---------------------------------------------------------------------------
 
+/** Texto de la nota automática para un desbalance en la zona "OBSERVADO"
+ *  (entre 2% y 5%) — ver UNBALANCE_OBSERVE_THRESHOLD_PERCENT arriba para el
+ *  porqué. Se combina con una nota propia del técnico ("repetí esta
+ *  lectura") si ya existía, nunca la reemplaza. */
+function unbalanceObserveNote_(deviationPercent, existingNota) {
+  var norm = 'Desbalance ' + Math.abs(deviationPercent).toFixed(2) + ' % — por encima del 2 % ideal de la norma ' +
+    '(IEEE C57.125 / IEC 60076-1) pero dentro del margen operativo de campo (5 %) para devanados de aluminio ' +
+    'en equipos de distribución: aprobado con observación, revisar en el próximo mantenimiento.';
+  return existingNota ? (existingNota + ' · ' + norm) : norm;
+}
+
 /** Desbalance entre fases a partir de un objeto {clave: {resistanceOhm}} —
  *  reusado tanto para cada TAP del primario como para el secundario (una
- *  sola medición, sin TAP), para no duplicar la fórmula. */
+ *  sola medición, sin TAP), para no duplicar la fórmula.
+ *  2026-10-01: veredicto de 3 niveles (antes solo APROBADO/RECHAZADO) — ver
+ *  UNBALANCE_OBSERVE_THRESHOLD_PERCENT/UNBALANCE_THRESHOLD_PERCENT. */
 function computePhaseUnbalance_(phases) {
   var keys = Object.keys(phases || {});
   if (keys.length === 0) throw new Error('No hay lecturas de fase');
@@ -1523,6 +1546,7 @@ function computePhaseUnbalance_(phases) {
 
   var phaseResults = {};
   var maxUnbalance = 0;
+  var anyRechazado = false, anyObservado = false;
 
   if (keys.length === 1) {
     phaseResults[keys[0]] = { resistanceOhm: values[0], deviationFromAvgPercent: 0, status: 'APROBADO', nota: phases[keys[0]].nota || null };
@@ -1530,13 +1554,21 @@ function computePhaseUnbalance_(phases) {
     keys.forEach(function (k) {
       var v = phases[k].resistanceOhm;
       var deviation = ((v - avg) / avg) * 100;
-      var status = Math.abs(deviation) <= UNBALANCE_THRESHOLD_PERCENT ? 'APROBADO' : 'RECHAZADO';
-      phaseResults[k] = { resistanceOhm: v, deviationFromAvgPercent: deviation, status: status, nota: phases[k].nota || null };
-      if (Math.abs(deviation) > maxUnbalance) maxUnbalance = Math.abs(deviation);
+      var absDeviation = Math.abs(deviation);
+      var status, nota;
+      if (absDeviation > UNBALANCE_THRESHOLD_PERCENT) {
+        status = 'RECHAZADO'; nota = phases[k].nota || null; anyRechazado = true;
+      } else if (absDeviation > UNBALANCE_OBSERVE_THRESHOLD_PERCENT) {
+        status = 'OBSERVADO'; nota = unbalanceObserveNote_(deviation, phases[k].nota || null); anyObservado = true;
+      } else {
+        status = 'APROBADO'; nota = phases[k].nota || null;
+      }
+      phaseResults[k] = { resistanceOhm: v, deviationFromAvgPercent: deviation, status: status, nota: nota };
+      if (absDeviation > maxUnbalance) maxUnbalance = absDeviation;
     });
   }
 
-  var verdict = maxUnbalance <= UNBALANCE_THRESHOLD_PERCENT ? 'APROBADO' : 'RECHAZADO';
+  var verdict = anyRechazado ? 'RECHAZADO' : (anyObservado ? 'OBSERVADO' : 'APROBADO');
   return { averageResistanceOhm: avg, phases: phaseResults, maxUnbalancePercent: maxUnbalance, verdict: verdict };
 }
 
@@ -1571,11 +1603,14 @@ function calculateWindingResistance_(readings) {
     };
   });
 
-  // `null` (no "APROBADO" por vacuidad de .every() en un arreglo vacío) cuando
-  // no se probó el primario — el punto 4 (2026-09-13) permite enviar solo
-  // secundario, y un primario nunca probado no debe contar como "aprobado".
+  // `null` (no "APROBADO" por vacuidad) cuando no se probó el primario — el
+  // punto 4 (2026-09-13) permite enviar solo secundario, y un primario nunca
+  // probado no debe contar como "aprobado". 2026-10-01: cascada de 3
+  // niveles — antes `every(... === 'APROBADO')` colapsaba un TAP OBSERVADO
+  // directo a RECHAZADO, perdiendo la nota/gradación.
   var primaryVerdict = tapResults.length > 0
-    ? (tapResults.every(function (t) { return t.tapVerdict === 'APROBADO'; }) ? 'APROBADO' : 'RECHAZADO')
+    ? (tapResults.some(function (t) { return t.tapVerdict === 'RECHAZADO'; }) ? 'RECHAZADO'
+      : (tapResults.some(function (t) { return t.tapVerdict === 'OBSERVADO'; }) ? 'OBSERVADO' : 'APROBADO'))
     : null;
 
   var secondaryResult = null;
@@ -1595,14 +1630,23 @@ function calculateWindingResistance_(readings) {
 
   // Combina solo las partes realmente presentes — antes del punto 4 siempre
   // había primario, así que este `every` de facto solo miraba el secundario
-  // opcional; ahora cualquiera de los dos puede faltar.
-  var overallVerdict = ((primaryVerdict === null || primaryVerdict === 'APROBADO') &&
-    (secondaryResult === null || secondaryResult.verdict === 'APROBADO'))
-    ? 'APROBADO' : 'RECHAZADO';
+  // opcional; ahora cualquiera de los dos puede faltar. 2026-10-01: cascada
+  // de 3 niveles, mismo criterio que primaryVerdict arriba.
+  var overallVerdict =
+    (primaryVerdict === 'RECHAZADO' || (secondaryResult && secondaryResult.verdict === 'RECHAZADO')) ? 'RECHAZADO'
+    : (primaryVerdict === 'OBSERVADO' || (secondaryResult && secondaryResult.verdict === 'OBSERVADO')) ? 'OBSERVADO'
+    : 'APROBADO';
 
   return {
     unbalanceThresholdPercent: UNBALANCE_THRESHOLD_PERCENT,
+    unbalanceObserveThresholdPercent: UNBALANCE_OBSERVE_THRESHOLD_PERCENT,
     taps: tapResults,
+    // 2026-10-01: se expone primaryVerdict (ya calculado arriba con la
+    // cascada de 3 niveles) para que regenerateElectricalCombinedReport_ lo
+    // use directo en vez de re-derivarlo con su propia fórmula — antes esa
+    // re-derivación usaba `every(tapVerdict === 'APROBADO')`, colapsando un
+    // TAP OBSERVADO a RECHAZADO en el informe combinado.
+    primaryVerdict: primaryVerdict,
     secondary: secondaryResult,
     overallVerdict: overallVerdict
   };
@@ -2631,7 +2675,12 @@ function buildWindingSideUnifiedRows_(sideLabel, tapEntries, esMonofasico, mater
       orderedKeys.forEach(function (k) {
         var p = tap.phases[k];
         if (worstDeviation === null || Math.abs(p.deviationFromAvgPercent) > Math.abs(worstDeviation)) worstDeviation = p.deviationFromAvgPercent;
+        // 2026-10-01: cascada de 3 niveles — RECHAZADO siempre gana; si no
+        // hay ninguno, OBSERVADO gana sobre APROBADO (antes solo miraba
+        // RECHAZADO, dejando un TAP con fase OBSERVADO mostrado como
+        // APROBADO liso, sin la nota de la norma visible en el estado).
         if (p.status === 'RECHAZADO') worstStatus = 'RECHAZADO';
+        else if (p.status === 'OBSERVADO' && worstStatus !== 'RECHAZADO') worstStatus = 'OBSERVADO';
       });
       desviacion = worstDeviation.toFixed(2) + ' %';
       estado = worstStatus;
@@ -2866,15 +2915,25 @@ function joinSpanishList_(items) {
  *  (qué pruebas están presentes, estado del equipo, normas aplicables, y
  *  si el resultado combinado fue APROBADO) — no inventa ningún dato nuevo,
  *  solo redacta una frase con lo que ya se sabe. */
-function buildObservacionesRows_(presentLabels, estadoEquipoText, normasText, aprobado) {
+/** `conclusionVerdict` es el string real ('APROBADO'/'OBSERVADO'/'RECHAZADO'),
+ *  no un booleano — 2026-10-01, para poder redactar la 3ra frase de
+ *  OBSERVADO (antes solo había aprobado/no aprobado). */
+function buildObservacionesRows_(presentLabels, estadoEquipoText, normasText, conclusionVerdict) {
   var rows = [unifiedBannerRow_('OBSERVACIONES')];
   var fullMerge = [{ startColumnIndex: 0, columnSpan: UNIFIED_TABLE_COLS_ }];
+  var rechazado = String(conclusionVerdict || '').indexOf('RECHAZADO') === 0;
+  var observado = String(conclusionVerdict || '').indexOf('OBSERVADO') === 0;
+  var resultSentence;
+  if (rechazado) {
+    resultSentence = 'Los resultados obtenidos presentan valores fuera de los rangos aceptables — se recomienda una revisión adicional del equipo.';
+  } else if (observado) {
+    resultSentence = 'Los resultados obtenidos se aprueban con observación: el desbalance de resistencia de devanados superó el 2 % ideal de la norma (IEEE C57.125 / IEC 60076-1), pero se mantiene dentro del margen operativo de campo (5 %) para devanados de aluminio — se recomienda revisar en el próximo mantenimiento.';
+  } else {
+    resultSentence = 'Los resultados obtenidos se encuentran dentro de los rangos aceptables y presentan buen comportamiento.';
+  }
   var sentence = 'Las pruebas de ' + joinSpanishList_(presentLabels) +
     ' se realizaron con el equipo ' + String(estadoEquipoText || '').toLowerCase() +
-    ', de acuerdo con las normas ' + normasText + '. ' +
-    (aprobado
-      ? 'Los resultados obtenidos se encuentran dentro de los rangos aceptables y presentan buen comportamiento.'
-      : 'Los resultados obtenidos presentan valores fuera de los rangos aceptables — se recomienda una revisión adicional del equipo.');
+    ', de acuerdo con las normas ' + normasText + '. ' + resultSentence;
   var cells = new Array(UNIFIED_TABLE_COLS_).fill('');
   cells[0] = sentence;
   rows.push(unifiedRow_(cells, 'data', fullMerge));
@@ -2894,12 +2953,21 @@ function buildObservacionesRows_(presentLabels, estadoEquipoText, normasText, ap
  *  backend (acá) ya calculaba el resultado final antes de esto — el
  *  cambio es puramente de presentación, ningún dato nuevo. */
 function buildConclusionRows_(overallVerdict) {
-  var aprobado = String(overallVerdict || '').indexOf('APROBADO') === 0;
+  // 2026-10-01: 3er nivel OBSERVADO (desbalance de devanados 2-5%, ver
+  // UNBALANCE_OBSERVE_THRESHOLD_PERCENT) — antes esto era binario
+  // (APROBADO/NO APROBADO) y un OBSERVADO cualquiera caía en "NO APROBADO"
+  // en rojo, que es engañoso: el equipo SÍ se aprueba, solo con una
+  // observación de la norma, no se rechaza.
+  var v = String(overallVerdict || '');
+  var rechazado = v.indexOf('RECHAZADO') === 0;
+  var observado = v.indexOf('OBSERVADO') === 0;
   var rows = [unifiedBannerRow_('CONCLUSIÓN GENERAL')];
   var cells = new Array(UNIFIED_TABLE_COLS_).fill('');
-  cells[0] = (aprobado ? '✓ ' : '✗ ') + (aprobado ? 'EQUIPO APROBADO' : 'EQUIPO NO APROBADO');
+  cells[0] = rechazado ? '✗ EQUIPO NO APROBADO' : (observado ? '✓ EQUIPO APROBADO — CON OBSERVACIÓN' : '✓ EQUIPO APROBADO');
   var row = unifiedRow_(cells, 'legend', [{ startColumnIndex: 0, columnSpan: UNIFIED_TABLE_COLS_ }]);
-  row.coloredCols = [{ col: 0, bg: aprobado ? PDF_COLORS_.SUCCESS_BG : PDF_COLORS_.DANGER_BG, fg: aprobado ? PDF_COLORS_.SUCCESS : PDF_COLORS_.DANGER }];
+  row.coloredCols = [{ col: 0,
+    bg: rechazado ? PDF_COLORS_.DANGER_BG : (observado ? PDF_COLORS_.WARNING_BG : PDF_COLORS_.SUCCESS_BG),
+    fg: rechazado ? PDF_COLORS_.DANGER : (observado ? PDF_COLORS_.WARNING : PDF_COLORS_.SUCCESS) }];
   // Resultado final del informe — más grande que el resto de la letra de
   // datos (6pt) para que destaque, sin llegar al tamaño "14px" literal
   // del JSON (rompería la escala compacta de todo el documento).
@@ -3247,7 +3315,7 @@ function verdictCellColor_(text) {
   if (v.indexOf('RECHAZADO') === 0 || v.indexOf('MALO') === 0 || v === 'NO ACEPTABLE' || v.indexOf('NO CUMPLE') === 0) {
     return { bg: PDF_COLORS_.DANGER_BG, fg: PDF_COLORS_.DANGER };
   }
-  if (v.indexOf('CUESTIONABLE') === 0) {
+  if (v.indexOf('CUESTIONABLE') === 0 || v.indexOf('OBSERVADO') === 0) {
     return { bg: PDF_COLORS_.WARNING_BG, fg: PDF_COLORS_.WARNING };
   }
   if (v.indexOf('APROBADO') === 0 || v.indexOf('BUENO') === 0 || v.indexOf('EXCELENTE') === 0 || v === 'ACEPTABLE' || v.indexOf('CUMPLE') === 0) {
@@ -4726,15 +4794,14 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
   }
 
   // AT y BT — Punto 4 (2026-09-13): primario y secundario son cada uno
-  // opcional, se prueba solo AT, solo BT, o ambos.
-  // calculateWindingResistance_ nunca devuelve un "primaryVerdict" aparte
-  // (solo el overallVerdict combinado), así que se re-deriva aquí con la
-  // MISMA fórmula que usa internamente (every tap APROBADO); el
-  // secundario sí trae su propio `verdict` directo.
+  // opcional, se prueba solo AT, solo BT, o ambos. 2026-10-01:
+  // calculateWindingResistance_ ahora SÍ expone `primaryVerdict` (cascada de
+  // 3 niveles, incluye OBSERVADO) — se usa directo en vez de re-derivarlo
+  // con `every(... === 'APROBADO')`, que colapsaba OBSERVADO a RECHAZADO.
   if (wrCalc) {
     if (wrCalc.taps && wrCalc.taps.length > 0) {
       atRowsFinal = buildWindingSideUnifiedRows_('ALTA TENSIÓN (AT)', wrCalc.taps, esMonofasico, transformer.at_devanado_material, wrInstrumento, WINDING_PHASE_ORDER_);
-      atVerdict = wrCalc.taps.every(function (t) { return t.tapVerdict === 'APROBADO'; }) ? 'APROBADO' : 'RECHAZADO';
+      atVerdict = wrCalc.primaryVerdict;
       atRowsFinal.push(nestedVerdictRow_('Veredicto AT', atVerdict));
       allVerdicts.push(atVerdict);
       allNotes = allNotes.concat(collectWindingSideUnifiedNotes_('AT', wrCalc.taps));
@@ -4860,9 +4927,15 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
   // Observaciones + Conclusión General — emparejadas lado a lado (ronda
   // 3, 2026-09-15); antes iban apiladas a todo el ancho, una debajo de
   // la otra.
-  var conclusionVerdict = allVerdicts.length && allVerdicts.every(function (v) { return String(v).indexOf('APROBADO') === 0; }) ? 'APROBADO' : 'RECHAZADO';
+  // 2026-10-01: cascada de 3 niveles (antes `every(... === 'APROBADO')`
+  // colapsaba cualquier OBSERVADO —p. ej. devanados con 3% de desbalance—
+  // directo a RECHAZADO en la conclusión combinada).
+  var conclusionVerdict = !allVerdicts.length ? 'RECHAZADO'
+    : allVerdicts.some(function (v) { return String(v).indexOf('RECHAZADO') === 0; }) ? 'RECHAZADO'
+    : allVerdicts.some(function (v) { return String(v).indexOf('OBSERVADO') === 0; }) ? 'OBSERVADO'
+    : 'APROBADO';
   outerRows.push(outerNestedPairRow_(
-    numberSection_(buildObservacionesRows_(presentLabels, estadoEquipoText, normas.join(' / '), conclusionVerdict === 'APROBADO'), n++),
+    numberSection_(buildObservacionesRows_(presentLabels, estadoEquipoText, normas.join(' / '), conclusionVerdict), n++),
     numberSection_(buildConclusionRows_(conclusionVerdict), n++)
   ));
 
