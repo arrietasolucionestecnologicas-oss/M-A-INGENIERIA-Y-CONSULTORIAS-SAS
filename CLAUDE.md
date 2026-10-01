@@ -4542,3 +4542,203 @@ aparte, con sus propias acciones (`migrateOilTemplateFromElectrical`/
 Verificado con `node --check` (sintaxis) y un despliegue real que generó
 correctamente un informe de Aceite con las 3 secciones tras el borrado
 — nada quedó roto.
+
+## Ronda 11 (2026-10-01) — Veredicto graduado de desbalance de devanados (OBSERVADO 2-5%)
+
+**Contexto**: durante una demo real con cliente, el usuario reportó que un
+transformador con devanados de ALUMINIO (normal en equipos de distribución
+en Barranquilla) venía saliendo RECHAZADO con desbalances de 3-4% entre
+fases, pese a que en la práctica de campo esos valores se consideran
+operativamente aceptables (oxidación Al2O3 en las conexiones, fluencia/
+dilatación térmica del aluminio con los años, tiempos de saturación DC más
+largos en devanados LV tipo lámina). El usuario pidió investigar la norma
+real (no inventar números) y compartió además una explicación técnica
+propia sobre por qué en Barranquilla se usa 5% como corte operativo real.
+**Decisión final del usuario**: mantener 5% como el corte real
+APROBADO/RECHAZADO (no se puede romper la operación del taller), pero
+agregar un 3er nivel OBSERVADO entre 2% y 5% con una nota explícita de que
+la norma ideal (IEEE C57.125 / IEC 60076-1) pide ≤2%, aprobando con
+observación en ese rango intermedio. Los números 2%/5%/IEEE C57.125/IEC
+60076-1 se verificaron leyendo completo (no solo resumen de búsqueda) el
+PDF "A Guide to Transformer Winding Resistance Measurements" de Megger
+antes de implementar — cumple la regla del proyecto de nunca inventar
+cifras de norma.
+
+**Qué se cambió (backend, `Código.gs`)**:
+- Nueva constante `UNBALANCE_OBSERVE_THRESHOLD_PERCENT = 2.0` (junto a la
+  ya existente `UNBALANCE_THRESHOLD_PERCENT = 5.0`).
+- `computePhaseUnbalance_` — pasó de veredicto binario a cascada de 3
+  niveles por fase (`APROBADO` ≤2% / `OBSERVADO` 2-5%, con nota automática
+  vía `unbalanceObserveNote_` / `RECHAZADO` >5%).
+- `calculateWindingResistance_` — expone ahora `primaryVerdict` (antes
+  interno, ver bug de compatibilidad más abajo) con la misma cascada;
+  `overallVerdict` combina `primaryVerdict` + `secondary.verdict` con la
+  misma cascada de 3 niveles.
+- `buildWindingSideUnifiedRows_` (tabla del PDF) — el cálculo de
+  `worstStatus` por TAP pasó a reconocer RECHAZADO > OBSERVADO > APROBADO
+  (antes solo detectaba RECHAZADO, colapsando OBSERVADO a APROBADO en la
+  tabla sin avisar).
+- `verdictCellColor_` — reconoce `OBSERVADO` (color ámbar), antes caía a
+  `null` (sin color).
+- `regenerateElectricalCombinedReport_` — **3 lugares** que re-derivaban el
+  veredicto localmente con la fórmula binaria vieja (`.every(...===
+  'APROBADO')`), colapsando OBSERVADO a RECHAZADO, corregidos para usar la
+  cascada de 3 niveles: `atVerdict`, `conclusionVerdict`, y el booleano que
+  se le pasaba a `buildObservacionesRows_` (ahora recibe el string de
+  veredicto, no un booleano).
+- `buildConclusionRows_` — 3 textos/colores en vez de 2:
+  `'✓ EQUIPO APROBADO'` (verde) / `'✓ EQUIPO APROBADO — CON OBSERVACIÓN'`
+  (ámbar) / `'✗ EQUIPO NO APROBADO'` (rojo).
+- `buildObservacionesRows_` — firma cambiada de `(…, aprobado: boolean)` a
+  `(…, conclusionVerdict: string)`, con una 3ª frase explicando el caso
+  OBSERVADO (aluminio/norma).
+
+**Qué se cambió (frontend, `app.js`, mismo espejo que el backend)**:
+`UNBALANCE_OBSERVE_THRESHOLD`, `computePhaseUnbalancePreview_` (preview en
+vivo del formulario), `unbalanceRowCls_`/`unbalanceBannerCls_` (helpers de
+color compartidos por preview primario/secundario), textos de banner
+actualizados a "≤2% aprobado · 2-5% observado · >5% rechazado".
+
+**Verificación en vivo, 2 rondas completas** (sitio+transformador DEMO
+creados y BORRADOS cada vez, vía llamadas directas a `callApi(...)` desde
+la consola del navegador — no hace falta repetir el flujo UI completo para
+verificar backend): TTR + Devanados (con desbalance deliberado ~2.3-2.7%
+para caer en la banda OBSERVADO) + Aislamiento, certificados los 3,
+informe combinado generado y el PDF real descargado/inspeccionado con
+screenshots. Confirmado visualmente: tabla de Devanados muestra
+"OBSERVADO †" en ámbar con la nota correcta, banner de conclusión en
+ámbar "✓ EQUIPO APROBADO — CON OBSERVACIÓN" (no rojo), sección de
+Observaciones con la frase correcta sobre aluminio/IEEE C57.125/IEC
+60076-1.
+
+**2 bugs reales encontrados DESPUÉS del primer despliegue (versión 152),
+reportados por el usuario probando manualmente — corregidos en la versión
+153, mismo día**:
+
+1. **Tabla "8. CRITERIOS DE EVALUACIÓN — RESISTENCIA DE DEVANADOS" del PDF
+   seguía en la escala vieja 1%/3%** (`buildWindingCriteriaTable3Tier_`,
+   constante `tiers` dentro de esa función) — hasta el 2026-09-13 esa tabla
+   era DELIBERADAMENTE solo de referencia visual, distinta del corte real
+   (entonces binario, 5%). Con el veredicto graduado de hoy, la tabla SÍ
+   debe coincidir con el cálculo real — se actualizó a `≤2% / >2% y ≤5% /
+   >5%`. Verificado con el 2º PDF de la ronda de verificación en vivo.
+2. **"Veredicto AT: undefined"** en el informe combinado — causa:
+   `regenerateElectricalCombinedReport_` NO recalcula nada, lee tal cual
+   quedó guardado el `calculated_results_json` de la prueba de Devanados ya
+   certificada. Cualquier prueba de Devanados certificada ANTES del deploy
+   de la versión 152 (es decir, antes de que `calculateWindingResistance_`
+   expusiera `primaryVerdict`) quedó guardada SIN ese campo — al generar o
+   regenerar el informe combinado para esa prueba vieja, `wrCalc.primaryVerdict`
+   es `undefined`. Se agregó `legacyPrimaryVerdictFallback_(wrCalc)` —
+   recalcula el mismo veredicto desde `taps[].tapVerdict` (campo que sí
+   existía antes) cuando falta `primaryVerdict` — y se usa en el único call
+   site (`atVerdict = legacyPrimaryVerdictFallback_(wrCalc);`). **Esto
+   arregla registros viejos sin que el usuario tenga que volver a
+   digitar/certificar nada** — el usuario solo necesita volver a generar el
+   informe combinado (botón "Certificar Pruebas Eléctricas" o el que
+   regenere el PDF) para la prueba que le dio "undefined".
+
+**Desplegado**: backend versión 152 (`clasp -u mya deploy --deploymentId
+AKfycbwhVAjRgkfyxFjjLM2-6wlfDuurzhS2HLW2A3gS_NKziW6fyMlXuXrwcTrjmp7oZG1Ufg`,
+veredicto graduado) y versión 153 (mismo deploymentId, los 2 fixes de
+arriba). Commits en GitHub (`arrietasolucionestecnologicas-oss/M-A-INGENIERIA-Y-CONSULTORIAS-SAS`,
+rama `main`): `868341d` (app.js del veredicto graduado — el backend ya
+estaba desplegado pero el commit del frontend se había quedado pendiente
+de sesiones anteriores) y `19b26e0` (los 2 fixes de la tabla de criterios
+y el fallback de compatibilidad).
+
+### Pendientes abiertos al cierre de la Ronda 11 — leer esto antes de tocar código si se retoma en otra sesión/IA
+
+**1. Verdict "REGISTRADO" en Aislamiento método Simple — reportado como
+problema por el usuario, NO es un bug de hoy, es diseño preexistente, pero
+el usuario ahora pide que se corrija.** `calculateInsulation_` (`Código.gs`,
+rama `if (metodo === 'simple')`) devuelve siempre
+`overallVerdict: 'REGISTRADO'` porque una lectura de un solo punto (sin
+DAR/IP) no tiene por sí sola un criterio de aceptación — por diseño,
+"simple" solo registra el valor crudo. El usuario quiere un veredicto real
+también para este método. **Antes de implementar cualquier número**:
+investigar a fondo (leer un documento primario completo, mismo criterio
+que se siguió para el 2%/5% de Devanados — ver arriba) el criterio real de
+resistencia mínima aceptable para una lectura puntual de aislamiento (pista
+de investigación: IEEE 43, "minimum insulation resistance" en función de
+la tensión nominal del devanado y la temperatura — existen reglas de campo
+tipo "1 MΩ por kV nominal, mínimo, corregido por temperatura" pero varían
+según la fuente exacta y la clase de aislamiento — NO asumir un número sin
+confirmar la fuente) y PROPONER el umbral al usuario antes de codificarlo,
+igual que se hizo con el 2%/5%. Confirmar también si debe aplicar
+corrección por temperatura (el formulario ya captura
+`windingTemperatureC`) antes de comparar contra el mínimo.
+
+**2. "En gráficos solo salió TTR, no salió ninguna otra prueba" —
+reportado como problema, pero es comportamiento POR DISEÑO, no un bug de
+hoy.** En `regenerateElectricalCombinedReport_` (`Código.gs`, bloque
+"Gráficos de Resultados"): `willHaveTtrChart` (gráfica de desviación TTR)
+y `willHaveCurveChart = !!(aisCalc && !aisEsSimple)` (curva DAR/IP de
+Aislamiento, SOLO si el método es "completo" — el método "Simple" nunca
+tuvo curva, por diseño, porque no hay 3 lecturas de tiempo que graficar).
+**No existe ninguna gráfica para Resistencia de Devanados** — nunca
+existió, en ninguna ronda anterior. Si el usuario probó con Aislamiento en
+método Simple, el resultado observado (solo aparece la gráfica de TTR) es
+exactamente el comportamiento esperado del código actual, no un defecto.
+**Antes de "arreglar" esto, confirmar con el usuario** qué espera
+realmente: ¿quiere una gráfica nueva para Devanados (no existe hoy, habría
+que diseñarla — probablemente desviación por fase por TAP, ver
+`buildTtrDeviationChart_` como referencia de patrón ya usado)?, ¿o solo
+necesita que la gráfica de Aislamiento aparezca también en método Simple
+(en cuyo caso habría que decidir qué graficar con un solo punto por
+combinación — no hay curva real que trazar)? No se tocó código para esto
+en la Ronda 11 porque requiere una decisión de diseño del usuario, no es
+un bug con una única corrección obvia.
+
+**3. Patrón "local-first" (optimista) pendiente de extender a TTR/
+Resistencia de Devanados/Aislamiento — CONFIRMADO por el usuario
+("el 3 6 y 8 si aplica el truco la idea es que el cliente sientga la app
+fluida"), todavía NO implementado.** El patrón ya probado y funcionando
+está en `handleCreateTransformerSubmit` (`app.js`, creación de Equipo) y en
+el equivalente de creación de Cliente/Proyecto: empujar un registro con
+ID temporal a `state.*` y renderizarlo YA, re-habilitar el formulario de
+inmediato, y recién AHÍ correr la validación/POST real en segundo plano;
+si falla, marcar `_pending:false, _error:true` con
+`_retryAction`/`_retryPayload` para un botón "Reintentar" visible — nunca
+perder en silencio lo digitado. Extender el mismo patrón a `submitTtr`,
+`submitWinding` y `submitInsulation` (`app.js`) usando el preview YA
+calculado en el cliente (`computeTtrPreview`, `computePhaseUnbalancePreview_`,
+el preview de Aislamiento) para mostrar un "Guardado (borrador)" inmediato
+antes de que vuelva la respuesta real del servidor. Es un cambio de
+tamaño medio-grande, tocar con cuidado el manejo de `state.editingDraftTestId`
+(el camino de editar un borrador existente usa `updateTestDraft`, no
+`submitXxxTest` — el patrón optimista debe cubrir ambos caminos).
+
+**4. Veredicto graduado para corriente de excitación/desviación de fase en
+TTR — propuesto pero NO confirmado por el usuario, NO implementado.** Se
+investigó por WebSearch (resúmenes, NO se leyó un documento primario
+completo como sí se hizo para Devanados) un umbral tentativo (~15% de
+relación entre fases como "normal", más allá como "observar/revisar") pero
+el usuario nunca confirmó estos números — no implementar sin su
+confirmación explícita, y lo ideal sería antes verificar la cifra contra
+un documento primario real (mismo estándar que Devanados: Megger/IEEE/IEC),
+no solo resumen de búsqueda.
+
+**5. Recuperación de datos por Historial de Versiones de Sheets —
+diferida por el usuario, sigue sin confirmarse si se hizo.** El
+2026-09-30 un transformador real del cliente (`922eff60-6906-4a06-9522-87257a6686b0`,
+probablemente serial `DEMO-TRF-001` por el contexto) fue borrado por error
+durante una limpieza de datos DEMO (se asumió que todos los IDs de ese
+sitio compartido eran de prueba propia, sin verificar uno por uno — lección
+aprendida: **nunca asumir ownership de un ID en un sitio compartido sin
+verificarlo explícitamente antes de un `delete*`**). Se le explicaron al
+usuario los pasos de recuperación vía Google Sheets → Archivo → Historial
+de versiones, pero el usuario optó por volver a digitar las pruebas en vez
+de recuperar — no se confirmó si en algún momento sí quiso recuperar el
+original. Si se retoma, el archivo es "TMS - Base de Datos (M&A Gestión de
+Pruebas)" en Drive de la cuenta `myaingenieria6@gmail.com`.
+
+**Regla operativa para cualquier sesión/IA que continúe este proyecto**:
+antes de desplegar un cambio en `calculateWindingResistance_`,
+`calculateInsulation_` o `calculateTtr_` (las 3 funciones de veredicto),
+revisar SIEMPRE `regenerateElectricalCombinedReport_` en el mismo archivo
+— es el único lugar que lee `calculated_results_json` de pruebas YA
+guardadas (posiblemente con una forma vieja de ese objeto) en vez de
+recalcular desde cero, así que es donde aparecen los bugs de compatibilidad
+hacia atrás como el del punto 2 de arriba. Grep rápido para ubicarla:
+`grep -n "function regenerateElectricalCombinedReport_" Código.gs`.
