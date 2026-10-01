@@ -614,14 +614,26 @@ table.matrix-table input:disabled { background: var(--surface-alt); color: var(-
 }
 
 /* Celular real (no solo tablet) — .test-grid en 2 columnas (regla de arriba)
-   deja "Lecturas de campo" y "Vista previa" apretados uno junto al otro, y
-   .phase-entry-grid en 2 columnas deja cada tarjeta de fase sin espacio para
-   sus 3 inputs. A este ancho los dos colapsan a 1 sola columna, apilados.
+   deja "Lecturas de campo" y "Vista previa" apretados uno junto al otro.
    .phase-entry-grid-2col/-3col son las mismas grillas de Aceite
    (Fisicoquímico/DGA/PCB) — antes fijas por estilo inline, sin responder a
    ningún breakpoint; ver index.html. */
 @media (max-width: 600px) {
-  .test-grid, .phase-entry-grid, .phase-entry-grid-2col, .phase-entry-grid-3col { grid-template-columns: 1fr; }
+  .test-grid, .phase-entry-grid-2col, .phase-entry-grid-3col { grid-template-columns: 1fr; }
+}
+
+/* 2026-10-01, a pedido explícito del cliente en vivo: las 3 columnas de fase
+   (U/V/W — TTR y Resistencia de Devanados) deben verse SIEMPRE lado a lado,
+   nunca apiladas, ni en celular — es como se comparan visualmente las 3
+   fases entre sí. Antes colapsaba a 1 columna en el mismo breakpoint que
+   .test-grid; se saca de esa regla y se achica el padding/fuente interna
+   para que las 3 quepan en el ancho real de un celular. */
+.phase-entry-grid { grid-template-columns: repeat(3, 1fr); }
+@media (max-width: 600px) {
+  .phase-entry-grid { gap: 6px; }
+  .phase-entry-grid .phase-entry { padding: 8px 6px; }
+  .phase-entry-grid .phase-entry .field label { font-size: 8.5px; }
+  .phase-entry-grid .phase-entry .field input { padding: 4px 4px; font-size: 14px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

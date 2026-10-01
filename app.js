@@ -111,7 +111,29 @@ function ApiError(status, message) {
 ApiError.prototype = Object.create(Error.prototype);
 ApiError.prototype.constructor = ApiError;
 
-function callApi(action, method, payload) {
+/** Reintento automático (2026-10-01, caso real en campo: "no se pudo guardar
+ *  el equipo" sin ningún rastro ni en la base de datos ni en el registro de
+ *  Ejecuciones de Apps Script — la petición nunca llegó a ejecutarse,
+ *  rechazada por la infraestructura de Google antes de invocar el script).
+ *
+ *  GET siempre es seguro reintentar (solo lee, nunca duplica nada).
+ *
+ *  POST es el caso delicado: esta misma sesión confirmó varias veces que una
+ *  respuesta "inválida" (`res.json()` falla porque el cuerpo es HTML, no
+ *  JSON) a veces en realidad SÍ llegó a ejecutar la acción en el servidor —
+ *  reintentar a ciegas en ese caso duplicaría el registro (un equipo, una
+ *  prueba, una certificación). Por eso un POST SOLO se reintenta cuando
+ *  `fetch()` nunca llegó a recibir ninguna respuesta (falla real de red:
+ *  "Failed to fetch", sin conexión) — ahí sí se puede asumir con confianza
+ *  que el servidor nunca se enteró. Cuando SÍ hubo respuesta pero no se pudo
+ *  interpretar como JSON, un POST no se reintenta solo — sigue cayendo en el
+ *  flujo existente de "quedó pendiente de sincronizar" con reintento manual
+ *  (ver handleCreateTransformerSubmit/retryPendingTransformer_), que si
+ *  vuelve a fallar reintenta el MISMO payload, no uno nuevo. */
+var API_MAX_AUTO_RETRIES_ = 2;
+
+function callApi(action, method, payload, _retryCount) {
+  _retryCount = _retryCount || 0;
   if (!state.token) {
     return Promise.reject(new ApiError(0, 'No hay una sesión activa (token ausente)'));
   }
@@ -134,7 +156,13 @@ function callApi(action, method, payload) {
   }
 
   return request
-    .then(function (res) { return res.json(); })
+    .then(function (res) {
+      return res.json().catch(function () {
+        var parseErr = new ApiError(0, 'El servidor respondió algo que no se pudo interpretar');
+        parseErr.responseReceived = true; // sí hubo respuesta — solo no era JSON
+        throw parseErr;
+      });
+    })
     .then(function (json) {
       if (json.status === 402) {
         showView('suspended');
@@ -155,8 +183,15 @@ function callApi(action, method, payload) {
       return json.data;
     })
     .catch(function (err) {
-      if (err instanceof ApiError) throw err;
-      throw new ApiError(0, 'No se pudo contactar el backend: ' + err.message);
+      var apiErr = err instanceof ApiError ? err : new ApiError(0, 'No se pudo contactar el backend: ' + err.message);
+      var responseReceived = !!(err instanceof ApiError && err.responseReceived);
+      var isGet = method === 'GET';
+      var canRetry = apiErr.status === 0 && _retryCount < API_MAX_AUTO_RETRIES_ && (isGet || !responseReceived);
+      if (canRetry) {
+        return new Promise(function (resolve) { setTimeout(resolve, 1200 * (_retryCount + 1)); })
+          .then(function () { return callApi(action, method, payload, _retryCount + 1); });
+      }
+      throw apiErr;
     });
 }
 
@@ -2386,6 +2421,26 @@ function getPhaseKeys() {
   return ['H1H2-X1X2', 'H2H3-X2X3', 'H3H1-X3X1'];
 }
 
+/** 2026-10-01, a pedido explícito del cliente en vivo: las tarjetas de
+ *  digitación (TTR y Resistencia de Devanados) mostraban el identificador
+ *  interno crudo ("H1H2-X1X2", "H1-H2"...) como si fuera la etiqueta de
+ *  fase — el cliente pidió que se vea simplemente "U"/"V"/"W" (bobina
+ *  1/2/3), que es la nomenclatura que se usa en campo en Barranquilla.
+ *  Esto SOLO cambia lo que se MUESTRA en pantalla — los identificadores
+ *  internos (claves de `readings`/`phases`, lo que se guarda en
+ *  raw_readings_json/calculated_results_json y lo que arma el PDF) quedan
+ *  exactamente iguales, para no romper el cálculo ni los informes ya
+ *  certificados. Cualquier clave no reconocida se muestra tal cual (nunca
+ *  debe quedar en blanco). */
+var PHASE_DISPLAY_LABELS_ = {
+  'H1H2-X1X2': 'U', 'H2H3-X2X3': 'V', 'H3H1-X3X1': 'W',
+  'H1-H2': 'U', 'H2-H3': 'V', 'H3-H1': 'W',
+  'X1-X2': 'U', 'X2-X3': 'V', 'X3-X1': 'W'
+};
+function phaseDisplayLabel_(key) {
+  return PHASE_DISPLAY_LABELS_[key] || key;
+}
+
 function tapPositions() {
   return getTapConfig().positions.map(function (p) { return p.position; }).sort(function (a, b) { return a - b; });
 }
@@ -2454,7 +2509,7 @@ function renderPhaseEntries() {
   wrap.innerHTML = getPhaseKeys().map(function (k) {
     var r = readings[k];
     return '<div class="phase-entry">' +
-      '<div class="ph-name">' + k.replace('-', ' &ndash; ') + '</div>' +
+      '<div class="ph-name">' + phaseDisplayLabel_(k) + '</div>' +
       '<div class="field"><label>Relación medida</label><input class="mono" type="number" step="0.001" value="' + r.measuredRatio + '" oninput="updateReading(\'' + k + '\',\'measuredRatio\',this.value)"></div>' +
       '<div class="field"><label>I. excitación (mA)</label><input class="mono" type="number" step="1" value="' + r.excitationCurrentMa + '" oninput="updateReading(\'' + k + '\',\'excitationCurrentMa\',this.value)"></div>' +
       '<div class="field"><label>Desviación de fase (&deg;)</label><input class="mono" type="number" step="0.01" value="' + r.phaseDeviationDeg + '" oninput="updateReading(\'' + k + '\',\'phaseDeviationDeg\',this.value)"></div>' +
@@ -2680,7 +2735,7 @@ function renderTtrPreview() {
     } else {
       theoTxt = r.theoretical != null ? r.theoretical.toFixed(3) : '&mdash;';
     }
-    return '<div class="preview-row"><span class="phase-name">' + r.key + '</span>' +
+    return '<div class="preview-row"><span class="phase-name">' + phaseDisplayLabel_(r.key) + '</span>' +
       '<span class="num">medido ' + measuredTxt + ' &middot; teórico ' + theoTxt + '</span>' +
       '<span class="err ' + errCls + '">' + errText + '</span></div>';
   }).join('');
@@ -2878,7 +2933,7 @@ function renderWrPhaseEntries() {
   wrap.innerHTML = Object.keys(tap.phases).map(function (k) {
     var r = tap.phases[k];
     return '<div class="phase-entry">' +
-      '<div class="ph-name">' + k.replace('-', ' &ndash; ') + '</div>' +
+      '<div class="ph-name">' + phaseDisplayLabel_(k) + '</div>' +
       '<div class="field"><label>Resistencia (&Omega;)</label><input class="mono" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*" value="' + r.resistanceOhm + '" oninput="updateWrPhase(\'' + k + '\',this.value)"></div>' +
       renderRepeatToggle_('toggleWrRepeat_', 'updateWrNote_', k, r) +
       '</div>';
@@ -2925,7 +2980,7 @@ function renderWrSecondaryPhaseEntries() {
   wrap.innerHTML = Object.keys(state.wr.secondary.phases).map(function (k) {
     var r = state.wr.secondary.phases[k];
     return '<div class="phase-entry">' +
-      '<div class="ph-name">' + k.replace('-', ' &ndash; ') + '</div>' +
+      '<div class="ph-name">' + phaseDisplayLabel_(k) + '</div>' +
       '<div class="field"><label>Resistencia (&Omega;)</label><input class="mono" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*" value="' + r.resistanceOhm + '" oninput="updateWrSecondaryPhase_(\'' + k + '\',this.value)"></div>' +
       renderRepeatToggle_('toggleWrSecondaryRepeat_', 'updateWrSecondaryNote_', k, r) +
       '</div>';
@@ -3009,7 +3064,7 @@ function renderWindingPreview() {
   var result = computeWindingPreview(state.wr.currentTap);
   document.getElementById('wrPreviewRows').innerHTML = result.rows.map(function (r) {
     var cls = r.status === 'APROBADO' ? 'ok' : 'bad';
-    return '<div class="preview-row"><span class="phase-name">' + r.key + '</span>' +
+    return '<div class="preview-row"><span class="phase-name">' + phaseDisplayLabel_(r.key) + '</span>' +
       '<span class="num">' + r.value.toFixed(4) + ' &Omega; &middot; prom. ' + result.average.toFixed(4) + ' &Omega;</span>' +
       '<span class="err ' + cls + '">' + (r.deviation >= 0 ? '+' : '') + r.deviation.toFixed(2) + ' %</span></div>';
   }).join('');
@@ -3025,7 +3080,7 @@ function renderWindingSecondaryPreview() {
   if (!rowsEl) return;
   rowsEl.innerHTML = result.rows.map(function (r) {
     var cls = r.status === 'APROBADO' ? 'ok' : 'bad';
-    return '<div class="preview-row"><span class="phase-name">' + r.key + '</span>' +
+    return '<div class="preview-row"><span class="phase-name">' + phaseDisplayLabel_(r.key) + '</span>' +
       '<span class="num">' + r.value.toFixed(4) + ' &Omega; &middot; prom. ' + result.average.toFixed(4) + ' &Omega;</span>' +
       '<span class="err ' + cls + '">' + (r.deviation >= 0 ? '+' : '') + r.deviation.toFixed(2) + ' %</span></div>';
   }).join('');
@@ -3632,10 +3687,10 @@ function renderInsulationPreview() {
   var esSimple = state.insulation.metodo === 'simple';
   document.getElementById('insulationPreviewRows').innerHTML = result.rows.map(function (r) {
     if (esSimple) {
-      return '<div class="preview-row"><span class="phase-name">' + r.key + '</span>' +
+      return '<div class="preview-row"><span class="phase-name">' + phaseDisplayLabel_(r.key) + '</span>' +
         '<span class="num">' + r.resistenciaValor + ' ' + r.resistenciaUnidad + '</span></div>';
     }
-    return '<div class="preview-row"><span class="phase-name">' + r.key + '</span>' +
+    return '<div class="preview-row"><span class="phase-name">' + phaseDisplayLabel_(r.key) + '</span>' +
       '<span class="num">DAR = ' + r.dar.toFixed(2) + '</span>' +
       '<span class="err ' + ratingClass_(r.darRating) + '">' + r.darRating + '</span></div>' +
       '<div class="preview-row"><span class="phase-name">' + r.key + '</span>' +
