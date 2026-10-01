@@ -298,7 +298,12 @@
         <div class="field">
           <label>Posici&oacute;n del TAP nominal</label>
           <input class="mono" id="editTrfPosTapNominal" type="text" inputmode="numeric" pattern="[0-9]*" placeholder="posición central (por defecto)">
-          <div class="field-note">Vacío = se asume la posición central (comportamiento de siempre). Diligéncialo solo si el fabricante marca el nominal en otra posición — cambiarlo aquí también regenera las posiciones de TAP.</div>
+          <div class="field-note">De fábrica — se usa como referencia para calcular la relación teórica y para el Informe de Historial. Vacío = se asume la posición central. No cambia aunque el conmutador se mueva en campo.</div>
+        </div>
+        <div class="field">
+          <label>Posici&oacute;n actual del conmutador</label>
+          <input class="mono" id="editTrfPosActualTap" type="text" inputmode="numeric" pattern="[0-9]*" placeholder="igual al nominal (por defecto)">
+          <div class="field-note">Dónde está el conmutador HOY en el equipo real (puede ser distinta de la nominal, por regulación de voltaje). Las pruebas de TTR y Resistencia de Devanados sugieren empezar aquí, porque es la posición que realmente está en servicio.</div>
         </div>
         <div class="field">
           <label>Pruebas el&eacute;ctricas ofertadas para este trabajo</label>
@@ -428,6 +433,10 @@
                 <input class="mono" id="newTrfPosTapNominal" type="text" inputmode="numeric" pattern="[0-9]*" placeholder="posición central (por defecto)">
               </div>
               <div class="field" style="min-width:170px;">
+                <label>Posici&oacute;n actual del conmutador</label>
+                <input class="mono" id="newTrfPosActualTap" type="text" inputmode="numeric" pattern="[0-9]*" placeholder="igual al nominal (por defecto)">
+              </div>
+              <div class="field" style="min-width:170px;">
                 <label>Foto de la placa</label>
                 <input id="newTrfPlatePhoto" type="file" accept="image/*" capture="environment">
               </div>
@@ -491,6 +500,7 @@
             <button class="btn" onclick="openEditTransformerModal_()">Editar equipo</button>
             <button class="btn" onclick="showView('oil-form')">Aceite dieléctrico</button>
             <button class="btn" onclick="showView('winding-form')">Resistencia de devanados</button>
+            <button class="btn" onclick="showView('insulation-form')">Resistencia de aislamiento</button>
             <button class="btn primary" onclick="showView('ttr-form')">Registrar lectura TTR</button>
             <button class="btn success" id="certifyElectricalBtn" onclick="handleCertifyElectricalReport_()" hidden>Certificar Pruebas Eléctricas</button>
             <button class="btn" id="generateHistoryReportBtn" onclick="handleGenerateYearlyHistoryReport_()">Generar informe de historial</button>
@@ -655,6 +665,15 @@
           <div><span class="k">TAPs registrados</span><span class="v num" id="wrTapCountLabel">1</span></div>
         </div>
 
+        <div class="field" style="max-width:420px;">
+          <label>&iquest;Qu&eacute; alcance tiene esta visita?</label>
+          <select id="wrScopeSelect" onchange="updateWrScope_(this.value)">
+            <option value="current">Solo la posici&oacute;n actual del conmutador</option>
+            <option value="all">Todas las posiciones del TAP</option>
+          </select>
+          <div class="field-note">"Solo la posición actual" deja un único TAP listo para digitar (el que está en servicio hoy). "Todas las posiciones" habilita agregar/quitar TAPs para un levantamiento completo.</div>
+        </div>
+
         <div class="test-grid">
           <div class="panel" id="wrPanelPrimario">
             <label class="panel-head oil-section-head">
@@ -687,7 +706,7 @@
                 </div>
               </div>
               <div class="phase-entry-grid" id="wrPhaseEntries"></div>
-              <div class="matrix-actions">
+              <div class="matrix-actions" id="wrTapActionsRow">
                 <button class="btn" onclick="addWrTap()">+ Agregar TAP</button>
                 <button class="btn" id="removeWrTapBtn" onclick="removeWrTap()">Quitar TAP actual</button>
               </div>

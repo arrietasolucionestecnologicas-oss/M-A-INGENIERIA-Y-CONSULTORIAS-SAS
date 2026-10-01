@@ -106,7 +106,15 @@ var HEADERS = {
     'cooling_type', 'impedance_percent', 'insulation_type',
     'numero_posiciones_tap', 'electrical_report_file_id', 'posicion_tap_nominal',
     'ttr_ofertado', 'resistencia_devanados_ofertado', 'aislamiento_ofertado',
-    'at_devanado_material', 'bt_devanado_material'
+    'at_devanado_material', 'bt_devanado_material',
+    // 2026-10-01, a pedido explícito del cliente en vivo: `posicion_tap_nominal`
+    // es el TAP de FÁBRICA (referencia para el Informe de Historial — nunca
+    // cambia). `posicion_actual_tap` es DISTINTA: dónde está físicamente el
+    // conmutador HOY en el equipo real (puede estar en cualquier posición por
+    // regulación de voltaje, independiente del nominal) — es la posición que
+    // de verdad hay que probar en campo. Van al final por la misma regla de
+    // "nunca insertar entre columnas existentes".
+    'posicion_actual_tap'
   ],
   PRUEBAS: [
     'id', 'transformer_id', 'test_type', 'raw_readings_json',
@@ -710,6 +718,7 @@ function transformerRowToJson_(row) {
     insulation_type: row.insulation_type || '',
     numero_posiciones_tap: row.numero_posiciones_tap || null,
     posicion_tap_nominal: row.posicion_tap_nominal || null,
+    posicion_actual_tap: row.posicion_actual_tap || null,
     electrical_report_url: row.electrical_report_file_id ? driveFileUrl_(row.electrical_report_file_id) : null,
     ttr_ofertado: normalizeOfertado_(row.ttr_ofertado),
     resistencia_devanados_ofertado: normalizeOfertado_(row.resistencia_devanados_ofertado),
@@ -734,6 +743,12 @@ function createTransformer_(params) {
       var createTapCount = params.numero_posiciones_tap || 5;
       if (params.posicion_tap_nominal < 1 || params.posicion_tap_nominal > createTapCount) {
         return jsonResponse_({ status: 400, message: 'posicion_tap_nominal debe estar entre 1 y ' + createTapCount });
+      }
+    }
+    if (params.posicion_actual_tap) {
+      var createTapCount2 = params.numero_posiciones_tap || 5;
+      if (params.posicion_actual_tap < 1 || params.posicion_actual_tap > createTapCount2) {
+        return jsonResponse_({ status: 400, message: 'posicion_actual_tap debe estar entre 1 y ' + createTapCount2 });
       }
     }
 
@@ -771,6 +786,7 @@ function createTransformer_(params) {
       insulation_type: params.insulation_type || '',
       numero_posiciones_tap: params.numero_posiciones_tap || '',
       posicion_tap_nominal: params.posicion_tap_nominal || '',
+      posicion_actual_tap: params.posicion_actual_tap || '',
       ttr_ofertado: !!params.ttr_ofertado,
       resistencia_devanados_ofertado: !!params.resistencia_devanados_ofertado,
       aislamiento_ofertado: !!params.aislamiento_ofertado,
@@ -799,11 +815,18 @@ function updateTransformer_(params) {
         return jsonResponse_({ status: 400, message: 'posicion_tap_nominal debe estar entre 1 y ' + updateTapCount });
       }
     }
+    if (params.posicion_actual_tap) {
+      var updateTapCount2 = params.numero_posiciones_tap || row.numero_posiciones_tap || 5;
+      if (params.posicion_actual_tap < 1 || params.posicion_actual_tap > updateTapCount2) {
+        return jsonResponse_({ status: 400, message: 'posicion_actual_tap debe estar entre 1 y ' + updateTapCount2 });
+      }
+    }
 
     var updates = {};
     ['serial_number', 'manufacturer', 'manufacture_year', 'phase_type', 'vector_group', 'rated_power_kva',
       'hv_nominal_voltage', 'lv_nominal_voltage', 'site_id',
       'cooling_type', 'impedance_percent', 'insulation_type', 'numero_posiciones_tap', 'posicion_tap_nominal',
+      'posicion_actual_tap',
       'at_devanado_material', 'bt_devanado_material'].forEach(function (field) {
       if (params[field] !== undefined) updates[field] = params[field];
     });

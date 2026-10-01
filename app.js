@@ -1003,9 +1003,15 @@ function handleCreateTransformerSubmit(e) {
   var effectiveTapCount = tapPositionsCount || 5;
   var posTapNominalRaw = document.getElementById('newTrfPosTapNominal').value.trim();
   var posTapNominal = posTapNominalRaw ? parseInt(posTapNominalRaw, 10) : null;
+  var posActualTapRaw = document.getElementById('newTrfPosActualTap').value.trim();
+  var posActualTap = posActualTapRaw ? parseInt(posActualTapRaw, 10) : null;
   var status = document.getElementById('createTransformerStatus');
   if (posTapNominalRaw && (isNaN(posTapNominal) || posTapNominal < 1 || posTapNominal > effectiveTapCount)) {
     setStatus_(status, 'Posición del TAP nominal debe ser un número entre 1 y ' + effectiveTapCount, false, true);
+    return;
+  }
+  if (posActualTapRaw && (isNaN(posActualTap) || posActualTap < 1 || posActualTap > effectiveTapCount)) {
+    setStatus_(status, 'Posición actual del conmutador debe ser un número entre 1 y ' + effectiveTapCount, false, true);
     return;
   }
   var btn = document.getElementById('createTransformerBtn');
@@ -1053,6 +1059,7 @@ function handleCreateTransformerSubmit(e) {
         bt_devanado_material: btMaterial,
         numero_posiciones_tap: tapPositionsCount,
         posicion_tap_nominal: posTapNominal,
+        posicion_actual_tap: posActualTap,
         is_special_design: false,
         ttr_ofertado: document.getElementById('newTrfTtrOfertado').checked,
         resistencia_devanados_ofertado: document.getElementById('newTrfDevanadosOfertado').checked,
@@ -1176,6 +1183,7 @@ function openEditTransformerModal_() {
     : 'Este equipo todavía no tiene foto de la placa.';
   document.getElementById('editTrfTapPositions').value = t.numero_posiciones_tap || '';
   document.getElementById('editTrfPosTapNominal').value = t.posicion_tap_nominal || '';
+  document.getElementById('editTrfPosActualTap').value = t.posicion_actual_tap || '';
   document.getElementById('editTrfTtrOfertado').checked = t.ttr_ofertado !== false;
   document.getElementById('editTrfDevanadosOfertado').checked = t.resistencia_devanados_ofertado !== false;
   document.getElementById('editTrfAislamientoOfertado').checked = t.aislamiento_ofertado !== false;
@@ -1232,6 +1240,21 @@ function handleEditTransformerSubmit(e) {
   var posTapNominalRaw = document.getElementById('editTrfPosTapNominal').value.trim();
   var posTapNominalInput = posTapNominalRaw ? parseInt(posTapNominalRaw, 10) : null;
   if (posTapNominalInput !== null && (isNaN(posTapNominalInput) || posTapNominalInput < 1)) posTapNominalInput = null;
+
+  // Posición actual del conmutador (2026-10-01) — a diferencia del nominal y
+  // del número de posiciones, NUNCA afecta tap_config (no es un dato de
+  // fábrica, es dónde está el conmutador HOY) — se valida y se manda aparte,
+  // fuera del bloque que regenera tap_config más abajo.
+  var posActualTapRaw = document.getElementById('editTrfPosActualTap').value.trim();
+  var posActualTapInput = posActualTapRaw ? parseInt(posActualTapRaw, 10) : null;
+  if (posActualTapRaw) {
+    var currentTapCountForActual = (state.currentTransformer && state.currentTransformer.tap_config && state.currentTransformer.tap_config.numPositions) || 5;
+    if (isNaN(posActualTapInput) || posActualTapInput < 1 || posActualTapInput > currentTapCountForActual) {
+      setStatus_(statusEl, 'Posición actual del conmutador debe ser un número entre 1 y ' + currentTapCountForActual, false, true);
+      return;
+    }
+    payload.posicion_actual_tap = posActualTapInput;
+  }
 
   if (tapPositionsCount || posTapNominalInput) {
     var currentCfg = (state.currentTransformer && state.currentTransformer.tap_config) || {};
@@ -1801,7 +1824,8 @@ function renderDetail() {
     ['Material devanado AT', escapeHtml_(t.at_devanado_material || '—')],
     ['Material devanado BT', escapeHtml_(t.bt_devanado_material || '—')],
     ['TAPs configurados', (cfg.positions || []).length],
-    ['Posición TAP nominal', t.posicion_tap_nominal || ('Central (' + (cfg.neutralPosition || '—') + ')')],
+    ['Posición TAP nominal (fábrica)', t.posicion_tap_nominal || ('Central (' + (cfg.neutralPosition || '—') + ')')],
+    ['Posición actual del conmutador', t.posicion_actual_tap || 'Igual al nominal'],
     ['Paso por TAP', cfg.stepPercentage != null ? (cfg.stepPercentage + ' %') : '—'],
     ['Foto de placa', t.plate_photo_url ? ('<a href="' + t.plate_photo_url + '" target="_blank" rel="noopener">Ver foto</a>') : '—']
   ].map(function (pair) {
@@ -2172,7 +2196,11 @@ function handleEditTestDraft_(testId) {
     var wrTaps = Object.keys(state.wr.readings).map(Number).sort(function (a, b) { return a - b; });
     state.wr.currentTap = wrTaps.length ? wrTaps[0] : null;
     state.wr.secondary = raw.secondary ? { windingTemperatureC: raw.secondary.windingTemperatureC, phases: raw.secondary.phases } : defaultWrSecondary_();
+    // Editando un borrador ya enviado: nunca restringir a un solo TAP aunque
+    // tenga solo uno — el técnico podría querer agregar más al corregirlo.
+    state.wr.scope = 'all';
     showView('winding-form');
+    syncWrScopeUI_();
     document.getElementById('wrInstrument').value = test.instrument_used || '';
   } else if (test.test_type === 'AISLAMIENTO') {
     state.insulation = {
@@ -2450,6 +2478,24 @@ function tapVoltageFor(position) {
   return found ? found.voltage : null;
 }
 
+/** 2026-10-01, a pedido explícito del cliente en vivo: TTR y Resistencia de
+ *  Devanados arrancaban siempre en el primer TAP configurado — pero lo que
+ *  de verdad hay que probar en campo es la posición en la que está el
+ *  conmutador HOY (`posicion_actual_tap`), que puede ser distinta del TAP de
+ *  fábrica (`posicion_tap_nominal`, ese sí fijo, usado solo como referencia
+ *  para el Informe de Historial). Orden de preferencia: posición actual →
+ *  nominal → el primer TAP configurado (comportamiento de siempre si no se
+ *  diligenció ninguno de los dos). Nunca sugiere una posición que no exista
+ *  en el tap_config real del equipo. */
+function suggestedStartingTap_() {
+  var positions = tapPositions();
+  if (!positions.length) return null;
+  var t = state.currentTransformer;
+  var candidate = (t && t.posicion_actual_tap) || (t && t.posicion_tap_nominal) || null;
+  if (candidate && positions.indexOf(candidate) !== -1) return candidate;
+  return positions[0];
+}
+
 // ---------------------------------------------------------------
 // Formulario TTR
 // ---------------------------------------------------------------
@@ -2467,14 +2513,14 @@ function renderTtrFormContext() {
 }
 
 function resetTtrStateFromTransformer() {
-  var positions = tapPositions();
   var draft = loadDraft_('mya_draft_ttr_' + state.currentTransformerId);
   if (draft) {
     state.ttr.readings = draft;
-    state.ttr.currentTap = positions.length ? positions[0] : null;
+    var draftTaps = Object.keys(draft).map(Number).sort(function (a, b) { return a - b; });
+    state.ttr.currentTap = draftTaps.length ? draftTaps[0] : suggestedStartingTap_();
     return;
   }
-  state.ttr.currentTap = positions.length ? positions[0] : null;
+  state.ttr.currentTap = suggestedStartingTap_();
   state.ttr.readings = {};
   if (state.ttr.currentTap !== null) seedTtrTapReadings_(state.ttr.currentTap);
 }
@@ -2868,8 +2914,7 @@ function defaultWrSecondary_() {
  *  marcados por defecto (comportamiento histórico: siempre se pedían los
  *  dos), el técnico desmarca el que no aplique. */
 function resetWindingStateFromTransformer() {
-  var positions = tapPositions();
-  var firstTap = positions.length ? positions[0] : 1;
+  var firstTap = suggestedStartingTap_() || 1;
   var draft = loadDraft_('mya_draft_wr_' + state.currentTransformerId);
   if (draft && draft.readings && Object.keys(draft.readings).length) {
     state.wr.readings = draft.readings;
@@ -2877,6 +2922,11 @@ function resetWindingStateFromTransformer() {
     state.wr.secondary = draft.secondary || defaultWrSecondary_();
     state.wr.primario_realizado = draft.primario_realizado !== false;
     state.wr.secundario_realizado = draft.secundario_realizado !== false;
+    // Más de 1 TAP ya digitado en el borrador local = se venía trabajando en
+    // modo "todas las posiciones" — se respeta para no esconder TAPs ya
+    // hechos detrás del modo "solo la posición actual".
+    state.wr.scope = Object.keys(draft.readings).length > 1 ? 'all' : 'current';
+    syncWrScopeUI_();
     return;
   }
   state.wr.currentTap = firstTap;
@@ -2885,6 +2935,47 @@ function resetWindingStateFromTransformer() {
   state.wr.secondary = defaultWrSecondary_();
   state.wr.primario_realizado = true;
   state.wr.secundario_realizado = true;
+  // 2026-10-01, a pedido explícito del cliente en vivo: por defecto se
+  // asume que la visita es solo a la posición actual del conmutador (lo más
+  // común en campo) — se oculta "+ Agregar TAP"/"Quitar TAP actual" para no
+  // sugerir que faltan más TAPs por medir. El técnico cambia a "Todas las
+  // posiciones" si de verdad va a hacer un levantamiento completo.
+  state.wr.scope = 'current';
+  syncWrScopeUI_();
+}
+
+/** Muestra/oculta "+ Agregar TAP"/"Quitar TAP actual" según el alcance
+ *  declarado — ver resetWindingStateFromTransformer. */
+function syncWrScopeUI_() {
+  var select = document.getElementById('wrScopeSelect');
+  if (select) select.value = state.wr.scope || 'current';
+  var actionsRow = document.getElementById('wrTapActionsRow');
+  if (actionsRow) actionsRow.style.display = (state.wr.scope === 'all') ? '' : 'none';
+}
+
+/** Cambio manual de alcance desde el selector del formulario. Pasar a
+ *  "current" cuando ya hay más de 1 TAP digitado exige confirmación — nunca
+ *  descarta datos ya escritos sin que el técnico lo pida explícitamente. */
+function updateWrScope_(value) {
+  if (value === 'current') {
+    var keys = Object.keys(state.wr.readings).map(Number);
+    if (keys.length > 1) {
+      var keep = suggestedStartingTap_() || keys[0];
+      if (!confirm('Ya hay datos digitados en ' + keys.length + ' TAPs. ¿Dejar solo el TAP ' + keep + ' (posición actual) y descartar los demás de este formulario?')) {
+        syncWrScopeUI_(); // revierte el <select> a "all", que es lo que sigue siendo cierto
+        return;
+      }
+      var keptReadings = state.wr.readings[keep];
+      state.wr.readings = {};
+      state.wr.readings[keep] = keptReadings;
+      state.wr.currentTap = keep;
+      renderWrTapChips();
+      renderWrPhaseEntries();
+    }
+  }
+  state.wr.scope = value;
+  syncWrScopeUI_();
+  refreshWindingLight_();
 }
 
 /** Marca/desmarca la sección Primario o Secundario — mismo patrón que
