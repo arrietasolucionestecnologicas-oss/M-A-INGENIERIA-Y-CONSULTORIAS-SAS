@@ -1652,6 +1652,26 @@ function calculateWindingResistance_(readings) {
   };
 }
 
+/** Bug real reportado por el usuario el 2026-10-01: "Veredicto AT: undefined"
+ *  en un informe combinado recién generado. Causa — `wrCalc` en
+ *  `regenerateElectricalCombinedReport_` no se recalcula: se lee TAL CUAL
+ *  quedó guardado en `calculated_results_json` de la prueba de Devanados ya
+ *  certificada. Cualquier prueba de Devanados certificada ANTES del deploy
+ *  del veredicto graduado (2026-10-01, `primaryVerdict` recién agregado al
+ *  objeto que devuelve `calculateWindingResistance_`) quedó guardada SIN
+ *  ese campo — al generar o regenerar el informe combinado para esa prueba
+ *  vieja, `wrCalc.primaryVerdict` es `undefined`. Este helper repite la
+ *  misma cascada de 3 niveles a partir de `taps[].tapVerdict` (que SÍ
+ *  existía antes) cuando falta `primaryVerdict`, para que registros viejos
+ *  sigan funcionando sin tener que volver a certificar la prueba. */
+function legacyPrimaryVerdictFallback_(wrCalc) {
+  if (wrCalc.primaryVerdict) return wrCalc.primaryVerdict;
+  if (!wrCalc.taps || !wrCalc.taps.length) return null;
+  if (wrCalc.taps.some(function (t) { return t.tapVerdict === 'RECHAZADO'; })) return 'RECHAZADO';
+  if (wrCalc.taps.some(function (t) { return t.tapVerdict === 'OBSERVADO'; })) return 'OBSERVADO';
+  return 'APROBADO';
+}
+
 // ---------------------------------------------------------------------------
 // Aislamiento (Megger) — DAR / IP (réplica de InsulationCalculator.kt)
 // ---------------------------------------------------------------------------
@@ -2836,14 +2856,19 @@ function buildDarIpLegendRows_() {
  *  inventa una nueva. */
 /** Tabla de criterios de Devanados — Punto 11, ronda 2 (2026-09-14): la
  *  referencia real que compartió el cliente la muestra como SECCIÓN PROPIA
- *  a todo lo ancho (no al lado de AT/BT), con la escala de 3 niveles
- *  (≤1 %/1-3 %/>3 %) de la imagen original. El umbral REAL que decide
- *  APROBADO/RECHAZADO sigue siendo el único de 5 % ya verificado
- *  (`computePhaseUnbalance_`, sin cambios) — esta tabla es SOLO
- *  referencia visual, exactamente la misma decisión ya tomada el
- *  2026-09-13 ("esa escala solo se imprime como tabla de referencia
- *  visual, no reemplaza el cálculo"), ahora con el layout que de verdad
- *  pidió el cliente. */
+ *  a todo lo ancho (no al lado de AT/BT). Hasta el 2026-09-30 esta tabla
+ *  mostraba una escala de 3 niveles (≤1 %/1-3 %/>3 %) que era SOLO
+ *  referencia visual — el umbral real que decidía APROBADO/RECHAZADO era
+ *  un único corte de 5 % en `computePhaseUnbalance_`, deliberadamente
+ *  distinto de lo impreso aquí (decisión 2026-09-13: "esa escala solo se
+ *  imprime como tabla de referencia visual, no reemplaza el cálculo").
+ *  2026-10-01: `computePhaseUnbalance_` pasó a un veredicto real de 3
+ *  niveles (≤2 % APROBADO / 2-5 % OBSERVADO / >5 % RECHAZADO — ver
+ *  UNBALANCE_OBSERVE_THRESHOLD_PERCENT/UNBALANCE_THRESHOLD_PERCENT). Esta
+ *  tabla YA NO es solo decorativa: ahora sí debe coincidir exactamente con
+ *  el cálculo real, así que se actualiza a los mismos 2 %/5 % — bug real
+ *  reportado por el usuario el 2026-10-01 (la tabla impresa seguía en
+ *  1 %/3 %, sin relación con el veredicto que de verdad se mostraba). */
 function buildWindingCriteriaTable3Tier_() {
   var rows = [unifiedBannerRow_('CRITERIOS DE EVALUACIÓN — RESISTENCIA DE DEVANADOS')];
   // Punto 11, ronda 5 (2026-09-16) — corrección QUIRÚRGICA a pedido
@@ -2864,9 +2889,9 @@ function buildWindingCriteriaTable3Tier_() {
   headerRow.fontSizeOverride = 6.5;
   rows.push(headerRow);
   var tiers = [
-    { range: '≤ 1 %', label: 'ACEPTABLE', bg: PDF_COLORS_.SUCCESS_BG, fg: PDF_COLORS_.SUCCESS },
-    { range: '> 1 % y ≤ 3 %', label: 'CUESTIONABLE', bg: PDF_COLORS_.WARNING_BG, fg: PDF_COLORS_.WARNING },
-    { range: '> 3 %', label: 'NO ACEPTABLE', bg: PDF_COLORS_.DANGER_BG, fg: PDF_COLORS_.DANGER }
+    { range: '≤ 2 %', label: 'ACEPTABLE', bg: PDF_COLORS_.SUCCESS_BG, fg: PDF_COLORS_.SUCCESS },
+    { range: '> 2 % y ≤ 5 %', label: 'CUESTIONABLE', bg: PDF_COLORS_.WARNING_BG, fg: PDF_COLORS_.WARNING },
+    { range: '> 5 %', label: 'NO ACEPTABLE', bg: PDF_COLORS_.DANGER_BG, fg: PDF_COLORS_.DANGER }
   ];
   tiers.forEach(function (t) {
     var cells = new Array(UNIFIED_TABLE_COLS_).fill('');
@@ -4801,7 +4826,7 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
   if (wrCalc) {
     if (wrCalc.taps && wrCalc.taps.length > 0) {
       atRowsFinal = buildWindingSideUnifiedRows_('ALTA TENSIÓN (AT)', wrCalc.taps, esMonofasico, transformer.at_devanado_material, wrInstrumento, WINDING_PHASE_ORDER_);
-      atVerdict = wrCalc.primaryVerdict;
+      atVerdict = legacyPrimaryVerdictFallback_(wrCalc);
       atRowsFinal.push(nestedVerdictRow_('Veredicto AT', atVerdict));
       allVerdicts.push(atVerdict);
       allNotes = allNotes.concat(collectWindingSideUnifiedNotes_('AT', wrCalc.taps));
