@@ -114,7 +114,10 @@ var HEADERS = {
     // regulación de voltaje, independiente del nominal) — es la posición que
     // de verdad hay que probar en campo. Van al final por la misma regla de
     // "nunca insertar entre columnas existentes".
-    'posicion_actual_tap'
+    'posicion_actual_tap',
+    // 2026-10-04 — volumen de aceite del equipo en LITROS (característica
+    // permanente de placa, opcional); lo muestra el informe de aceite.
+    'volumen_aceite'
   ],
   PRUEBAS: [
     'id', 'transformer_id', 'test_type', 'raw_readings_json',
@@ -137,7 +140,12 @@ var HEADERS = {
     // página pública de verificación (verificarInformeElectrico_/doGet).
     // Quedan en blanco para cualquier documento que no sea un informe
     // eléctrico (adjuntos, informes de Aceite, subidas manuales).
-    'transformer_id', 'verdict', 'certified_by'
+    'transformer_id', 'verdict', 'certified_by',
+    // 2026-10-04 — consecutivo numérico GLOBAL (100, 101, …) compartido por
+    // informes eléctricos y de aceite, ver nextReportConsecutive_/
+    // REPORT_CONSECUTIVE_PROP_. Vacío en documentos que no son informes y en
+    // informes generados antes de esta columna.
+    'consecutivo'
   ],
   /** Comercial — Ofertas y Licitaciones. `estado` guardado es siempre
    *  'Pendiente'/'Aprobada'/'Rechazada' — 'Cierre' NUNCA se escribe aquí, es
@@ -243,7 +251,11 @@ function doGet(e) {
   // nunca pasa por Control de Acceso ni por ninguna acción de POST_ACTIONS/
   // GET_ACTIONS.
   if (e && e.parameter && e.parameter.verificar) {
-    return verificarInformeElectrico_(e.parameter.verificar);
+    // El consecutivo viaja como `n`, NO como `c`: un Web App de Apps Script
+    // rechaza un parámetro llamado exactamente `c` (responde la página de
+    // error de Drive "No se encontró la página" antes de llegar a doGet —
+    // verificado en vivo 2026-10-04); `n`/`consecutivo` sí llegan.
+    return verificarInformeElectrico_(e.parameter.verificar, e.parameter.n);
   }
   return routeRequest_(e, 'GET');
 }
@@ -262,7 +274,7 @@ function doPost(e) {
  *  reimpreso a mano con un id inventado no encuentra nada acá). Nunca
  *  lanza — cualquier error interno también cae en "no válido" en vez de
  *  un stack trace público. */
-function verificarInformeElectrico_(docId) {
+function verificarInformeElectrico_(docId, consecutivoParam) {
   var html;
   try {
     ensureAllSheets_();
@@ -273,12 +285,20 @@ function verificarInformeElectrico_(docId) {
     for (var r = 1; r < data.length; r++) {
       if (data[r][idCol] === docId) { row = rowToObject_(data[r], 'DOCUMENTOS', r + 1); break; }
     }
-    if (!row || row.category !== 'CERTIFICADOS' || !row.transformer_id) {
+    // 2026-10-04 — el QR nuevo trae `&n=<consecutivo>`: si viene, debe
+    // coincidir con el consecutivo guardado en la fila (la fuente de verdad);
+    // un QR alterado a mano no coincide. Los QR viejos (sin `n`) siguen
+    // verificando igual. El consecutivo nunca es la clave de búsqueda.
+    var storedConsecutivo = (row && row.consecutivo !== '' && row.consecutivo != null) ? String(row.consecutivo).trim() : '';
+    var cGiven = (consecutivoParam !== undefined && consecutivoParam !== null && String(consecutivoParam).trim() !== '');
+    var consecutivoOk = !cGiven || (storedConsecutivo !== '' && String(consecutivoParam).trim() === storedConsecutivo);
+    if (!row || row.category !== 'CERTIFICADOS' || !row.transformer_id || !consecutivoOk) {
       html = verificationPageHtml_(false, null);
     } else {
       var transformer = findTransformerRow_(row.transformer_id);
       var site = transformer ? findSiteRow_(transformer.site_id) : null;
       html = verificationPageHtml_(true, {
+        consecutivo: storedConsecutivo,
         cliente: site ? site.client_name : '—',
         serie: transformer ? transformer.serial_number : '—',
         fecha: fmtDatePdf_(row.created_at),
@@ -322,6 +342,7 @@ function verificationPageHtml_(valido, datos) {
     '<style>' + style + '</style></head><body><div class="card">' +
     '<h1>M&amp;A Ingeniería y Consultoría SAS</h1>' +
     '<span class="badge ok">Certificado válido</span>' +
+    (datos.consecutivo ? '<div class="row"><span class="label">N° de informe</span><span class="value">' + escapeHtml_(datos.consecutivo) + '</span></div>' : '') +
     '<div class="row"><span class="label">Cliente</span><span class="value">' + escapeHtml_(datos.cliente) + '</span></div>' +
     '<div class="row"><span class="label">N° de serie</span><span class="value">' + escapeHtml_(datos.serie) + '</span></div>' +
     '<div class="row"><span class="label">Fecha</span><span class="value">' + escapeHtml_(datos.fecha) + '</span></div>' +
@@ -729,6 +750,7 @@ function transformerRowToJson_(row) {
     numero_posiciones_tap: row.numero_posiciones_tap || null,
     posicion_tap_nominal: row.posicion_tap_nominal || null,
     posicion_actual_tap: row.posicion_actual_tap || null,
+    volumen_aceite: row.volumen_aceite || null,
     electrical_report_url: row.electrical_report_file_id ? driveFileUrl_(row.electrical_report_file_id) : null,
     ttr_ofertado: normalizeOfertado_(row.ttr_ofertado),
     resistencia_devanados_ofertado: normalizeOfertado_(row.resistencia_devanados_ofertado),
@@ -797,6 +819,7 @@ function createTransformer_(params) {
       numero_posiciones_tap: params.numero_posiciones_tap || '',
       posicion_tap_nominal: params.posicion_tap_nominal || '',
       posicion_actual_tap: params.posicion_actual_tap || '',
+      volumen_aceite: params.volumen_aceite || '',
       ttr_ofertado: !!params.ttr_ofertado,
       resistencia_devanados_ofertado: !!params.resistencia_devanados_ofertado,
       aislamiento_ofertado: !!params.aislamiento_ofertado,
@@ -836,7 +859,7 @@ function updateTransformer_(params) {
     ['serial_number', 'manufacturer', 'manufacture_year', 'phase_type', 'vector_group', 'rated_power_kva',
       'hv_nominal_voltage', 'lv_nominal_voltage', 'site_id',
       'cooling_type', 'impedance_percent', 'insulation_type', 'numero_posiciones_tap', 'posicion_tap_nominal',
-      'posicion_actual_tap',
+      'posicion_actual_tap', 'volumen_aceite',
       'at_devanado_material', 'bt_devanado_material'].forEach(function (field) {
       if (params[field] !== undefined) updates[field] = params[field];
     });
@@ -1085,6 +1108,7 @@ function certifyTest_(params, auth) {
     var calculated = safeParseJson_(testObj.calculated_results_json);
     var rawReadings = safeParseJson_(testObj.raw_readings_json);
     var reportFileId = '';
+    var oilReportError = null;
     var revisadoPor = auth.username || 'desconocido';
     var revisadoAt = new Date().toISOString();
 
@@ -1126,7 +1150,10 @@ function certifyTest_(params, auth) {
         var oilReport = regenerateOilCombinedReport_(transformer, site, rawReadings, calculated, oilTestMeta, folders.certificadosFolderId);
         reportFileId = oilReport.fileId;
       } catch (reportErr) {
-        // No relanzar.
+        // No relanzar (la prueba igual queda Certificada) — pero tampoco
+        // silenciar (2026-10-04): se registra y se devuelve en la respuesta.
+        oilReportError = (reportErr && reportErr.message) ? reportErr.message : String(reportErr);
+        Logger.log('certifyTest_ — falló el informe de aceite de la prueba ' + params.id + ': ' + oilReportError);
       }
     }
     // TTR/RESISTENCIA_DEVANADOS/AISLAMIENTO: certificar la prueba individual
@@ -1134,7 +1161,9 @@ function certifyTest_(params, auth) {
 
     if (reportFileId) sheet.getRange(testObj._row, colIndex_('PRUEBAS', 'report_file_id')).setValue(reportFileId);
 
-    return jsonResponse_({ status: 200, message: 'Prueba certificada', data: { id: params.id, report_url: reportFileId ? driveFileUrl_(reportFileId) : null } });
+    var certifyData = { id: params.id, report_url: reportFileId ? driveFileUrl_(reportFileId) : null };
+    if (oilReportError) certifyData.report_error = oilReportError;
+    return jsonResponse_({ status: 200, message: 'Prueba certificada', data: certifyData });
   });
 }
 
@@ -2110,6 +2139,53 @@ function getQrCodeBlob_(text) {
   return null;
 }
 
+/** Consecutivo global de informes (2026-10-04) — UN solo contador para
+ *  informes eléctricos y de aceite. Fuente de verdad: la propiedad del
+ *  script `REPORT_CONSECUTIVE_LAST` (último número ya asignado; sin ella,
+ *  99, así que el primero es 100). Se lee el máximo de la columna
+ *  `DOCUMENTOS.consecutivo` solo como PISO de reparación (si alguien borra
+ *  la propiedad) — nunca como fuente principal: `deleteSite_` borra filas de
+ *  DOCUMENTOS en cascada y un MAX+1 reutilizaría números.
+ *  Atomicidad: los 2 generadores corren dentro de `withLock_` (lock global
+ *  del script, ver certifyElectricalReport_/certifyTest_) durante TODO el
+ *  armado y la exportación del PDF, así que nadie más puede tomar el mismo
+ *  número entre leer y confirmar. */
+var REPORT_CONSECUTIVE_PROP_ = 'REPORT_CONSECUTIVE_LAST';
+var REPORT_CONSECUTIVE_BASE_ = 99;
+
+function readReportConsecutiveLast_() {
+  var raw = PropertiesService.getScriptProperties().getProperty(REPORT_CONSECUTIVE_PROP_);
+  var last = parseInt(raw, 10);
+  if (isNaN(last)) last = REPORT_CONSECUTIVE_BASE_;
+  var sheet = getSheet_('DOCUMENTOS');
+  var rows = sheet.getLastRow() - 1;
+  var col = HEADERS.DOCUMENTOS.indexOf('consecutivo') + 1;
+  if (rows > 0 && sheet.getLastColumn() >= col) {
+    sheet.getRange(2, col, rows, 1).getValues().forEach(function (r) {
+      var v = parseInt(r[0], 10);
+      if (!isNaN(v) && v > last) last = v;
+    });
+  }
+  return last;
+}
+
+function writeReportConsecutiveLast_(n) {
+  PropertiesService.getScriptProperties().setProperty(REPORT_CONSECUTIVE_PROP_, String(n));
+}
+
+/** Imprime el consecutivo en el campo "CÓDIGO:" de la caja de control de la
+ *  plantilla (texto existente de la plantilla, solo se le agrega el número
+ *  detrás — no se toca ningún otro formato). Si el campo no está, lanza: un
+ *  informe sin su consecutivo no debe salir en silencio. */
+function insertReportConsecutiveInBody_(body, consecutivo) {
+  var found = body.findText('CÓDIGO:');
+  if (!found) {
+    throw new Error('La plantilla del informe no tiene el campo "CÓDIGO:" — no se puede imprimir el consecutivo ' + consecutivo + '. Revisa la plantilla desde Administración.');
+  }
+  var textEl = found.getElement().asText();
+  textEl.insertText(found.getEndOffsetInclusive() + 1, ' ' + consecutivo);
+}
+
 /** Punto 11, ronda 7b (2026-09-17) — HALLAZGO REAL: el QR generado sí
  *  decodifica perfecto en su tamaño original (confirmado bajando la
  *  imagen fuente y leyéndola con el propio lector de qrserver.com), pero
@@ -2469,7 +2545,7 @@ function numberSection_(rows, num) {
 /** Anchos de columna (pt) de la Sección 1 de 3 columnas — etiqueta-izq /
  *  valor-izq / FOTO / etiqueta-der / valor-der. Suman ~560pt, el ancho
  *  útil real a 5mm de margen (ver PROTOCOL_MARGIN_PT_). */
-var SECTION1_THREE_COL_WIDTHS_PT_ = [80, 160, 90, 75, 155];
+var SECTION1_THREE_COL_WIDTHS_PT_ = [80, 160, 90, 90, 140];
 
 /** Sección 1 en 3 columnas reales — Punto 11, ronda 7 (2026-09-17), JSON
  *  de diseño del cliente: columna izquierda (12 filas, Cliente→Año de
@@ -2526,6 +2602,9 @@ function buildSection1ThreeColRows_(site, transformer, fechaText, tecnicoText, t
     rows.push(dataRow);
   }
   rows.colWidths = SECTION1_THREE_COL_WIDTHS_PT_;
+  // 2026-10-04 (punto 6 del cliente): relleno de 1 pt solo en esta sección
+  // (el global UNIFIED_CELL_PADDING_ sigue en 0,5).
+  rows.cellPadding = 1;
   rows.customMerges = [{ rowIndex: 1, startColumnIndex: 2, columnSpan: 1, rowSpan: left.length }];
   return rows;
 }
@@ -2943,7 +3022,7 @@ function joinSpanishList_(items) {
 /** `conclusionVerdict` es el string real ('APROBADO'/'OBSERVADO'/'RECHAZADO'),
  *  no un booleano — 2026-10-01, para poder redactar la 3ra frase de
  *  OBSERVADO (antes solo había aprobado/no aprobado). */
-function buildObservacionesRows_(presentLabels, estadoEquipoText, normasText, conclusionVerdict) {
+function buildObservacionesRows_(presentLabels, estadoEquipoText, normasText, conclusionVerdict, observationCauses) {
   var rows = [unifiedBannerRow_('OBSERVACIONES')];
   var fullMerge = [{ startColumnIndex: 0, columnSpan: UNIFIED_TABLE_COLS_ }];
   var rechazado = String(conclusionVerdict || '').indexOf('RECHAZADO') === 0;
@@ -2952,7 +3031,13 @@ function buildObservacionesRows_(presentLabels, estadoEquipoText, normasText, co
   if (rechazado) {
     resultSentence = 'Los resultados obtenidos presentan valores fuera de los rangos aceptables — se recomienda una revisión adicional del equipo.';
   } else if (observado) {
-    resultSentence = 'Los resultados obtenidos se aprueban con observación: el desbalance de resistencia de devanados superó el 2 % ideal de la norma (IEEE C57.125 / IEC 60076-1), pero se mantiene dentro del margen operativo de campo (5 %) para devanados de aluminio — se recomienda revisar en el próximo mantenimiento.';
+    // 2026-10-04 — el texto nombra las causas REALES (`observationCauses`, las
+    // arma el llamador a partir de los veredictos de cada prueba); antes
+    // siempre afirmaba "desbalance de devanados", aunque el OBSERVADO viniera
+    // de Aislamiento DAR/IP.
+    resultSentence = (observationCauses && observationCauses.length)
+      ? 'Los resultados obtenidos se aprueban con observación: ' + observationCauses.join('; ') + ' — se recomienda revisar en el próximo mantenimiento.'
+      : 'Los resultados obtenidos se aprueban con observación — se recomienda revisar en el próximo mantenimiento.';
   } else {
     resultSentence = 'Los resultados obtenidos se encuentran dentro de los rangos aceptables y presentan buen comportamiento.';
   }
@@ -4641,6 +4726,12 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
   var doc = DocumentApp.openById(copy.getId());
   var body = doc.getBody();
 
+  // Consecutivo global (2026-10-04): se calcula acá pero RECIÉN se confirma
+  // (propiedad del script) justo antes de exportar el PDF — ver más abajo.
+  var prevConsecutivo = readReportConsecutiveLast_();
+  var consecutivo = prevConsecutivo + 1;
+  insertReportConsecutiveInBody_(body, consecutivo);
+
   // Datos de cliente/equipo/prueba general se calculan ANTES de armar las
   // secciones (2026-09-13): ya no son placeholders <<CLIENTE>>/
   // <<FECHA_GENERAL>>/etc. reemplazados después — ahora son las primeras
@@ -4959,8 +5050,29 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
     : allVerdicts.some(function (v) { return String(v).indexOf('RECHAZADO') === 0; }) ? 'RECHAZADO'
     : allVerdicts.some(function (v) { return String(v).indexOf('OBSERVADO') === 0; }) ? 'OBSERVADO'
     : 'APROBADO';
+  // Causas reales del estado OBSERVADO (2026-10-04): una por cada prueba cuyo
+  // veredicto propio es OBSERVADO — devanados (AT o BT: desbalance 2-5 %) y/o
+  // Aislamiento (algún DAR/IP en rango CUESTIONABLE). TTR no tiene nivel
+  // OBSERVADO.
+  var observationCauses = [];
+  if (atVerdict === 'OBSERVADO' || (wrCalc && wrCalc.secondary && wrCalc.secondary.verdict === 'OBSERVADO')) {
+    observationCauses.push('el desbalance de resistencia de devanados superó el 2 % ideal de la norma (IEEE C57.125 / IEC 60076-1), pero se mantiene dentro del margen operativo de campo (5 %) para devanados de aluminio');
+  }
+  if (aisCalc && aisCalc.overallVerdict === 'OBSERVADO') {
+    var darCuestionable = false, ipCuestionable = false;
+    Object.keys(aisCalc.measurements || {}).forEach(function (k) {
+      var m = aisCalc.measurements[k] || {};
+      if (m.darRating === 'CUESTIONABLE') darCuestionable = true;
+      if (m.ipRating === 'CUESTIONABLE') ipCuestionable = true;
+    });
+    observationCauses.push('en la resistencia de aislamiento ' + (
+      darCuestionable && ipCuestionable ? 'los índices DAR e IP quedaron en el rango CUESTIONABLE'
+      : darCuestionable ? 'el índice DAR quedó en el rango CUESTIONABLE'
+      : ipCuestionable ? 'el índice IP quedó en el rango CUESTIONABLE'
+      : 'se obtuvo una calificación CUESTIONABLE'));
+  }
   outerRows.push(outerNestedPairRow_(
-    numberSection_(buildObservacionesRows_(presentLabels, estadoEquipoText, normas.join(' / '), conclusionVerdict), n++),
+    numberSection_(buildObservacionesRows_(presentLabels, estadoEquipoText, normas.join(' / '), conclusionVerdict, observationCauses), n++),
     numberSection_(buildConclusionRows_(conclusionVerdict), n++)
   ));
 
@@ -4991,7 +5103,7 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
   // UrlFetchApp, confirmado en vivo) — se deja de llamar para no sumar
   // latencia por una llamada condenada a fallar; se prioriza tamaño/
   // resolución del QR en vez de acortar la URL.
-  var verificationUrl = ScriptApp.getService().getUrl() + '?verificar=' + verificationId;
+  var verificationUrl = ScriptApp.getService().getUrl() + '?verificar=' + verificationId + '&n=' + consecutivo;
   var qrBlob = getQrCodeBlob_(verificationUrl);
 
   var firmaRows = numberSection_(buildFirmasUnifiedRows_(
@@ -5091,7 +5203,17 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
   appendUnifiedNoteFootnote_(body, tableResult.table, allNotes);
 
   var fileName = 'Informe_Electrico_' + transformer.serial_number + '_' + fmtTimestampForFilename_(new Date());
-  var saved = finalizeReportPdf_(doc, folderId, fileName, { outerMarkerText: tableResult.outerMarkerText, outerMergeSpecs: tableResult.outerMergeSpecs, nestedRegistry: tableResult.nestedRegistry });
+  // El número se confirma ANTES de exportar y se restaura si la exportación
+  // falla (nada se produjo → nada se consume). Desde que el PDF existe NO se
+  // restaura nunca más: un hueco es aceptable, un duplicado no.
+  writeReportConsecutiveLast_(consecutivo);
+  var saved;
+  try {
+    saved = finalizeReportPdf_(doc, folderId, fileName, { outerMarkerText: tableResult.outerMarkerText, outerMergeSpecs: tableResult.outerMergeSpecs, nestedRegistry: tableResult.nestedRegistry });
+  } catch (finalizeErr) {
+    writeReportConsecutiveLast_(prevConsecutivo);
+    throw finalizeErr;
+  }
 
   getSheet_('TRANSFORMADORES').getRange(transformer._row, colIndex_('TRANSFORMADORES', 'electrical_report_file_id')).setValue(saved.fileId);
 
@@ -5109,7 +5231,8 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
     created_at: new Date().toISOString(),
     transformer_id: transformer.id,
     verdict: conclusionVerdict,
-    certified_by: ENGINEER_SIGNATURE_NAME_
+    certified_by: ENGINEER_SIGNATURE_NAME_,
+    consecutivo: consecutivo
   });
 
   return saved;
@@ -5167,7 +5290,12 @@ function buildOilDenseInfoRows_(bannerText, fields) {
     var right = fields[i + 1] || ['', ''];
     rows.push(unifiedLabelRow_([left[0], left[1], '', right[0], right[1], '', ''], [0, 3], merges));
   }
-  rows.colWidths = [45, 30, 30, 45, 40, 40, 40];
+  // 2026-10-04 (punto 6 del cliente, "más espacio en los campos"): columnas de
+  // etiqueta de 45 → 54 pt — con Arial negrita de 6 pt, TEMPERATURA/
+  // RESPONSABLE (≈46 pt) no cabían y se partían a mitad de palabra. Suma
+  // igual: 270 pt. Relleno de 1,5 pt solo en estas grillas (no el global).
+  rows.colWidths = [54, 28, 28, 54, 35, 36, 35];
+  rows.cellPadding = 1.5;
   return rows;
 }
 
@@ -5188,8 +5316,21 @@ function buildOilClientEquipoRows_(site, transformer) {
     ['POTENCIA NOMINAL', transformer.rated_power_kva ? (String(transformer.rated_power_kva) + ' kVA') : '—'],
     ['TENSIÓN PRIMARIA', transformer.hv_nominal_voltage ? (String(transformer.hv_nominal_voltage) + ' V') : '—'],
     ['TENSIÓN SECUNDARIA', transformer.lv_nominal_voltage ? (String(transformer.lv_nominal_voltage) + ' V') : '—'],
-    ['AÑO DE FABRICACIÓN', transformer.manufacture_year ? String(transformer.manufacture_year) : '—']
+    ['AÑO DE FABRICACIÓN', transformer.manufacture_year ? String(transformer.manufacture_year) : '—'],
+    // 2026-10-04 — fases = `phase_type` ya existente (sin campo nuevo);
+    // volumen = `volumen_aceite` del equipo, en litros (opcional → '—').
+    ['NÚMERO DE FASES', transformer.phase_type === 'MONOFASICO' ? 'Monofásico' : (transformer.phase_type === 'TRIFASICO' ? 'Trifásico' : '—')],
+    ['VOLUMEN DE ACEITE', oilNumWithUnit_(transformer.volumen_aceite, 'L')]
   ]);
+}
+
+/** Número + unidad para las grillas del informe de aceite; '—' si el dato
+ *  falta (equipos/pruebas antiguos) o no es numérico — nunca "undefined" ni
+ *  "NaN". */
+function oilNumWithUnit_(value, unit) {
+  if (value === '' || value === null || value === undefined) return '—';
+  var n = Number(value);
+  return isNaN(n) ? '—' : (String(n) + ' ' + unit);
 }
 
 /** Información de la muestra — mismos 4 campos que ya captura el
@@ -5203,7 +5344,13 @@ function buildOilMuestraRows_(testMeta, rawReadings) {
     ['FECHA DE PRUEBA', fmtDatePdf_(testMeta.created_at)],
     ['TÉCNICO RESPONSABLE', testMeta.operador_nombre || testMeta.tested_by || '—'],
     ['MUESTRA TOMADA POR', rawReadings.sample_taken_by || '—'],
-    ['FECHA DE MUESTREO', rawReadings.sample_date ? fmtDatePdf_(rawReadings.sample_date) : '—']
+    ['FECHA DE MUESTREO', rawReadings.sample_date ? fmtDatePdf_(rawReadings.sample_date) : '—'],
+    // 2026-10-04 — los 3 datos nuevos viajan dentro de `readings`
+    // (raw_readings_json), igual que el resto de la prueba; pruebas antiguas
+    // sin ellos muestran '—'.
+    ['TEMPERATURA DEL ACEITE', oilNumWithUnit_(rawReadings.temperatura_aceite_c, '°C')],
+    ['HUMEDAD RELATIVA', oilNumWithUnit_(rawReadings.humedad_relativa_pct, '%')],
+    ['TEMPERATURA DEL LABORATORIO', oilNumWithUnit_(rawReadings.temperatura_laboratorio_c, '°C')]
   ]);
 }
 
@@ -5488,6 +5635,11 @@ function regenerateOilCombinedReport_(transformer, site, rawReadings, calculated
   var doc = DocumentApp.openById(copy.getId());
   var body = doc.getBody();
 
+  // Consecutivo global (2026-10-04) — mismo contador que el eléctrico.
+  var prevConsecutivo = readReportConsecutiveLast_();
+  var consecutivo = prevConsecutivo + 1;
+  insertReportConsecutiveInBody_(body, consecutivo);
+
   var n = 1;
   var outerRows = [];
   var sections = calculated.sections || {};
@@ -5548,7 +5700,7 @@ function regenerateOilCombinedReport_(transformer, site, rawReadings, calculated
   // según el usuario) todo sigue en una sola tabla continua, sin cambios.
   var isTripleCase = !!(sections.fisicoquimico && sections.dga && sections.pcb);
   var verificationId = generateId_();
-  var verificationUrl = ScriptApp.getService().getUrl() + '?verificar=' + verificationId;
+  var verificationUrl = ScriptApp.getService().getUrl() + '?verificar=' + verificationId + '&n=' + consecutivo;
   var qrBlob = getQrCodeBlob_(verificationUrl);
   var probadoPorNombre = testMeta.operador_nombre || testMeta.tested_by || '—';
 
@@ -5681,9 +5833,18 @@ function regenerateOilCombinedReport_(transformer, site, rawReadings, calculated
   }
 
   var fileName = 'Informe_Aceite_' + transformer.serial_number + '_' + fmtTimestampForFilename_(new Date());
-  var saved = finalizeReportPdf_(doc, folderId, fileName, tableResults.map(function (tr) {
-    return { outerMarkerText: tr.outerMarkerText, outerMergeSpecs: tr.outerMergeSpecs, nestedRegistry: tr.nestedRegistry };
-  }));
+  // Mismo criterio que el eléctrico: confirmar antes de exportar, restaurar
+  // solo si la exportación falla.
+  writeReportConsecutiveLast_(consecutivo);
+  var saved;
+  try {
+    saved = finalizeReportPdf_(doc, folderId, fileName, tableResults.map(function (tr) {
+      return { outerMarkerText: tr.outerMarkerText, outerMergeSpecs: tr.outerMergeSpecs, nestedRegistry: tr.nestedRegistry };
+    }));
+  } catch (finalizeErr) {
+    writeReportConsecutiveLast_(prevConsecutivo);
+    throw finalizeErr;
+  }
 
   appendRow_('DOCUMENTOS', {
     id: verificationId,
@@ -5696,7 +5857,8 @@ function regenerateOilCombinedReport_(transformer, site, rawReadings, calculated
     created_at: new Date().toISOString(),
     transformer_id: transformer.id,
     verdict: calculated.overallVerdict,
-    certified_by: ENGINEER_SIGNATURE_NAME_
+    certified_by: ENGINEER_SIGNATURE_NAME_,
+    consecutivo: consecutivo
   });
 
   return saved;

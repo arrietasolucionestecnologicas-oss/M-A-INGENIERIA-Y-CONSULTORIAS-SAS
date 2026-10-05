@@ -4742,3 +4742,286 @@ guardadas (posiblemente con una forma vieja de ese objeto) en vez de
 recalcular desde cero, así que es donde aparecen los bugs de compatibilidad
 hacia atrás como el del punto 2 de arriba. Grep rápido para ubicarla:
 `grep -n "function regenerateElectricalCombinedReport_" Código.gs`.
+
+## Ronda 12 (2026-10-04) — Requisitos del cliente: estado final de la sesión
+
+> **Léase primero**: esta sección resume el ESTADO REAL al cierre de la
+> sesión del 2026-10-04 (7 requisitos del cliente trabajados uno por uno).
+> Reemplaza como "estado actual" a las listas de pendientes de la Ronda 11
+> en lo que se contradigan; lo que la Ronda 11 dejó abierto y NO se tocó en
+> esta sesión sigue abierto (ver P6 abajo).
+
+### Estado de publicación (leer antes de desplegar o hacer commit)
+
+- **Backend (Apps Script)**: las correcciones de esta sesión están
+  **desplegadas**. Última versión limpia: **164**
+  (`clasp -u mya deploy --deploymentId AKfycbwhVAjRgkfyxFjjLM2-6wlfDuurzhS2HLW2A3gS_NKziW6fyMlXuXrwcTrjmp7oZG1Ufg`).
+  **La versión desplegada NO contiene ninguna herramienta de depuración.**
+- **Frontend (GitHub Pages)**: los cambios de `app.js` e `index.html` de esta
+  sesión **NO están publicados** — solo existen en la copia local, y la
+  publicación del frontend es `git push`. Mientras no se haga push, la app
+  en producción sigue con el frontend anterior (incluida la **pérdida de la
+  foto de placa al CREAR un equipo**, ver E abajo).
+- **Repositorio**: hay cambios locales **sin commit ni push** acumulados de
+  varias rondas en `backend-apps-script/Código.gs`, `app.js` e `index.html`.
+  **No borrar ni revertir cambios anteriores.** Además hay archivos sin
+  seguimiento que NO son de esta sesión y no deben agregarse a ciegas:
+  `Informe_Aceite_DEMO-COMPLETO-01.pdf`, `documentos comerciales/` y
+  `firma michael ingeniero electrico 3022803343.jpg`.
+- **Consecutivo**: `REPORT_CONSECUTIVE_LAST = 99` → **PRÓXIMO INFORME REAL =
+  100**. No modificar este valor.
+
+### Requisitos COMPLETADOS (PASS)
+
+**A. Unidades independientes de resistencia de devanados — PASS**
+- Primario y secundario tienen cada uno su selector de unidad (Ω / mΩ / µΩ):
+  `state.wr.resistanceUnitPrimary` y `state.wr.resistanceUnitSecondary`,
+  selectores `#wrResistanceUnitSelectPrimary` / `#wrResistanceUnitSelectSecondary`
+  (dentro de cada bloque en `index.html`).
+- Funciones en `app.js`: `wrResistanceUnit_(side)`, `wrResistanceUnitFactor_(side)`,
+  `updateWrResistanceUnit_(side, unit)`, más `renderWrPhaseEntries`,
+  `renderWrSecondaryPhaseEntries`, `updateWrPhase`, `updateWrSecondaryPhase_`,
+  `resetWindingStateFromTransformer`, `handleEditTestDraft_`, `syncWrScopeUI_`.
+- Conversión y almacenamiento verificados. **El almacenamiento y el backend
+  siguen en Ω** (`resistanceOhm`); la unidad es solo de captura/visualización.
+- La unidad elegida NO se guarda en borradores: tras recargar vuelve a Ω
+  (limitación conocida). Al abrir/editar un borrador ambas arrancan en Ω.
+- No modificar de nuevo salvo fallo real.
+
+**B. Estado visible durante la certificación — PASS**
+- Mientras se certifica/genera el informe se muestra el estado en la línea
+  `#certifyElectricalStatus` ("Certificando… puede tardar unos segundos"),
+  con éxito y error visibles (línea de estado + toast). Aplica a
+  `handleCertifyTest_` y `handleCertifyElectricalReport_` (`app.js`).
+
+**C. Protección contra doble clic — PASS (solo FRONTEND)**
+- `certifyInFlight_` (guard lógico compartido) se toma **antes** del
+  `confirm()`, se libera si se cancela y, tras el trabajo, en el `.then`
+  final (corre en éxito y en error). `setCertifyButtonsDisabled_` bloquea
+  Certificar/Rechazar/"Certificar Pruebas Eléctricas" como apoyo visual.
+  Protege las dos rutas de certificación.
+- Probado: un clic, doble y triple clic, cruce entre ambos flujos, error con
+  guard liberado y reintento, y cancelación del `confirm()`.
+- **IMPORTANTE: esto es protección de interfaz.** El backend
+  (`certifyElectricalReport_`) **todavía NO tiene deduplicación/idempotencia
+  definitiva**: dos pestañas, dos dispositivos o un reintento de red pueden
+  generar dos informes. Repetir la certificación de las mismas pruebas
+  genera un informe nuevo con consecutivo nuevo (observado en vivo). **No se
+  inventó ninguna regla de tiempo.** Ver P1.
+
+**D. Consecutivo global de informes — PASS**
+- Un solo contador **global** compartido por informes **eléctricos y de
+  aceite**. Estado en la propiedad del script `REPORT_CONSECUTIVE_LAST`
+  (último número asignado; si no existe vale 99, así que el primero es 100).
+  La columna `DOCUMENTOS.consecutivo` solo se usa como piso de reparación;
+  **no** es la fuente (borrar un sitio borra filas de `DOCUMENTOS` y el
+  contador no debe retroceder).
+- Helpers en `Código.gs`: `readReportConsecutiveLast_`,
+  `writeReportConsecutiveLast_`, `insertReportConsecutiveInBody_`.
+- Atomicidad: los dos generadores corren dentro de `withLock_` (lock global).
+  El número se calcula al inicio, se confirma **justo antes de exportar el
+  PDF** y se restaura **solo si la exportación falla**. Una vez creado el PDF
+  no se restaura nunca: **no se reutilizan números tras una generación
+  exitosa**; un corte duro puede dejar un hueco, nunca un duplicado.
+  Consecuencia: dos solicitudes simultáneas → la segunda recibe 429
+  ("sistema ocupado") sin consumir número (probado).
+- Se guarda en `DOCUMENTOS.consecutivo` (columna al final) y se imprime en el
+  campo `CÓDIGO:` de la plantilla (se agrega el número detrás del texto
+  existente con `findText`/`insertText`; si la plantilla no tiene `CÓDIGO:`
+  el eléctrico falla con mensaje claro, y en aceite el error se registra y
+  viaja en `report_error` de la respuesta de `certifyTest_`).
+- **QR**: el **UUID** (`verificationId`) sigue siendo el identificador técnico
+  y la clave de verificación; el consecutivo NO lo reemplaza. URL:
+  `<exec>?verificar=<UUID>&n=<consecutivo>`. La página pública
+  (`verificarInformeElectrico_`/`verificationPageHtml_`) lee el consecutivo
+  de la fila de `DOCUMENTOS` y lo muestra como "N° de informe"; **rechaza un
+  QR cuyo `n` no coincide**; **los QR antiguos sin `n` siguen funcionando**.
+- **El parámetro es `n`, NO `c`**: un Web App de Apps Script rechaza un
+  parámetro llamado exactamente `c` (devuelve la página de error de Drive
+  "No se encontró la página" antes de llegar a `doGet`; verificado en vivo).
+  `n` y `consecutivo` sí funcionan. **No cambiar sin razón concreta.**
+- El QR dentro del PDF se decodificó con jsQR a 150 y 300 DPI (URL larga).
+  Falta una lectura con celular real.
+
+**E. Fotografía de placa — PASS (JPEG)**
+- Causa del fallo: en `handleCreateTransformerSubmit` el
+  `createTransformerForm.reset()` vaciaba el `<input type=file>` **antes** de
+  la lectura asíncrona de la foto (regresión de la ronda "equipo aparece de
+  inmediato" del 2026-10-01). Corrección: `platePhotoPromise =
+  readFileAsBase64_(...)` se inicia **antes** del `reset()` y la cadena usa
+  esa promesa → `payload.file_base64` se conserva. Solo cambia el flujo de
+  CREACIÓN; la edición ya estaba correcta.
+- Verificado end-to-end con un JPEG real (120 183 bytes) por "Editar equipo":
+  guardado en Drive (`image/jpeg`, mismo tamaño, fuera de la papelera),
+  `plate_photo_file_id` persistido, `getTransformerPlatePhotoBlob_` devolvió
+  el blob, y la foto apareció completa en el PDF eléctrico (Sección 1,
+  columna central, 80 pt de ancho).
+- **HEIC/HEIF NO se ha probado.** No tocar el tratamiento de HEIC sin un
+  requisito/prueba real. Nota: `appendImage` no tiene `try/catch`, así que un
+  formato no soportado abortaría la generación con error (no la ocultaría);
+  `getTransformerPlatePhotoBlob_` sí devuelve `null` en silencio ante un ID
+  inválido.
+- Recordatorio: el arreglo de `app.js` aún no está publicado (ver arriba).
+
+**F. Informe de aceite — PASS**
+- **Fases**: de `transformer.phase_type`, mostradas como "Trifásico"/
+  "Monofásico" en `buildOilClientEquipoRows_` (sin campo nuevo).
+- **Volumen de aceite**: `TRANSFORMADORES.volumen_aceite` (columna al final),
+  litros, opcional, editable (campos `newTrfOilVolume` / `editTrfOilVolume`);
+  `createTransformer_`, `updateTransformer_`, `transformerRowToJson_`.
+  Se muestra con `oilNumWithUnit_` ("120 L" o "—").
+- **Temperatura del aceite** (temperatura de la muestra al tomarla):
+  `readings.temperatura_aceite_c` en `raw_readings_json`, °C.
+- **Humedad relativa**: `readings.humedad_relativa_pct` en
+  `raw_readings_json`, %.
+- **Temperatura del laboratorio** (dato independiente, NO es
+  `temperatura_ambiente`): `readings.temperatura_laboratorio_c` en
+  `raw_readings_json`, °C.
+- **No se agregaron columnas a `PRUEBAS`** y **no se usa `testMeta`** para
+  estos tres valores. Como viajan dentro de `readings`, `updateTestDraft_`
+  los conserva y `handleEditTestDraft_` los recarga. Cableado en `app.js`:
+  `emptyOilState_`, `resetOilStateFromTransformer`, `handleEditTestDraft_`,
+  `refreshOil`, `buildOilRequestBody` (inputs `oilTempAceite`,
+  `oilHumedadRelativa`, `oilTempLaboratorio`). Se muestran en
+  `buildOilMuestraRows_`.
+- Datos antiguos (equipo sin volumen / prueba sin los tres campos) cargan y
+  generan sin error mostrando "—".
+- Probado: 120 L, 35 °C, 62 %, 24 °C; edición y recuperación de borrador
+  (40/70/26 y de vuelta a 35/62/24); informe con los tres análisis y con una
+  sola sección.
+- Nota de modelo: la columna `PRUEBAS.temperatura_ambiente`/
+  `humedad_relativa` existe y la llenan TTR/Devanados/Aislamiento, pero
+  `updateTestDraft_` NO la actualiza al editar un borrador (limitación
+  preexistente; por eso aceite usa `readings`).
+
+**G. Espaciado/layout — PASS (cambios localizados)**
+- `buildOilDenseInfoRows_`: `colWidths = [54,28,28,54,35,36,35]` (total 270 pt)
+  y `rows.cellPadding = 1.5`.
+- `SECTION1_THREE_COL_WIDTHS_PT_ = [80,160,90,90,140]` (total 560 pt) y
+  `buildSection1ThreeColRows_` con `rows.cellPadding = 1`.
+- **No** se tocó `UNIFIED_CELL_PADDING_` (0,5), fuentes globales, otras
+  tablas, banners, TTR, Devanados ni Aislamiento.
+- Probados 4 PDF: (1) aceite una sección, (2) aceite Fisicoquímico+DGA+PCB
+  (2 páginas: la conclusión/firmas van en la 2ª por diseño), (3) eléctrico
+  normal, (4) eléctrico con secundario + Aislamiento completo. Los 4 quedaron
+  completos, sin cortes, solapes ni cambios de página inesperados. Las
+  etiquetas "TEMPERATURA DEL ACEITE" y "TÉCNICO RESPONSABLE" ya no se parten
+  a mitad de palabra.
+- Fuera de alcance, sin cambios: "TEMPERATURA DEL LABORATORIO" baja en 3
+  líneas (corte entre palabras), "DESVIACIÓN %" y "Claro, sin partículas"
+  siguen en dos líneas.
+- Margen de página medido en la auditoría: eléctrico normal ≈ 65-70 pt
+  libres; aceite con los 3 análisis ≈ 33 pt libres (por eso NO se subió el
+  padding global).
+
+**H. Texto de Observaciones del informe eléctrico — PASS**
+- `buildObservacionesRows_(…, conclusionVerdict, observationCauses)` recibe
+  las causas reales; `regenerateElectricalCombinedReport_` las determina a
+  partir de los veredictos de cada prueba (TTR no tiene nivel OBSERVADO).
+- Devanados: la frase de desbalance solo aparece si AT o BT están realmente
+  OBSERVADO. Aislamiento: nombra el índice real en rango CUESTIONABLE ("el
+  índice DAR", "el índice IP" o "los índices DAR e IP"). Varias causas se
+  listan separadas por `; `. Sin causa identificable → texto genérico que no
+  atribuye la causa a ninguna prueba.
+- Probado: devanados APROBADO (0,13 % y 0,27 %) + aislamiento con IP
+  CUESTIONABLE → conclusión "APROBADO — CON OBSERVACIÓN" y observación
+  "en la resistencia de aislamiento el índice IP quedó en el rango
+  CUESTIONABLE". El PDF dejó de atribuir el problema a los devanados.
+- No se cambiaron cálculos, veredictos ni criterios.
+
+### PENDIENTES / SIGUIENTE FASE DE AUDITORÍA
+
+- **P1. Idempotencia/deduplicación en backend.** Falta definir la regla de
+  negocio: ¿una misma certificación puede regenerarse intencionalmente? ¿debe
+  existir una acción explícita de regeneración? **No inventar una ventana
+  temporal.** Hoy solo hay protección frontend (C). Considerar que la app
+  deja el botón disponible tras certificar y que regenerar con las mismas
+  pruebas fue la forma recomendada de arreglar informes viejos. Aceite sí
+  está protegido (`certifyTest_` rechaza certificar dos veces la misma
+  prueba).
+- **P2. Revisión final de layout hoja por hoja** con el cliente: distribución
+  definitiva de cada hoja, espacio global de campos/cajas, separación de
+  secciones, ajustes estéticos restantes. **No modificar todavía** de forma
+  global `UNIFIED_CELL_PADDING_`, fuentes globales ni todas las tablas.
+- **P3. Separación de informes.** El requisito del cliente de separar
+  Aislamiento, TTR y Devanados en hojas/informes individuales sigue pendiente
+  de definición y de revisión hoja por hoja. **No hacer un rediseño global**
+  hasta definir la distribución esperada. Hoy
+  `regenerateElectricalCombinedReport_` genera UN PDF con las tres pruebas.
+- **P4. Frase de devanados según material.** La frase de observación de
+  devanados dice siempre "para devanados de aluminio", sin mirar
+  `at_devanado_material`/`bt_devanado_material`. Revisar para usar el
+  material real del equipo. No corregir sin pedido; no tocar criterios de
+  cálculo/veredicto.
+- **P5. HEIC.** Probado solo JPEG. No implementar soporte HEIC sin requisito
+  o prueba concreta.
+- **P6. Abiertos de la Ronda 11 que NO se tocaron en esta sesión**: veredicto
+  real para Aislamiento método Simple (hoy "REGISTRADO"), gráfica de
+  Devanados / gráfica de aislamiento en método Simple (por diseño solo salen
+  TTR y la curva DAR/IP de método Completo), patrón "local-first" para
+  enviar TTR/Devanados/Aislamiento, veredicto graduado para corriente de
+  excitación/desviación de fase en TTR (umbrales sin confirmar) y la
+  recuperación por historial de versiones de Sheets del equipo borrado el
+  2026-09-30. Detalle en "Pendientes abiertos al cierre de la Ronda 11".
+- **P7. Observados sin corregir (incidentales):** la unidad de resistencia no
+  se persiste en borradores; el valor mostrado al convertir a µΩ puede traer
+  ruido decimal (ej. `512000.00000000006`); `updateTestDraft_` no actualiza
+  `temperatura_ambiente`/`humedad_relativa` de `PRUEBAS`; el modal de
+  edición de equipo no tiene selector de fases (el backend sí acepta
+  `phase_type`); si `certifyElectricalReport` tiene éxito pero el
+  `getTransformer` posterior falla por red, se muestra "No se pudo
+  certificar" aunque sí se certificó; tras certificar, el botón eléctrico
+  puede quedar habilitado si todo sigue certificado; en equipos DEMO creados
+  por API con `tap_config.positions` sin `nominalVoltage`, "Editar equipo"
+  regenera las posiciones y el teórico de TTR queda "no disponible" (artefacto
+  de armado de datos, no verificado con un equipo creado desde la interfaz).
+
+### Historial de pruebas y limpieza
+
+Las pruebas DEMO de esta sesión se limpiaron siempre al terminar: equipos y
+sitios DEMO eliminados (`deleteTransformer`/`deleteSite`; `deleteSite_` borra
+en cascada las filas de `DOCUMENTOS`), PDFs DEMO y la foto de prueba enviados
+a la papelera de Drive, sin filas DEMO de documentos y **contador restaurado
+a 99 tras cada ronda**. Última verificación: contador en 99, siguiente 100.
+
+### Procedimiento de prueba que funcionó (para repetirlo)
+
+- La sesión de la app vive en `sessionStorage` (por pestaña): el usuario debe
+  iniciar sesión él mismo en el navegador integrado (`localhost:8811`, servidor
+  `mya-pruebas-frontend` de `launch.json`); no se puede reutilizar la sesión de
+  su Chrome ni escribir su contraseña.
+- Se puede probar el backend con `callApi(...)` desde la consola de esa
+  pestaña (crear sitio/equipo DEMO, enviar y certificar pruebas) y los
+  manejadores reales de la UI con `callApi` envuelto/simulado.
+- **Reiniciar el contador o leer metadatos de Drive NO tiene acción
+  permanente** (a propósito). Se hace con una variante TEMPORAL armada solo en
+  la copia de `clasp` del scratchpad (se agrega una acción `debugTmp` a
+  `POST_ACTIONS`, se despliega, se usa y se vuelve a desplegar el
+  `Código.gs` limpio del repo). Nunca dejarla en el repo ni desplegada.
+- Verificar el QR: la página pública de verificación renderiza dentro de un
+  iframe; con `curl` solo llega el contenedor. Se ve bien en una pestaña
+  del navegador integrado esperando ~15-20 s. El PDF se descarga de Drive
+  (`uc?export=download&id=`), se renderiza con `pdf-poppler` y el QR se
+  decodificó con `jsqr`+`pngjs`.
+- Un parámetro de URL del Web App no puede llamarse `c` (ver D).
+
+## REGLAS PARA CONTINUAR LA AUDITORÍA
+
+1. Trabajar por requisito, uno a la vez.
+2. Primero auditar, después modificar.
+3. No hacer refactors generales.
+4. No modificar funcionalidades ya marcadas PASS sin evidencia de fallo.
+5. Usar únicamente las pruebas necesarias.
+6. No inventar reglas de negocio.
+7. No modificar el layout global cuando un ajuste localizado sea suficiente.
+8. Antes de cada cambio, identificar archivo y función exactos.
+9. Después de cada cambio, probar únicamente lo necesario para demostrar que
+   funciona.
+10. Si se crean datos/PDF DEMO, limpiarlos y restaurar el consecutivo a 99.
+11. No hacer commit/push automáticamente.
+12. Mantener separados: requisitos completados, observaciones, pendientes y
+    problemas nuevos descubiertos incidentalmente.
+13. Un problema incidental real debe documentarse como pendiente si no
+    pertenece al alcance actual, pero no corregirse automáticamente.
+14. La información de este archivo debe representar el estado actual del
+    código, no hipótesis ni planes antiguos.

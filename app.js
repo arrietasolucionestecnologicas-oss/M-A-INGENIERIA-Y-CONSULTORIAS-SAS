@@ -995,6 +995,7 @@ function handleCreateTransformerSubmit(e) {
   var power = parseDecimal_(document.getElementById('newTrfPower').value);
   var cooling = document.getElementById('newTrfCooling').value || null;
   var impedance = parseDecimal_(document.getElementById('newTrfImpedance').value);
+  var oilVolume = parseDecimal_(document.getElementById('newTrfOilVolume').value);
   var insulation = document.getElementById('newTrfInsulation').value.trim() || null;
   var atMaterial = document.getElementById('newTrfMaterialAt').value || null;
   var btMaterial = document.getElementById('newTrfMaterialBt').value || null;
@@ -1032,6 +1033,7 @@ function handleCreateTransformerSubmit(e) {
     rated_power_kva: isNaN(power) ? null : power,
     cooling_type: cooling,
     impedance_percent: isNaN(impedance) ? null : impedance,
+    volumen_aceite: isNaN(oilVolume) ? null : oilVolume,
     insulation_type: insulation,
     at_devanado_material: atMaterial,
     bt_devanado_material: btMaterial,
@@ -1065,6 +1067,10 @@ function handleCreateTransformerSubmit(e) {
   }, payload));
   saveDraft_('mya_cache_transformers_' + siteId, state.transformers);
   renderDashboard();
+  // La foto se lee ANTES del reset(): reset() vacía el <input type=file> y la
+  // cadena asíncrona de abajo ya no encontraría el archivo (foto de placa perdida).
+  var platePhotoPromise = readFileAsBase64_(document.getElementById('newTrfPlatePhoto'));
+  platePhotoPromise.catch(function () { /* el error real se maneja cuando la cadena la consume */ });
   document.getElementById('createTransformerForm').reset();
 
   function revertOptimisticTrf_() {
@@ -1087,7 +1093,7 @@ function handleCreateTransformerSubmit(e) {
           return Promise.reject({ __handled: true });
         });
       }
-      return readFileAsBase64_(document.getElementById('newTrfPlatePhoto'));
+      return platePhotoPromise;
     })
     .then(function (photo) {
       if (photo) { payload.file_base64 = photo.base64; payload.file_mime_type = photo.mimeType; }
@@ -1186,6 +1192,7 @@ function openEditTransformerModal_() {
   document.getElementById('editTrfLv').value = t.lv_nominal_voltage || '';
   document.getElementById('editTrfCooling').value = t.cooling_type || '';
   document.getElementById('editTrfImpedance').value = t.impedance_percent || '';
+  document.getElementById('editTrfOilVolume').value = t.volumen_aceite || '';
   document.getElementById('editTrfInsulation').value = t.insulation_type || '';
   document.getElementById('editTrfMaterialAt').value = t.at_devanado_material || '';
   document.getElementById('editTrfMaterialBt').value = t.bt_devanado_material || '';
@@ -1217,6 +1224,7 @@ function handleEditTransformerSubmit(e) {
   var lv = parseDecimal_(document.getElementById('editTrfLv').value);
   var power = parseDecimal_(document.getElementById('editTrfPower').value);
   var impedance = parseDecimal_(document.getElementById('editTrfImpedance').value);
+  var oilVolume = parseDecimal_(document.getElementById('editTrfOilVolume').value);
   var year = document.getElementById('editTrfYear').value.trim();
   var id = state.currentTransformerId;
   var siteId = state.currentSiteId;
@@ -1233,6 +1241,7 @@ function handleEditTransformerSubmit(e) {
     lv_nominal_voltage: isNaN(lv) ? null : lv,
     cooling_type: document.getElementById('editTrfCooling').value || null,
     impedance_percent: isNaN(impedance) ? null : impedance,
+    volumen_aceite: isNaN(oilVolume) ? null : oilVolume,
     insulation_type: document.getElementById('editTrfInsulation').value.trim() || null,
     at_devanado_material: document.getElementById('editTrfMaterialAt').value || null,
     bt_devanado_material: document.getElementById('editTrfMaterialBt').value || null,
@@ -2109,9 +2118,30 @@ function buildLineChartSvg_(years, lines) {
 
 /** Solo Supervisor/Administrador (el backend también lo exige). Genera el
  *  PDF/informe combinado solo ahora, al certificar. */
+/** Guard lógico compartido por las 2 certificaciones: se toma ANTES del
+ *  `confirm()` (un 2º clic rápido ya encuentra el flag puesto) y se libera en
+ *  `.then` final, que corre tanto en éxito como en error. No depende del
+ *  `disabled` visual, que se aplica aparte y solo como apoyo. */
+var certifyInFlight_ = false;
+
+function setCertifyButtonsDisabled_(disabled) {
+  var btns = document.querySelectorAll('#certifyElectricalBtn, button[title="Certificar"], button[title="Rechazar"]');
+  for (var i = 0; i < btns.length; i++) btns[i].disabled = disabled;
+}
+
 function handleCertifyTest_(testId) {
-  if (!confirm('¿Certificar esta prueba? Se generará el informe/PDF correspondiente.')) return;
-  callApi('certifyTest', 'POST', { id: testId })
+  if (certifyInFlight_) return;
+  certifyInFlight_ = true;
+  if (!confirm('¿Certificar esta prueba? Se generará el informe/PDF correspondiente.')) {
+    certifyInFlight_ = false;
+    return;
+  }
+  var status = document.getElementById('certifyElectricalStatus');
+  setCertifyButtonsDisabled_(true);
+  setStatus_(status, 'Certificando prueba… se está generando el informe, puede tardar unos segundos.', false);
+
+  Promise.resolve()
+    .then(function () { return callApi('certifyTest', 'POST', { id: testId }); })
     .then(function () {
       return callApi('listTests', 'GET', { transformer_id: state.currentTransformerId });
     })
@@ -2119,8 +2149,16 @@ function handleCertifyTest_(testId) {
       state.currentTests = tests || [];
       saveDraft_('mya_cache_tests_' + state.currentTransformerId, state.currentTests);
       renderDetail();
+      showToast_('Prueba certificada', 'success');
     })
-    .catch(function (err) { alert(err.message || 'No se pudo certificar la prueba.'); });
+    .catch(function (err) {
+      setCertifyButtonsDisabled_(false);
+      if (err && (err.status === 402 || err.status === 403)) { setStatus_(status, '', false); return; }
+      var msg = (err && err.message) || 'No se pudo certificar la prueba.';
+      setStatus_(status, 'No se pudo certificar la prueba: ' + msg, false, true);
+      showToast_('No se pudo certificar la prueba', 'error');
+    })
+    .then(function () { certifyInFlight_ = false; });
 }
 
 /** "Certificar Pruebas Eléctricas" — UNA sola certificación por trabajo, no
@@ -2130,13 +2168,18 @@ function handleCertifyTest_(testId) {
  *  antes de generar el PDF consolidado; si falta alguna, devuelve 400 con
  *  el detalle — se muestra tal cual, no se reintenta ni se adivina. */
 function handleCertifyElectricalReport_() {
-  if (!confirm('¿Certificar Pruebas Eléctricas de este equipo? Se generará un único informe consolidado con las pruebas ofertadas.')) return;
+  if (certifyInFlight_) return;
+  certifyInFlight_ = true;
+  if (!confirm('¿Certificar Pruebas Eléctricas de este equipo? Se generará un único informe consolidado con las pruebas ofertadas.')) {
+    certifyInFlight_ = false;
+    return;
+  }
   var status = document.getElementById('certifyElectricalStatus');
-  var btn = document.getElementById('certifyElectricalBtn');
-  btn.disabled = true;
-  setStatus_(status, 'Generando informe…', false);
+  setCertifyButtonsDisabled_(true);
+  setStatus_(status, 'Certificando… generando el informe consolidado, puede tardar unos segundos.', false);
 
-  callApi('certifyElectricalReport', 'POST', { transformer_id: state.currentTransformerId })
+  Promise.resolve()
+    .then(function () { return callApi('certifyElectricalReport', 'POST', { transformer_id: state.currentTransformerId }); })
     .then(function () {
       return callApi('getTransformer', 'GET', { id: state.currentTransformerId });
     })
@@ -2148,10 +2191,12 @@ function handleCertifyElectricalReport_() {
       showToast_('Informe eléctrico consolidado generado', 'success');
     })
     .catch(function (err) {
-      btn.disabled = false;
-      if (err && (err.status === 402 || err.status === 403)) return;
-      setStatus_(status, (err && err.message) || 'No se pudo certificar Pruebas Eléctricas.', false, true);
-    });
+      setCertifyButtonsDisabled_(false);
+      if (err && (err.status === 402 || err.status === 403)) { setStatus_(status, '', false); return; }
+      setStatus_(status, 'No se pudo certificar Pruebas Eléctricas: ' + ((err && err.message) || 'error desconocido'), false, true);
+      showToast_('No se pudo certificar Pruebas Eléctricas', 'error');
+    })
+    .then(function () { certifyInFlight_ = false; });
 }
 
 /** Informe de Historial de Pruebas (2026-09-29) — a diferencia de
@@ -2230,7 +2275,8 @@ function handleEditTestDraft_(testId) {
     // Editando un borrador ya enviado: nunca restringir a un solo TAP aunque
     // tenga solo uno — el técnico podría querer agregar más al corregirlo.
     state.wr.scope = 'all';
-    state.wr.resistanceUnit = 'ohm';
+    state.wr.resistanceUnitPrimary = 'ohm';
+    state.wr.resistanceUnitSecondary = 'ohm';
     showView('winding-form');
     syncWrScopeUI_();
     document.getElementById('wrInstrument').value = test.instrument_used || '';
@@ -2247,6 +2293,9 @@ function handleEditTestDraft_(testId) {
     state.oil = {
       sampleBy: raw.sample_taken_by || '',
       sampleDate: raw.sample_date || '',
+      temperatura_aceite_c: raw.temperatura_aceite_c != null ? raw.temperatura_aceite_c : null,
+      humedad_relativa_pct: raw.humedad_relativa_pct != null ? raw.humedad_relativa_pct : null,
+      temperatura_laboratorio_c: raw.temperatura_laboratorio_c != null ? raw.temperatura_laboratorio_c : null,
       fisicoquimico_realizado: !!raw.fisicoquimico_realizado,
       dga_realizado: !!raw.dga_realizado,
       pcb_realizado: !!raw.pcb_realizado,
@@ -2264,6 +2313,9 @@ function handleEditTestDraft_(testId) {
     showView('oil-form');
     document.getElementById('oilSampleBy').value = state.oil.sampleBy || '';
     document.getElementById('oilSampleDate').value = state.oil.sampleDate || '';
+    document.getElementById('oilTempAceite').value = state.oil.temperatura_aceite_c != null ? state.oil.temperatura_aceite_c : '';
+    document.getElementById('oilHumedadRelativa').value = state.oil.humedad_relativa_pct != null ? state.oil.humedad_relativa_pct : '';
+    document.getElementById('oilTempLaboratorio').value = state.oil.temperatura_laboratorio_c != null ? state.oil.temperatura_laboratorio_c : '';
     document.getElementById('oilSectionFisicoquimico').checked = state.oil.fisicoquimico_realizado;
     document.getElementById('oilBodyFisicoquimico').hidden = !state.oil.fisicoquimico_realizado;
     document.getElementById('oilAgua').value = state.oil.agua_ppm != null ? state.oil.agua_ppm : '';
@@ -2953,13 +3005,17 @@ function defaultWrSecondary_() {
  *  fórmula de veredicto cambia. */
 var WR_RESISTANCE_UNIT_FACTORS_ = { ohm: 1, milliohm: 0.001, microohm: 0.000001 };
 var WR_RESISTANCE_UNIT_LABELS_ = { ohm: 'Ω', milliohm: 'mΩ', microohm: 'µΩ' };
-function wrResistanceUnitFactor_() {
-  return WR_RESISTANCE_UNIT_FACTORS_[state.wr.resistanceUnit] || 1;
+/** `side` = 'Primary' | 'Secondary' — primario y secundario llevan su propia unidad. */
+function wrResistanceUnit_(side) {
+  var u = state.wr['resistanceUnit' + side];
+  return WR_RESISTANCE_UNIT_FACTORS_[u] ? u : 'ohm';
 }
-function updateWrResistanceUnit_(unit) {
-  state.wr.resistanceUnit = WR_RESISTANCE_UNIT_FACTORS_[unit] ? unit : 'ohm';
-  renderWrPhaseEntries();
-  renderWrSecondaryPhaseEntries();
+function wrResistanceUnitFactor_(side) {
+  return WR_RESISTANCE_UNIT_FACTORS_[wrResistanceUnit_(side)];
+}
+function updateWrResistanceUnit_(side, unit) {
+  state.wr['resistanceUnit' + side] = WR_RESISTANCE_UNIT_FACTORS_[unit] ? unit : 'ohm';
+  if (side === 'Primary') renderWrPhaseEntries(); else renderWrSecondaryPhaseEntries();
 }
 
 /** Punto 4 (2026-09-13): primario y secundario ahora son cada uno opcional
@@ -2968,7 +3024,8 @@ function updateWrResistanceUnit_(unit) {
  *  dos), el técnico desmarca el que no aplique. */
 function resetWindingStateFromTransformer() {
   var firstTap = suggestedStartingTap_() || 1;
-  state.wr.resistanceUnit = 'ohm';
+  state.wr.resistanceUnitPrimary = 'ohm';
+  state.wr.resistanceUnitSecondary = 'ohm';
   var draft = loadDraft_('mya_draft_wr_' + state.currentTransformerId);
   if (draft && draft.readings && Object.keys(draft.readings).length) {
     state.wr.readings = draft.readings;
@@ -3005,8 +3062,10 @@ function syncWrScopeUI_() {
   if (select) select.value = state.wr.scope || 'current';
   var actionsRow = document.getElementById('wrTapActionsRow');
   if (actionsRow) actionsRow.style.display = (state.wr.scope === 'all') ? '' : 'none';
-  var unitSelect = document.getElementById('wrResistanceUnitSelect');
-  if (unitSelect) unitSelect.value = state.wr.resistanceUnit || 'ohm';
+  var unitSelectP = document.getElementById('wrResistanceUnitSelectPrimary');
+  if (unitSelectP) unitSelectP.value = wrResistanceUnit_('Primary');
+  var unitSelectS = document.getElementById('wrResistanceUnitSelectSecondary');
+  if (unitSelectS) unitSelectS.value = wrResistanceUnit_('Secondary');
 }
 
 /** Cambio manual de alcance desde el selector del formulario. Pasar a
@@ -3077,8 +3136,8 @@ function renderWrPhaseEntries() {
   document.getElementById('wrTemp').value = tap.windingTemperatureC;
   document.getElementById('wrTempTapLabel').textContent = state.wr.currentTap;
   document.getElementById('wrPreviewTapLabel').textContent = state.wr.currentTap;
-  var unitFactor = wrResistanceUnitFactor_();
-  var unitLabel = WR_RESISTANCE_UNIT_LABELS_[state.wr.resistanceUnit] || 'Ω';
+  var unitFactor = wrResistanceUnitFactor_('Primary');
+  var unitLabel = WR_RESISTANCE_UNIT_LABELS_[wrResistanceUnit_('Primary')];
   wrap.innerHTML = Object.keys(tap.phases).map(function (k) {
     var r = tap.phases[k];
     return '<div class="phase-entry">' +
@@ -3093,7 +3152,7 @@ function updateWrPhase(key, value) {
   var v = parseDecimal_(value); if (isNaN(v)) v = 0;
   var phases = state.wr.readings[state.wr.currentTap].phases;
   if (!phases[key]) phases[key] = { resistanceOhm: 0, repetida: false, nota: '', valorAnterior: null };
-  phases[key].resistanceOhm = v * wrResistanceUnitFactor_();
+  phases[key].resistanceOhm = v * wrResistanceUnitFactor_('Primary');
   refreshWindingLight_();
 }
 
@@ -3126,8 +3185,8 @@ function renderWrSecondaryPhaseEntries() {
   var wrap = document.getElementById('wrSecondaryPhaseEntries');
   if (!wrap) return;
   document.getElementById('wrSecondaryTemp').value = state.wr.secondary.windingTemperatureC;
-  var unitFactor2 = wrResistanceUnitFactor_();
-  var unitLabel2 = WR_RESISTANCE_UNIT_LABELS_[state.wr.resistanceUnit] || 'Ω';
+  var unitFactor2 = wrResistanceUnitFactor_('Secondary');
+  var unitLabel2 = WR_RESISTANCE_UNIT_LABELS_[wrResistanceUnit_('Secondary')];
   wrap.innerHTML = Object.keys(state.wr.secondary.phases).map(function (k) {
     var r = state.wr.secondary.phases[k];
     return '<div class="phase-entry">' +
@@ -3142,7 +3201,7 @@ function updateWrSecondaryPhase_(key, value) {
   var v = parseDecimal_(value); if (isNaN(v)) v = 0;
   var phases = state.wr.secondary.phases;
   if (!phases[key]) phases[key] = { resistanceOhm: 0, repetida: false, nota: '', valorAnterior: null };
-  phases[key].resistanceOhm = v * wrResistanceUnitFactor_();
+  phases[key].resistanceOhm = v * wrResistanceUnitFactor_('Secondary');
   refreshWindingLight_();
 }
 
@@ -3387,6 +3446,7 @@ function buildOilPcbGrid_() {
 function emptyOilState_() {
   return {
     sampleBy: '', sampleDate: '',
+    temperatura_aceite_c: null, humedad_relativa_pct: null, temperatura_laboratorio_c: null,
     fisicoquimico_realizado: false, dga_realizado: false, pcb_realizado: false,
     agua_ppm: null, rigidez_dielectrica_kv: null, tension_interfacial_dinas_cm: null,
     numero_acido_mg_koh_g: null, densidad_relativa: null, color_astm: '', examen_visual: '',
@@ -3404,6 +3464,9 @@ function resetOilStateFromTransformer() {
 
   document.getElementById('oilSampleBy').value = state.oil.sampleBy || '';
   document.getElementById('oilSampleDate').value = state.oil.sampleDate || '';
+  document.getElementById('oilTempAceite').value = state.oil.temperatura_aceite_c != null ? state.oil.temperatura_aceite_c : '';
+  document.getElementById('oilHumedadRelativa').value = state.oil.humedad_relativa_pct != null ? state.oil.humedad_relativa_pct : '';
+  document.getElementById('oilTempLaboratorio').value = state.oil.temperatura_laboratorio_c != null ? state.oil.temperatura_laboratorio_c : '';
 
   document.getElementById('oilSectionFisicoquimico').checked = !!state.oil.fisicoquimico_realizado;
   document.getElementById('oilBodyFisicoquimico').hidden = !state.oil.fisicoquimico_realizado;
@@ -3552,7 +3615,10 @@ function buildOilRequestBody() {
     dga_realizado: !!state.oil.dga_realizado,
     pcb_realizado: !!state.oil.pcb_realizado,
     sample_taken_by: state.oil.sampleBy || null,
-    sample_date: state.oil.sampleDate || null
+    sample_date: state.oil.sampleDate || null,
+    temperatura_aceite_c: state.oil.temperatura_aceite_c != null ? state.oil.temperatura_aceite_c : null,
+    humedad_relativa_pct: state.oil.humedad_relativa_pct != null ? state.oil.humedad_relativa_pct : null,
+    temperatura_laboratorio_c: state.oil.temperatura_laboratorio_c != null ? state.oil.temperatura_laboratorio_c : null
   };
 
   if (state.oil.fisicoquimico_realizado) {
@@ -3586,6 +3652,9 @@ function buildOilRequestBody() {
 function refreshOil() {
   state.oil.sampleBy = document.getElementById('oilSampleBy').value.trim();
   state.oil.sampleDate = document.getElementById('oilSampleDate').value;
+  state.oil.temperatura_aceite_c = parseOilNum_('oilTempAceite');
+  state.oil.humedad_relativa_pct = parseOilNum_('oilHumedadRelativa');
+  state.oil.temperatura_laboratorio_c = parseOilNum_('oilTempLaboratorio');
 
   state.oil.agua_ppm = parseOilNum_('oilAgua');
   state.oil.rigidez_dielectrica_kv = parseOilNum_('oilRigidez');

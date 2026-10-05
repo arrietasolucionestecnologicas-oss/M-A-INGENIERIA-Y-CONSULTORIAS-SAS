@@ -267,6 +267,7 @@
           </select>
         </div>
         <div class="field"><label>Impedancia (%)</label><input class="mono" id="editTrfImpedance" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*"></div>
+        <div class="field"><label>Volumen de aceite (L)</label><input class="mono" id="editTrfOilVolume" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*"></div>
         <div class="field"><label>Tipo de aislamiento</label><input id="editTrfInsulation"></div>
         <div class="field">
           <label>Material devanado AT</label>
@@ -399,6 +400,10 @@
               <div class="field" style="min-width:120px;">
                 <label>Impedancia (%)</label>
                 <input class="mono" id="newTrfImpedance" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*" placeholder="4.5">
+              </div>
+              <div class="field" style="min-width:150px;">
+                <label>Volumen de aceite (L)</label>
+                <input class="mono" id="newTrfOilVolume" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*" placeholder="120">
               </div>
               <div class="field" style="min-width:150px;">
                 <label>Tipo de aislamiento</label>
@@ -673,16 +678,6 @@
           </select>
           <div class="field-note">"Solo la posición actual" deja un único TAP listo para digitar (el que está en servicio hoy). "Todas las posiciones" habilita agregar/quitar TAPs para un levantamiento completo.</div>
         </div>
-        <div class="field" style="max-width:220px;">
-          <label>Unidad de resistencia</label>
-          <select id="wrResistanceUnitSelect" onchange="updateWrResistanceUnit_(this.value)">
-            <option value="ohm">&Omega; (ohmios)</option>
-            <option value="milliohm">m&Omega; (miliohmios)</option>
-            <option value="microohm">&micro;&Omega; (microohmios)</option>
-          </select>
-          <div class="field-note">Según lo que muestre tu micro-ohmetro — el informe siempre se guarda y se ve en Ω, esto solo cambia en qué unidad digitas.</div>
-        </div>
-
         <div class="test-grid">
           <div class="panel" id="wrPanelPrimario">
             <label class="panel-head oil-section-head">
@@ -708,6 +703,17 @@
                 </div>
               </div>
               <div class="tap-chip-row" id="wrTapChipRow"></div>
+              <div class="form-field-block">
+                <div class="field" style="max-width:220px;">
+                  <label>Unidad de resistencia &mdash; primario</label>
+                  <select id="wrResistanceUnitSelectPrimary" onchange="updateWrResistanceUnit_('Primary', this.value)">
+                    <option value="ohm">&Omega; (ohmios)</option>
+                    <option value="milliohm">m&Omega; (miliohmios)</option>
+                    <option value="microohm">&micro;&Omega; (microohmios)</option>
+                  </select>
+                  <div class="field-note">Según lo que muestre tu micro-ohmetro — se guarda siempre en Ω.</div>
+                </div>
+              </div>
               <div class="form-field-block">
                 <div class="field" style="max-width:220px;">
                   <label>Temperatura de devanado &mdash; TAP <span id="wrTempTapLabel">&mdash;</span> (&deg;C) <span style="color:var(--danger);">*</span></label>
@@ -753,6 +759,17 @@
               <span class="hint">Sin cambiador de tomas &mdash; una sola medición</span>
             </label>
             <div id="wrBodySecundario">
+              <div class="form-field-block">
+                <div class="field" style="max-width:220px;">
+                  <label>Unidad de resistencia &mdash; secundario</label>
+                  <select id="wrResistanceUnitSelectSecondary" onchange="updateWrResistanceUnit_('Secondary', this.value)">
+                    <option value="ohm">&Omega; (ohmios)</option>
+                    <option value="milliohm">m&Omega; (miliohmios)</option>
+                    <option value="microohm">&micro;&Omega; (microohmios)</option>
+                  </select>
+                  <div class="field-note">Puede ser distinta a la del primario — se guarda siempre en Ω.</div>
+                </div>
+              </div>
               <div class="form-field-block">
                 <div class="field" style="max-width:220px;">
                   <label>Temperatura de devanado (&deg;C) <span style="color:var(--danger);">*</span></label>
@@ -805,6 +822,18 @@
                 <div class="field">
                   <label>Fecha de muestreo</label>
                   <input type="date" id="oilSampleDate" onchange="refreshOil()">
+                </div>
+                <div class="field">
+                  <label>Temperatura del aceite (&deg;C)</label>
+                  <input class="mono" id="oilTempAceite" type="text" inputmode="decimal" pattern="[0-9]*[.,]?-?[0-9]*" oninput="refreshOil()">
+                </div>
+                <div class="field">
+                  <label>Humedad relativa (%)</label>
+                  <input class="mono" id="oilHumedadRelativa" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*" oninput="refreshOil()">
+                </div>
+                <div class="field">
+                  <label>Temperatura del laboratorio (&deg;C)</label>
+                  <input class="mono" id="oilTempLaboratorio" type="text" inputmode="decimal" pattern="[0-9]*[.,]?-?[0-9]*" oninput="refreshOil()">
                 </div>
               </div>
               <div class="form-field-block">
