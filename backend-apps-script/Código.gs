@@ -145,7 +145,17 @@ var HEADERS = {
     // informes eléctricos y de aceite, ver nextReportConsecutive_/
     // REPORT_CONSECUTIVE_PROP_. Vacío en documentos que no son informes y en
     // informes generados antes de esta columna.
-    'consecutivo'
+    'consecutivo',
+    // 2026-10-06 — P1 (idempotencia/regeneración explícita del informe
+    // eléctrico). Todas vacías en documentos anteriores (no se reconstruyen):
+    //  - report_type: 'ELECTRICO' | 'ACEITE'.
+    //  - source_tests: huella de la operación = transformer_id + IDs de las
+    //    pruebas Certificadas que forman el informe (ver
+    //    electricalReportFingerprint_). Solo informes eléctricos.
+    //  - estado: 'Vigente' | 'Reemplazado' (solo eléctricos nuevos).
+    //  - reemplaza_a: id (UUID) del informe al que este reemplaza.
+    //  - regen_reason: motivo obligatorio de una regeneración explícita.
+    'report_type', 'source_tests', 'estado', 'reemplaza_a', 'regen_reason'
   ],
   /** Comercial — Ofertas y Licitaciones. `estado` guardado es siempre
    *  'Pendiente'/'Aprobada'/'Rechazada' — 'Cierre' NUNCA se escribe aquí, es
@@ -297,7 +307,26 @@ function verificarInformeElectrico_(docId, consecutivoParam) {
     } else {
       var transformer = findTransformerRow_(row.transformer_id);
       var site = transformer ? findSiteRow_(transformer.site_id) : null;
+      // P1 (2026-10-12): un informe Reemplazado sigue siendo auténtico (el QR
+      // verifica), pero la página indica por cuál informe fue sustituido —se
+      // sigue la cadena `reemplaza_a` hasta el último (el vigente)—. Informes
+      // sin `estado` (anteriores a P1) o Vigentes: sin cambios.
+      var reemplazadoPor = null;
+      if (row.estado === 'Reemplazado') {
+        var currentId = row.id, hops = 0, found = null;
+        while (hops++ < 20) {
+          var next = null;
+          for (var q = 1; q < data.length; q++) {
+            if (data[q][HEADERS.DOCUMENTOS.indexOf('reemplaza_a')] === currentId) { next = rowToObject_(data[q], 'DOCUMENTOS', q + 1); break; }
+          }
+          if (!next) break;
+          found = next; currentId = next.id;
+        }
+        reemplazadoPor = found && found.consecutivo !== '' && found.consecutivo != null ? String(found.consecutivo).trim() : '';
+      }
       html = verificationPageHtml_(true, {
+        reemplazado: row.estado === 'Reemplazado',
+        reemplazadoPor: reemplazadoPor,
         consecutivo: storedConsecutivo,
         cliente: site ? site.client_name : '—',
         serie: transformer ? transformer.serial_number : '—',
@@ -341,8 +370,13 @@ function verificationPageHtml_(valido, datos) {
   return '<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
     '<style>' + style + '</style></head><body><div class="card">' +
     '<h1>M&amp;A Ingeniería y Consultoría SAS</h1>' +
-    '<span class="badge ok">Certificado válido</span>' +
+    (datos.reemplazado
+      ? '<span class="badge warn">Informe reemplazado</span>'
+      : '<span class="badge ok">Certificado válido</span>') +
     (datos.consecutivo ? '<div class="row"><span class="label">N° de informe</span><span class="value">' + escapeHtml_(datos.consecutivo) + '</span></div>' : '') +
+    (datos.reemplazado
+      ? '<div class="row"><span class="label">Reemplazado por el informe N°</span><span class="value">' + escapeHtml_(datos.reemplazadoPor || 'vigente (ver M&A)') + '</span></div>'
+      : '') +
     '<div class="row"><span class="label">Cliente</span><span class="value">' + escapeHtml_(datos.cliente) + '</span></div>' +
     '<div class="row"><span class="label">N° de serie</span><span class="value">' + escapeHtml_(datos.serie) + '</span></div>' +
     '<div class="row"><span class="label">Fecha</span><span class="value">' + escapeHtml_(datos.fecha) + '</span></div>' +
@@ -1189,26 +1223,28 @@ function certifyTest_(params, auth) {
 function certifyElectricalReport_(params, auth) {
   return withLock_(function () {
     if (auth.role === 'Tecnico') {
-      return jsonResponse_({ status: 403, message: 'Solo un Supervisor o Administrador puede certificar Pruebas Eléctricas' });
+      return jsonResponse_({ status: 403, message: 'Solo un Supervisor o Administrador puede certificar o regenerar Pruebas Eléctricas' });
     }
     if (!params.transformer_id) return jsonResponse_({ status: 400, message: 'transformer_id es obligatorio' });
+    // Regeneración explícita (P1): requiere `regenerate: true` y un motivo no
+    // vacío. Se valida ANTES de generar nada, sin tocar DOCUMENTOS/consecutivo.
+    var regenerate = params.regenerate === true || String(params.regenerate).toLowerCase() === 'true';
+    var regenReason = String(params.reason == null ? '' : params.reason).trim();
+    if (regenerate && !regenReason) {
+      return jsonResponse_({ status: 400, message: 'El motivo de la regeneración es obligatorio' });
+    }
     var transformer = findTransformerRow_(params.transformer_id);
     if (!transformer) return jsonResponse_({ status: 404, message: 'Transformador no encontrado' });
     var site = findSiteRow_(transformer.site_id);
     if (!site) return jsonResponse_({ status: 404, message: 'Cliente/Proyecto no encontrado' });
 
-    var scope = {
-      TTR: normalizeOfertado_(transformer.ttr_ofertado),
-      RESISTENCIA_DEVANADOS: normalizeOfertado_(transformer.resistencia_devanados_ofertado),
-      AISLAMIENTO: normalizeOfertado_(transformer.aislamiento_ofertado)
-    };
-    var requiredTypes = Object.keys(scope).filter(function (t) { return scope[t]; });
+    var operation = electricalOperationState_(transformer);
+    var requiredTypes = operation.requiredTypes;
     if (requiredTypes.length === 0) {
       return jsonResponse_({ status: 400, message: 'Este equipo no tiene ninguna prueba eléctrica marcada como ofertada — revisa el alcance en "Editar equipo".' });
     }
 
-    var latest = findLatestElectricalTestsByType_(transformer.id);
-    var missing = requiredTypes.filter(function (t) { return !latest[t]; });
+    var missing = operation.missing;
     if (missing.length > 0) {
       var missingLabels = missing.map(function (t) { return TEST_TYPE_DISPLAY_LABEL_[t]; });
       return jsonResponse_({
@@ -1218,14 +1254,156 @@ function certifyElectricalReport_(params, auth) {
       });
     }
 
+    // P1 — idempotencia por huella (solo IDs de pruebas Certificadas, nunca el
+    // tiempo ni datos del equipo): misma operación = mismo transformer + mismo
+    // conjunto de pruebas.
+    var fingerprint = operation.fingerprint;
+    var current = findCurrentElectricalReportByFingerprint_(transformer.id, fingerprint);
+    if (current && !regenerate) {
+      return jsonResponse_({
+        status: 200,
+        message: 'Ya existe un informe vigente para esta operación — no se generó otro',
+        data: {
+          already_exists: true,
+          report_url: driveFileUrl_(current.file_id),
+          report_id: current.id,
+          consecutivo: current.consecutivo,
+          estado: current.estado,
+          created_at: current.created_at
+        }
+      });
+    }
+    if (regenerate && !current) {
+      return jsonResponse_({ status: 400, message: 'No hay un informe vigente de esta operación para regenerar — usa Certificar.' });
+    }
+
     var folders = ensureSiteFolders_(site);
-    var report = regenerateElectricalCombinedReport_(transformer, site, folders.certificadosFolderId, auth.username, requiredTypes);
+    var report = regenerateElectricalCombinedReport_(transformer, site, folders.certificadosFolderId, auth.username, requiredTypes, {
+      fingerprint: fingerprint,
+      replacesId: regenerate ? current.id : '',
+      reason: regenerate ? regenReason : ''
+    });
     if (!report) {
       return jsonResponse_({ status: 500, message: 'No se pudo generar el informe — inténtalo de nuevo.' });
     }
 
-    return jsonResponse_({ status: 200, message: 'Pruebas Eléctricas certificadas', data: { report_url: driveFileUrl_(report.fileId) } });
+    // Solo con el informe nuevo ya generado y registrado se marca el anterior.
+    var replaceWarning = null;
+    if (regenerate) {
+      try {
+        markDocumentReplaced_(current.id);
+      } catch (markErr) {
+        replaceWarning = 'El informe nuevo se generó, pero no se pudo marcar el anterior como Reemplazado: ' + (markErr && markErr.message ? markErr.message : markErr);
+        Logger.log('certifyElectricalReport_ — ' + replaceWarning);
+      }
+    }
+
+    var data = {
+      report_url: driveFileUrl_(report.fileId),
+      report_id: report.documentId,
+      consecutivo: report.consecutivo,
+      estado: 'Vigente'
+    };
+    if (regenerate) data.reemplaza_a = current.id;
+    if (replaceWarning) data.replace_warning = replaceWarning;
+    return jsonResponse_({ status: 200, message: regenerate ? 'Informe regenerado' : 'Pruebas Eléctricas certificadas', data: data });
   });
+}
+
+/** Estado de la operación "informe eléctrico" de un equipo — lógica ÚNICA
+ *  compartida por `certifyElectricalReport_` y `getElectricalReportStatus_`,
+ *  para que ambas calculen exactamente la misma huella: alcance ofertado
+ *  (`requiredTypes`), última prueba Certificada por tipo (`latest`), tipos
+ *  que faltan (`missing`) y la huella actual (`null` si no hay alcance o falta
+ *  alguna prueba). Solo lee; no escribe nada. */
+function electricalOperationState_(transformer) {
+  var scope = {
+    TTR: normalizeOfertado_(transformer.ttr_ofertado),
+    RESISTENCIA_DEVANADOS: normalizeOfertado_(transformer.resistencia_devanados_ofertado),
+    AISLAMIENTO: normalizeOfertado_(transformer.aislamiento_ofertado)
+  };
+  var requiredTypes = Object.keys(scope).filter(function (t) { return scope[t]; });
+  var latest = findLatestElectricalTestsByType_(transformer.id);
+  var missing = requiredTypes.filter(function (t) { return !latest[t]; });
+  var fingerprint = (requiredTypes.length > 0 && missing.length === 0)
+    ? electricalReportFingerprint_(transformer.id, requiredTypes, latest)
+    : null;
+  return { requiredTypes: requiredTypes, latest: latest, missing: missing, fingerprint: fingerprint };
+}
+
+/** Solo lectura (GET). Le dice a la interfaz si el alcance eléctrico del
+ *  equipo está completo y cuál es el informe Vigente que corresponde EXACTAMENTE
+ *  al conjunto de pruebas Certificadas actual (misma huella que usa
+ *  certifyElectricalReport_); `vigente: null` si no existe. Informes antiguos
+ *  sin huella o de un ciclo de pruebas anterior nunca coinciden. Solo
+ *  Supervisor/Administrador (igual que certificar/regenerar). */
+function getElectricalReportStatus_(params, auth) {
+  if (auth.role === 'Tecnico') {
+    return jsonResponse_({ status: 403, message: 'Solo un Supervisor o Administrador puede consultar el estado del informe eléctrico' });
+  }
+  if (!params.transformer_id) return jsonResponse_({ status: 400, message: 'transformer_id es obligatorio' });
+  var transformer = findTransformerRow_(params.transformer_id);
+  if (!transformer) return jsonResponse_({ status: 404, message: 'Transformador no encontrado' });
+
+  var operation = electricalOperationState_(transformer);
+  var complete = operation.fingerprint !== null;
+  var current = complete ? findCurrentElectricalReportByFingerprint_(transformer.id, operation.fingerprint) : null;
+  return jsonResponse_({
+    status: 200,
+    data: {
+      complete: complete,
+      vigente: current ? {
+        report_id: current.id,
+        consecutivo: current.consecutivo,
+        estado: current.estado,
+        created_at: current.created_at,
+        report_url: driveFileUrl_(current.file_id)
+      } : null
+    }
+  });
+}
+
+/** Huella determinista de la operación "informe eléctrico de este equipo":
+ *  `transformer_id` + los IDs (ordenados) de las pruebas Certificadas que
+ *  forman el informe. NO incluye datos de placa, plantilla, código, PDF ni
+ *  tiempo. */
+function electricalReportFingerprint_(transformerId, includeTypes, latestByType) {
+  var ids = includeTypes
+    .filter(function (t) { return latestByType[t]; })
+    .map(function (t) { return String(latestByType[t].id); })
+    .sort();
+  return String(transformerId) + '|' + ids.join(',');
+}
+
+/** Fila Vigente (la más reciente) de DOCUMENTOS que corresponde a un informe
+ *  eléctrico del equipo con exactamente esta huella; `null` si no existe.
+ *  Las filas antiguas (sin report_type/estado/huella) nunca coinciden: no se
+ *  reconstruyen huellas históricas. */
+function findCurrentElectricalReportByFingerprint_(transformerId, fingerprint) {
+  var data = getSheet_('DOCUMENTOS').getDataRange().getValues();
+  var best = null;
+  for (var r = 1; r < data.length; r++) {
+    var row = rowToObject_(data[r], 'DOCUMENTOS', r + 1);
+    if (row.transformer_id !== transformerId) continue;
+    if (row.report_type !== 'ELECTRICO' || row.estado !== 'Vigente') continue;
+    if (String(row.source_tests) !== fingerprint) continue;
+    if (!best || String(row.created_at) > String(best.created_at)) best = row;
+  }
+  return best;
+}
+
+/** Marca un informe de DOCUMENTOS como Reemplazado (nunca lo borra). */
+function markDocumentReplaced_(documentId) {
+  var sheet = getSheet_('DOCUMENTOS');
+  var data = sheet.getDataRange().getValues();
+  var idCol = HEADERS.DOCUMENTOS.indexOf('id');
+  for (var r = 1; r < data.length; r++) {
+    if (data[r][idCol] === documentId) {
+      sheet.getRange(r + 1, colIndex_('DOCUMENTOS', 'estado')).setValue('Reemplazado');
+      return;
+    }
+  }
+  throw new Error('no se encontró el informe anterior (' + documentId + ')');
 }
 
 /**
@@ -1296,7 +1474,7 @@ function updateTestDraft_(params, auth) {
         calculated = calculateTtr_(transformer, params.readings);
       } else if (testObj.test_type === 'RESISTENCIA_DEVANADOS') {
         if (!params.readings.measurements) return jsonResponse_({ status: 400, message: 'readings.measurements es obligatorio' });
-        calculated = calculateWindingResistance_(params.readings);
+        calculated = calculateWindingResistance_(params.readings, { primary: transformer.at_devanado_material, secondary: transformer.bt_devanado_material });
       } else if (testObj.test_type === 'AISLAMIENTO') {
         if (!params.readings.measurements) return jsonResponse_({ status: 400, message: 'readings.measurements es obligatorio' });
         calculated = calculateInsulation_(params.readings);
@@ -1342,6 +1520,16 @@ function updateTestDraft_(params, auth) {
     sheet.getRange(testObj._row, colIndex_('PRUEBAS', 'calculated_results_json')).setValue(JSON.stringify(calculated));
     sheet.getRange(testObj._row, colIndex_('PRUEBAS', 'verdict')).setValue(calculated.overallVerdict);
     if (params.instrument_used) sheet.getRange(testObj._row, colIndex_('PRUEBAS', 'instrument_used')).setValue(params.instrument_used);
+    // Temperatura/humedad ambiente (TTR/Devanados/Aislamiento, ver persistTest_):
+    // se actualizan SOLO si llegan con valor. El formulario no las precarga al
+    // editar un borrador, así que un envío vacío no debe borrar lo guardado.
+    // Aceite no las envía (usa las suyas dentro de `readings`).
+    ['temperatura_ambiente', 'humedad_relativa'].forEach(function (field) {
+      var v = params[field];
+      if (v !== undefined && v !== null && String(v).trim() !== '') {
+        sheet.getRange(testObj._row, colIndex_('PRUEBAS', field)).setValue(v);
+      }
+    });
     if (attachmentId) sheet.getRange(testObj._row, colIndex_('PRUEBAS', 'attachment_file_id')).setValue(attachmentId);
 
     return jsonResponse_({ status: 200, message: 'Borrador actualizado', data: { id: params.id, calculated_results: calculated, estado_certificacion: 'Borrador' } });
@@ -1380,7 +1568,7 @@ function submitWindingResistanceTest_(params, auth) {
 
     var calculated;
     try {
-      calculated = calculateWindingResistance_(params.readings);
+      calculated = calculateWindingResistance_(params.readings, { primary: transformer.at_devanado_material, secondary: transformer.bt_devanado_material });
     } catch (calcErr) {
       return jsonResponse_({ status: 422, message: calcErr.message });
     }
@@ -1554,9 +1742,20 @@ function calculateTtr_(transformer, readings) {
  *  (entre 2% y 5%) — ver UNBALANCE_OBSERVE_THRESHOLD_PERCENT arriba para el
  *  porqué. Se combina con una nota propia del técnico ("repetí esta
  *  lectura") si ya existía, nunca la reemplaza. */
-function unbalanceObserveNote_(deviationPercent, existingNota) {
+/** Frase "para devanados de <material>" según el material REAL del devanado
+ *  (`at_devanado_material`/`bt_devanado_material`, valores 'Aluminio'/'Cobre').
+ *  Con material vacío o no reconocido usa una redacción neutra — nunca asume
+ *  aluminio (P4, 2026-10-05). Para Aluminio el texto es el de siempre. */
+function windingMaterialPhrase_(materialText) {
+  var m = String(materialText || '').trim().toLowerCase();
+  if (m === 'aluminio') return 'para devanados de aluminio';
+  if (m === 'cobre') return 'para devanados de cobre';
+  return 'para los devanados del equipo';
+}
+
+function unbalanceObserveNote_(deviationPercent, existingNota, materialText) {
   var norm = 'Desbalance ' + Math.abs(deviationPercent).toFixed(2) + ' % — por encima del 2 % ideal de la norma ' +
-    '(IEEE C57.125 / IEC 60076-1) pero dentro del margen operativo de campo (5 %) para devanados de aluminio ' +
+    '(IEEE C57.125 / IEC 60076-1) pero dentro del margen operativo de campo (5 %) ' + windingMaterialPhrase_(materialText) + ' ' +
     'en equipos de distribución: aprobado con observación, revisar en el próximo mantenimiento.';
   return existingNota ? (existingNota + ' · ' + norm) : norm;
 }
@@ -1566,7 +1765,7 @@ function unbalanceObserveNote_(deviationPercent, existingNota) {
  *  sola medición, sin TAP), para no duplicar la fórmula.
  *  2026-10-01: veredicto de 3 niveles (antes solo APROBADO/RECHAZADO) — ver
  *  UNBALANCE_OBSERVE_THRESHOLD_PERCENT/UNBALANCE_THRESHOLD_PERCENT. */
-function computePhaseUnbalance_(phases) {
+function computePhaseUnbalance_(phases, materialText) {
   var keys = Object.keys(phases || {});
   if (keys.length === 0) throw new Error('No hay lecturas de fase');
 
@@ -1588,7 +1787,7 @@ function computePhaseUnbalance_(phases) {
       if (absDeviation > UNBALANCE_THRESHOLD_PERCENT) {
         status = 'RECHAZADO'; nota = phases[k].nota || null; anyRechazado = true;
       } else if (absDeviation > UNBALANCE_OBSERVE_THRESHOLD_PERCENT) {
-        status = 'OBSERVADO'; nota = unbalanceObserveNote_(deviation, phases[k].nota || null); anyObservado = true;
+        status = 'OBSERVADO'; nota = unbalanceObserveNote_(deviation, phases[k].nota || null, materialText); anyObservado = true;
       } else {
         status = 'APROBADO'; nota = phases[k].nota || null;
       }
@@ -1608,7 +1807,10 @@ function computePhaseUnbalance_(phases) {
  * envía. Si viene, su veredicto entra al overallVerdict igual que cualquier
  * TAP del primario (todos deben estar APROBADO para que el conjunto lo esté).
  */
-function calculateWindingResistance_(readings) {
+function calculateWindingResistance_(readings, materials) {
+  // `materials` = { primary, secondary } (material del devanado AT/BT del
+  // equipo) — solo para la redacción de la nota de OBSERVADO, no interviene
+  // en ningún cálculo ni umbral.
   var measurements = readings.measurements || [];
   var hasSecondaryInput = !!(readings.secondary && Object.keys(readings.secondary.phases || {}).length);
   if (measurements.length === 0 && !hasSecondaryInput) {
@@ -1621,7 +1823,7 @@ function calculateWindingResistance_(readings) {
     }
     if (Object.keys(tap.phases || {}).length === 0) throw new Error('El TAP ' + tap.tapPosition + ' no tiene lecturas de fase');
 
-    var result = computePhaseUnbalance_(tap.phases);
+    var result = computePhaseUnbalance_(tap.phases, materials && materials.primary);
     return {
       tapPosition: tap.tapPosition,
       windingTemperatureC: tap.windingTemperatureC,
@@ -1647,7 +1849,7 @@ function calculateWindingResistance_(readings) {
     if (readings.secondary.windingTemperatureC === undefined || readings.secondary.windingTemperatureC === null) {
       throw new Error('El devanado secundario no tiene windingTemperatureC (obligatorio)');
     }
-    var secResult = computePhaseUnbalance_(readings.secondary.phases);
+    var secResult = computePhaseUnbalance_(readings.secondary.phases, materials && materials.secondary);
     secondaryResult = {
       windingTemperatureC: readings.secondary.windingTemperatureC,
       averageResistanceOhm: secResult.averageResistanceOhm,
@@ -4713,7 +4915,7 @@ function migrateHistoryTemplateFromElectrical_(params, auth) {
  * como caché del más reciente para el pill de acceso rápido en el header
  * del equipo — nunca se lee como fuente de histórico.
  */
-function regenerateElectricalCombinedReport_(transformer, site, folderId, uploadedBy, includeTypes) {
+function regenerateElectricalCombinedReport_(transformer, site, folderId, uploadedBy, includeTypes, reportMeta) {
   var latest = findLatestElectricalTestsByType_(transformer.id);
   var order = ['TTR', 'RESISTENCIA_DEVANADOS', 'AISLAMIENTO'];
   var present = order.filter(function (t) { return includeTypes.indexOf(t) !== -1 && latest[t]; });
@@ -5055,8 +5257,25 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
   // Aislamiento (algún DAR/IP en rango CUESTIONABLE). TTR no tiene nivel
   // OBSERVADO.
   var observationCauses = [];
-  if (atVerdict === 'OBSERVADO' || (wrCalc && wrCalc.secondary && wrCalc.secondary.verdict === 'OBSERVADO')) {
-    observationCauses.push('el desbalance de resistencia de devanados superó el 2 % ideal de la norma (IEEE C57.125 / IEC 60076-1), pero se mantiene dentro del margen operativo de campo (5 %) para devanados de aluminio');
+  // El material sale del equipo: AT → at_devanado_material, BT →
+  // bt_devanado_material (P4, 2026-10-05). Si ambos lados están observados con
+  // materiales distintos se nombran ambos en una sola causa; si no, una sola
+  // causa con el material del lado observado.
+  var atObservado = atVerdict === 'OBSERVADO';
+  var btObservado = !!(wrCalc && wrCalc.secondary && wrCalc.secondary.verdict === 'OBSERVADO');
+  var atMaterialPhrase = windingMaterialPhrase_(transformer.at_devanado_material);
+  var btMaterialPhrase = windingMaterialPhrase_(transformer.bt_devanado_material);
+  function windingUnbalanceCause_(prefix, materialPhrase) {
+    return prefix + 'el desbalance de resistencia de devanados superó el 2 % ideal de la norma (IEEE C57.125 / IEC 60076-1), pero se mantiene dentro del margen operativo de campo (5 %) ' + materialPhrase;
+  }
+  if (atObservado && btObservado && atMaterialPhrase !== btMaterialPhrase) {
+    // Una sola cláusula con ambos materiales (repetirla completa por lado
+    // alargaba la celda lo bastante como para forzar una 2ª página en blanco
+    // en el caso más cargado).
+    observationCauses.push(windingUnbalanceCause_('en AT y BT, ',
+      atMaterialPhrase + ' (AT) y ' + btMaterialPhrase.replace(/^para /, '') + ' (BT)'));
+  } else if (atObservado || btObservado) {
+    observationCauses.push(windingUnbalanceCause_('', atObservado ? atMaterialPhrase : btMaterialPhrase));
   }
   if (aisCalc && aisCalc.overallVerdict === 'OBSERVADO') {
     var darCuestionable = false, ipCuestionable = false;
@@ -5232,9 +5451,20 @@ function regenerateElectricalCombinedReport_(transformer, site, folderId, upload
     transformer_id: transformer.id,
     verdict: conclusionVerdict,
     certified_by: ENGINEER_SIGNATURE_NAME_,
-    consecutivo: consecutivo
+    consecutivo: consecutivo,
+    // P1 (2026-10-06): metadatos de idempotencia/regeneración (`reportMeta` lo
+    // arma certifyElectricalReport_). El informe nuevo siempre queda Vigente;
+    // marcar el anterior como Reemplazado lo hace el llamador, DESPUÉS de que
+    // esta fila ya existe.
+    report_type: 'ELECTRICO',
+    source_tests: (reportMeta && reportMeta.fingerprint) || '',
+    estado: 'Vigente',
+    reemplaza_a: (reportMeta && reportMeta.replacesId) || '',
+    regen_reason: (reportMeta && reportMeta.reason) || ''
   });
 
+  saved.documentId = verificationId;
+  saved.consecutivo = consecutivo;
   return saved;
 }
 
@@ -5858,7 +6088,8 @@ function regenerateOilCombinedReport_(transformer, site, rawReadings, calculated
     transformer_id: transformer.id,
     verdict: calculated.overallVerdict,
     certified_by: ENGINEER_SIGNATURE_NAME_,
-    consecutivo: consecutivo
+    consecutivo: consecutivo,
+    report_type: 'ACEITE'
   });
 
   return saved;
@@ -6994,6 +7225,7 @@ var GET_ACTIONS = {
   getTransformer: getTransformer_,
   listTests: listTests_,
   listDocuments: listDocuments_,
+  getElectricalReportStatus: getElectricalReportStatus_,
   listOfertas: listOfertas_,
   listCalibraciones: listCalibraciones_,
   getReportTemplateUrls: getReportTemplateUrls_

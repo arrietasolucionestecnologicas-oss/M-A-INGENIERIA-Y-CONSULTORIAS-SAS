@@ -4753,21 +4753,21 @@ hacia atrás como el del punto 2 de arriba. Grep rápido para ubicarla:
 
 ### Estado de publicación (leer antes de desplegar o hacer commit)
 
-- **Backend (Apps Script)**: las correcciones de esta sesión están
-  **desplegadas**. Última versión limpia: **164**
-  (`clasp -u mya deploy --deploymentId AKfycbwhVAjRgkfyxFjjLM2-6wlfDuurzhS2HLW2A3gS_NKziW6fyMlXuXrwcTrjmp7oZG1Ufg`).
-  **La versión desplegada NO contiene ninguna herramienta de depuración.**
-- **Frontend (GitHub Pages)**: los cambios de `app.js` e `index.html` de esta
-  sesión **NO están publicados** — solo existen en la copia local, y la
-  publicación del frontend es `git push`. Mientras no se haga push, la app
-  en producción sigue con el frontend anterior (incluida la **pérdida de la
-  foto de placa al CREAR un equipo**, ver E abajo).
-- **Repositorio**: hay cambios locales **sin commit ni push** acumulados de
-  varias rondas en `backend-apps-script/Código.gs`, `app.js` e `index.html`.
-  **No borrar ni revertir cambios anteriores.** Además hay archivos sin
-  seguimiento que NO son de esta sesión y no deben agregarse a ciegas:
-  `Informe_Aceite_DEMO-COMPLETO-01.pdf`, `documentos comerciales/` y
-  `firma michael ingeniero electrico 3022803343.jpg`.
+- **Backend (Apps Script)**: **ACTUALIZADO el 2026-10-12.** Última versión
+  limpia desplegada: **@181** (incluye P4, P7 backend, la corrección de la
+  2ª página en blanco de P2 y P1 completo; ver "P1" más abajo).
+  `clasp -u mya push --force` + `clasp -u mya deploy --deploymentId AKfycbwhVAjRgkfyxFjjLM2-6wlfDuurzhS2HLW2A3gS_NKziW6fyMlXuXrwcTrjmp7oZG1Ufg`
+  (para volver a una versión: `clasp deploy --versionNumber <n> --deploymentId …`).
+  **La versión desplegada NO contiene ninguna herramienta de depuración**
+  (las variantes temporales @178/@179/@182 usadas para pruebas se retiraron).
+- **Frontend (GitHub Pages)**: **publicado con el commit de la Ronda 13
+  (2026-10-12)**, que incluye los cambios de `app.js`/`index.html` de las
+  Rondas 12 y 13 (foto de placa al crear, P7 locales y la integración de P1).
+- **Repositorio**: sin cambios locales pendientes de los tres archivos tras
+  la Ronda 13. Hay archivos sin seguimiento que NO son de estas sesiones y
+  no deben agregarse a ciegas: `Informe_Aceite_DEMO-COMPLETO-01.pdf`,
+  `documentos comerciales/`, `firma michael ingeniero electrico 3022803343.jpg`
+  y `fotos pruebas/`.
 - **Consecutivo**: `REPORT_CONSECUTIVE_LAST = 99` → **PRÓXIMO INFORME REAL =
   100**. No modificar este valor.
 
@@ -4802,12 +4802,10 @@ hacia atrás como el del punto 2 de arriba. Grep rápido para ubicarla:
   Protege las dos rutas de certificación.
 - Probado: un clic, doble y triple clic, cruce entre ambos flujos, error con
   guard liberado y reintento, y cancelación del `confirm()`.
-- **IMPORTANTE: esto es protección de interfaz.** El backend
-  (`certifyElectricalReport_`) **todavía NO tiene deduplicación/idempotencia
-  definitiva**: dos pestañas, dos dispositivos o un reintento de red pueden
-  generar dos informes. Repetir la certificación de las mismas pruebas
-  genera un informe nuevo con consecutivo nuevo (observado en vivo). **No se
-  inventó ninguna regla de tiempo.** Ver P1.
+- **Esto era solo protección de interfaz — SUPERADO por P1 (2026-10-12):** el
+  backend ya tiene idempotencia por huella y regeneración explícita
+  (`certifyElectricalReport_`, ver sección "P1" más abajo). La guarda
+  `certifyInFlight_` se conserva como apoyo.
 
 **D. Consecutivo global de informes — PASS**
 - Un solo contador **global** compartido por informes **eléctricos y de
@@ -4931,28 +4929,35 @@ hacia atrás como el del punto 2 de arriba. Grep rápido para ubicarla:
 
 ### PENDIENTES / SIGUIENTE FASE DE AUDITORÍA
 
-- **P1. Idempotencia/deduplicación en backend.** Falta definir la regla de
-  negocio: ¿una misma certificación puede regenerarse intencionalmente? ¿debe
-  existir una acción explícita de regeneración? **No inventar una ventana
-  temporal.** Hoy solo hay protección frontend (C). Considerar que la app
-  deja el botón disponible tras certificar y que regenerar con las mismas
-  pruebas fue la forma recomendada de arreglar informes viejos. Aceite sí
-  está protegido (`certifyTest_` rechaza certificar dos veces la misma
-  prueba).
+- **P1. Idempotencia/regeneración del informe eléctrico — IMPLEMENTADO Y
+  VERIFICADO EN REAL (2026-10-12), backend @181 + frontend de la Ronda 13.**
+  Ver la sección "P1" más abajo. Queda como limitación: informes anteriores
+  a P1 no tienen huella (la interfaz ofrece Certificar, no Regenerar).
 - **P2. Revisión final de layout hoja por hoja** con el cliente: distribución
   definitiva de cada hoja, espacio global de campos/cajas, separación de
   secciones, ajustes estéticos restantes. **No modificar todavía** de forma
   global `UNIFIED_CELL_PADDING_`, fuentes globales ni todas las tablas.
+  **Resuelto (2026-10-12):** la 2ª página en blanco del eléctrico en el caso
+  límite (AT aluminio + BT cobre, ambos OBSERVADO, secundario, aislamiento
+  completo con IP cuestionable) — causa: P4 repetía la cláusula de desbalance
+  por lado; ahora una sola cláusula con ambos materiales
+  (`regenerateElectricalCombinedReport_`, bloque `observationCauses`).
+  **Siguen abiertas (decisión visual del cliente):** bordes derechos
+  irregulares en Aceite (tablas 540 pt vs marco ~560 pt), VERSIÓN/FECHA/PÁGINA
+  vacíos en la cabecera de ambos informes, gráficos pequeños (texto ~3-4 pt),
+  rótulo "† Lectura repetida" aplicado a notas de desbalance, y Aceite de 3
+  secciones en 2 páginas (conclusión y firmas solas en la 2ª).
 - **P3. Separación de informes.** El requisito del cliente de separar
   Aislamiento, TTR y Devanados en hojas/informes individuales sigue pendiente
   de definición y de revisión hoja por hoja. **No hacer un rediseño global**
   hasta definir la distribución esperada. Hoy
   `regenerateElectricalCombinedReport_` genera UN PDF con las tres pruebas.
-- **P4. Frase de devanados según material.** La frase de observación de
-  devanados dice siempre "para devanados de aluminio", sin mirar
-  `at_devanado_material`/`bt_devanado_material`. Revisar para usar el
-  material real del equipo. No corregir sin pedido; no tocar criterios de
-  cálculo/veredicto.
+- **P4. Frase de devanados según material — RESUELTO (2026-10-05, backend
+  desplegado).** `windingMaterialPhrase_` usa `at_devanado_material`/
+  `bt_devanado_material`: "para devanados de aluminio"/"de cobre"; con
+  material vacío o desconocido, redacción neutra "para los devanados del
+  equipo". Con AT y BT observados y materiales distintos, una sola cláusula
+  "…para devanados de aluminio (AT) y devanados de cobre (BT)".
 - **P5. HEIC.** Probado solo JPEG. No implementar soporte HEIC sin requisito
   o prueba concreta.
 - **P6. Abiertos de la Ronda 11 que NO se tocaron en esta sesión**: veredicto
@@ -4963,18 +4968,109 @@ hacia atrás como el del punto 2 de arriba. Grep rápido para ubicarla:
   excitación/desviación de fase en TTR (umbrales sin confirmar) y la
   recuperación por historial de versiones de Sheets del equipo borrado el
   2026-09-30. Detalle en "Pendientes abiertos al cierre de la Ronda 11".
-- **P7. Observados sin corregir (incidentales):** la unidad de resistencia no
-  se persiste en borradores; el valor mostrado al convertir a µΩ puede traer
-  ruido decimal (ej. `512000.00000000006`); `updateTestDraft_` no actualiza
-  `temperatura_ambiente`/`humedad_relativa` de `PRUEBAS`; el modal de
-  edición de equipo no tiene selector de fases (el backend sí acepta
-  `phase_type`); si `certifyElectricalReport` tiene éxito pero el
-  `getTransformer` posterior falla por red, se muestra "No se pudo
-  certificar" aunque sí se certificó; tras certificar, el botón eléctrico
-  puede quedar habilitado si todo sigue certificado; en equipos DEMO creados
-  por API con `tap_config.positions` sin `nominalVoltage`, "Editar equipo"
-  regenera las posiciones y el teórico de TTR queda "no disponible" (artefacto
-  de armado de datos, no verificado con un equipo creado desde la interfaz).
+- **P7. Observados incidentales.** **RESUELTOS (2026-10-05 a 2026-10-12):**
+  (1) la unidad de resistencia (Ω/mΩ/µΩ por lado) ahora se guarda y se
+  recupera con el borrador (`refreshWindingLight_`/`resetWindingStateFromTransformer`;
+  solo se restaura si el borrador tiene lecturas); (2) el valor mostrado al
+  convertir ya no trae ruido decimal (`formatWrDisplayValue_`, solo
+  visualización); (3) `updateTestDraft_` actualiza `temperatura_ambiente`/
+  `humedad_relativa` solo si llegan con valor (no borra lo guardado); (4) el
+  modal "Editar equipo" tiene selector de fases (mismos valores que la
+  creación); (5) si `certifyElectricalReport`/`certifyTest` tiene éxito y
+  falla solo el refresco posterior, ya no se muestra "No se pudo certificar"
+  (aviso aparte, `showCertifiedRefreshFailed_`); (6) con P1, tras certificar el
+  botón Certificar queda deshabilitado y se ofrece Regenerar mientras el
+  informe vigente corresponda a las pruebas actuales. **SIGUE ABIERTO / SIN
+  CONFIRMAR:** en equipos DEMO creados por API con `tap_config.positions` sin
+  `nominalVoltage`, "Editar equipo" regenera las posiciones y el teórico de
+  TTR queda "no disponible" (artefacto de armado de datos, no verificado con
+  un equipo creado desde la interfaz); y la recuperación del equipo eliminado
+  (ver P6).
+
+### P1 — Idempotencia y regeneración del informe eléctrico (2026-10-12)
+
+**Decisiones de negocio aprobadas:** (1) el informe anterior se marca
+`Reemplazado` y se conserva (nunca se borra); (2) pueden regenerar
+Supervisor y Administrador (el Técnico no); (3) el motivo es obligatorio;
+(4) la "misma operación" se define SOLO por la huella = `transformer_id` + IDs
+de las pruebas Certificadas que forman el informe (no datos de placa, ni
+plantilla, ni tiempo). **No hay ninguna ventana temporal.**
+
+**`DOCUMENTOS` — 5 columnas nuevas al final:** `report_type`
+(`ELECTRICO`/`ACEITE`), `source_tests` (la huella, `transformer_id|id1,id2,id3`
+con los IDs ordenados), `estado` (`Vigente`/`Reemplazado`), `reemplaza_a`
+(UUID del informe sustituido), `regen_reason`. Los informes anteriores a P1
+quedan con esas celdas vacías y **no se reconstruyen huellas históricas**.
+
+**Backend (`Código.gs`):**
+- `electricalOperationState_(transformer)` — lógica ÚNICA (alcance ofertado,
+  última prueba Certificada por tipo, faltantes, huella) usada por
+  `certifyElectricalReport_` y por `getElectricalReportStatus_`: ambas
+  calculan exactamente la misma huella.
+- `certifyElectricalReport_(params, auth)` (dentro de `withLock_`): Técnico →
+  403; `regenerate: true` exige `reason` no vacío (400 si no); si ya existe un
+  informe `Vigente` con la misma huella y NO se regenera → responde 200 con
+  `already_exists: true` (+ `report_id`, `consecutivo`, `estado`, `created_at`,
+  `report_url`) **sin PDF, sin fila y sin consecutivo nuevos**; regenerar sin
+  vigente de esa huella → 400 "usa Certificar"; si no, genera (consecutivo y
+  UUID nuevos) y, SOLO después de que la fila nueva existe, marca el anterior
+  `Reemplazado` (`markDocumentReplaced_`; si esa marca falla se devuelve
+  `replace_warning`). El rollback del consecutivo ante fallo de exportación no
+  cambió: un fallo no deja el anterior reemplazado y no consume número.
+- `getElectricalReportStatus_` (GET, solo lectura, **no** para Técnico):
+  `{ complete, vigente: { report_id, consecutivo, estado, created_at,
+  report_url } | null }` — el informe Vigente que corresponde EXACTAMENTE al
+  conjunto de pruebas actual. Informes antiguos sin huella o de un ciclo de
+  pruebas anterior nunca coinciden.
+- `verificarInformeElectrico_` / `verificationPageHtml_`: el QR de un informe
+  `Reemplazado` sigue verificando, pero muestra "Informe reemplazado" y
+  "Reemplazado por el informe N° X" (sigue la cadena `reemplaza_a` hasta el
+  vigente). Sin cambios para informes Vigentes o anteriores a P1.
+- `regenerateElectricalCombinedReport_(…, reportMeta)` escribe los metadatos;
+  el informe de aceite solo añade `report_type: 'ACEITE'`.
+- **Parámetros:** el motivo se lee de `params.reason`; el frontend envía
+  también `regen_reason` (nombre de la columna) por compatibilidad.
+
+**Frontend (`app.js`/`index.html`):** botón "Regenerar informe eléctrico"
+(`#regenerateElectricalBtn`) y modal con motivo obligatorio
+(`#regenerateReportModal`; `openRegenerateReportModal_`,
+`closeRegenerateReportModal_`, `handleRegenerateReportSubmit_`);
+`refreshElectricalReportStatus_()` consulta `getElectricalReportStatus` al
+abrir un equipo (tras cargar pruebas) y tras certificar/regenerar, y fija
+`electricalVigente_` (con guarda por firma de pruebas y descarte de respuestas
+tardías); `handleCertifyElectricalReport_` trata `already_exists` como
+información ("Ya existe un informe vigente… no se generó otro"), nunca como
+"informe generado". Con un vigente conocido: Certificar queda deshabilitado y
+Regenerar visible. **Al Técnico no se le consulta ni se le ofrece nada**
+(`callApi` trata cualquier 403 como sesión inválida y lo mandaría al login).
+Si la consulta falla no se inventa estado (se conserva lo conocido).
+
+**Verificación real (2026-10-12, backend @181 + frontend local contra el
+backend real, DEMO controlado, contador restaurado):**
+- Equipo sin informe del ciclo actual → Certificar habilitado, Regenerar
+  oculto. Certificación inicial real: informe N° 100 `Vigente`.
+- Recargar y reabrir el equipo → Regenerar aparece **sin pulsar Certificar**
+  (vigente N° 100 identificado por `getElectricalReportStatus`).
+- Reintento → `already_exists`, sin fila ni consecutivo nuevos.
+- Regeneración: motivo vacío/espacios bloqueado en la UI (0 llamadas); con
+  motivo → N° 101 `Vigente` (`reemplaza_a` = 100, motivo guardado), 100
+  `Reemplazado`.
+- QR del informe 100: "Informe reemplazado — Reemplazado por el informe N°
+  101"; QR del 101: "Certificado válido"; `n` alterado: "no válido".
+- Nuevo ciclo (TTR nueva certificada) → huella distinta; certificar generó el
+  N° 102 y el 101 siguió `Vigente`. **Concurrencia:** una solicitud generó el
+  102; otras que llegaron mientras generaba esperaron el lock y terminaron en
+  `already_exists #102` (camino demostrado en vivo); una sola fila nueva,
+  contador 102.
+- Pruebas anteriores (A/B, 3 a 9 con fallo de exportación inyectado, 11
+  simulaciones del backend real en Node y 6 del frontend) — todas PASS.
+
+**Limitaciones conocidas:** los informes anteriores a P1 no tienen huella, así
+que la interfaz ofrece Certificar (que crea un informe nuevo `Vigente` sin
+tocar el antiguo); un nuevo ciclo de pruebas NO marca como `Reemplazado` el
+informe del ciclo anterior (queda `Vigente` como histórico); `listDocuments_`
+no expone `estado`/consecutivo (el módulo "Documentos e Informes" no los
+muestra).
 
 ### Historial de pruebas y limpieza
 

@@ -1185,6 +1185,7 @@ function openEditTransformerModal_() {
   if (!t) return;
   document.getElementById('editTrfEstadoEquipo').value = t.estado_equipo || 'Activo';
   document.getElementById('editTrfSerial').value = t.serial_number || '';
+  document.getElementById('editTrfPhaseType').value = t.phase_type || '';
   document.getElementById('editTrfManufacturer').value = t.manufacturer || '';
   document.getElementById('editTrfVectorGroup').value = t.vector_group || '';
   document.getElementById('editTrfPower').value = t.rated_power_kva || '';
@@ -1250,6 +1251,10 @@ function handleEditTransformerSubmit(e) {
     resistencia_devanados_ofertado: document.getElementById('editTrfDevanadosOfertado').checked,
     aislamiento_ofertado: document.getElementById('editTrfAislamientoOfertado').checked
   };
+  // Fases: mismos valores que la creación (TRIFASICO/MONOFASICO). Si el equipo
+  // trae un valor desconocido y no se eligió ninguno, no se manda (no se pisa).
+  var editPhaseType = document.getElementById('editTrfPhaseType').value;
+  if (editPhaseType) payload.phase_type = editPhaseType;
 
   // El número de posiciones de TAP y la posición del TAP nominal solo se
   // tocan si el técnico diligenció al menos uno de los dos; vacíos = se
@@ -1764,6 +1769,7 @@ function openTransformer(id) {
     resetWindingStateFromTransformer();
     resetOilStateFromTransformer();
     resetInsulationStateFromTransformer();
+    refreshElectricalReportStatus_(); // P1: informe vigente del ciclo actual (sin bloquear)
   }).catch(function (err) {
     if (err.status === 402 || err.status === 403) return;
     if (!cached) {
@@ -1829,23 +1835,33 @@ function renderDetail() {
   // muestra como texto fijo debajo del botón mientras falte algo, para que
   // no quede la duda de "le doy certificar y no pasa nada".
   var certifyHint = document.getElementById('certifyElectricalStatus');
+  var regenBtn = document.getElementById('regenerateElectricalBtn');
   if (state.role === 'Tecnico') {
     certifyBtn.hidden = true;
+    regenBtn.hidden = true;
     if (certifyHint) certifyHint.hidden = true;
   } else {
     certifyBtn.hidden = false;
     var allElectricalDone = requiredElectricalTypes.length > 0 && requiredElectricalTypes.every(function (k) { return electricalCertified[k]; });
     var missingTypes = requiredElectricalTypes.filter(function (k) { return !electricalCertified[k]; });
-    certifyBtn.disabled = !allElectricalDone;
+    // P1: con un informe vigente conocido de estas mismas pruebas, "Certificar"
+    // ya no aplica (no generaría nada) y se ofrece "Regenerar" como acción aparte.
+    var knownVigente = allElectricalDone ? knownElectricalVigente_() : null;
+    certifyBtn.disabled = !allElectricalDone || !!knownVigente;
+    regenBtn.hidden = !knownVigente;
+    regenBtn.disabled = false;
     certifyBtn.title = requiredElectricalTypes.length === 0
       ? 'Este equipo no tiene pruebas eléctricas marcadas como ofertadas — revisa "Editar equipo"'
-      : (allElectricalDone ? 'Genera el informe eléctrico consolidado con las pruebas ofertadas' : 'Faltan pruebas ofertadas por certificar');
+      : (knownVigente ? 'Ya existe un informe vigente (' + electricalReportLabel_(knownVigente) + ') de estas pruebas — usa "Regenerar informe eléctrico" para generar uno nuevo'
+        : (allElectricalDone ? 'Genera el informe eléctrico consolidado con las pruebas ofertadas' : 'Faltan pruebas ofertadas por certificar'));
     if (certifyHint) {
       if (requiredElectricalTypes.length === 0) {
         setStatus_(certifyHint, 'Este equipo no tiene pruebas eléctricas marcadas como ofertadas — revisa "Editar equipo".', false, true);
       } else if (!allElectricalDone) {
         var missingLabels = missingTypes.map(function (k) { return electricalLabels_[k]; }).join(', ');
         setStatus_(certifyHint, 'Falta certificar individualmente en "Historial de pruebas": ' + missingLabels + ' — ya fue enviada, solo falta que un Supervisor/Administrador la certifique ahí antes de poder certificar el combinado.', false, true);
+      } else if (knownVigente) {
+        setStatus_(certifyHint, 'Informe eléctrico vigente ' + electricalReportLabel_(knownVigente) + ' de estas pruebas. Para generar uno nuevo usa "Regenerar informe eléctrico" (pide un motivo).', true);
       } else {
         certifyHint.hidden = true;
       }
@@ -2125,8 +2141,81 @@ function buildLineChartSvg_(years, lines) {
 var certifyInFlight_ = false;
 
 function setCertifyButtonsDisabled_(disabled) {
-  var btns = document.querySelectorAll('#certifyElectricalBtn, button[title="Certificar"], button[title="Rechazar"]');
+  var btns = document.querySelectorAll('#certifyElectricalBtn, #regenerateElectricalBtn, button[title="Certificar"], button[title="Rechazar"]');
   for (var i = 0; i < btns.length; i++) btns[i].disabled = disabled;
+}
+
+/** P1 (2026-10-12) — informe eléctrico vigente CONOCIDO por esta sesión. El
+ *  backend identifica la operación por la huella (IDs de pruebas
+ *  Certificadas); `listDocuments_` aún no expone estado/huella, así que el
+ *  frontend solo sabe que existe un informe vigente de estas pruebas cuando el
+ *  propio backend se lo dijo: `already_exists` al certificar, o el informe que
+ *  acaba de generar/regenerar. Se invalida solo si cambia el equipo o el
+ *  conjunto de pruebas eléctricas Certificadas (otro ciclo = otra huella).
+ *  "Regenerar" solo se ofrece con un vigente conocido; el backend valida igual. */
+var electricalVigente_ = null;
+
+function electricalCertifiedSignature_() {
+  return state.currentTests.filter(function (t) {
+    return (t.test_type === 'TTR' || t.test_type === 'RESISTENCIA_DEVANADOS' || t.test_type === 'AISLAMIENTO') &&
+      (t.estado_certificacion || 'Certificada') === 'Certificada';
+  }).map(function (t) { return t.id; }).sort().join(',');
+}
+
+function knownElectricalVigente_() {
+  var v = electricalVigente_;
+  if (!v || v.trfId !== state.currentTransformerId || v.sig !== electricalCertifiedSignature_()) return null;
+  return v;
+}
+
+function rememberElectricalVigente_(data, trfId, sig) {
+  electricalVigente_ = { trfId: trfId, sig: sig, report_id: data.report_id, consecutivo: data.consecutivo, report_url: data.report_url };
+}
+
+function electricalReportLabel_(v) {
+  return v && v.consecutivo ? 'N° ' + v.consecutivo : 'vigente';
+}
+
+/** Pregunta al backend (`getElectricalReportStatus`, solo lectura) cuál es el
+ *  informe Vigente del CICLO ACTUAL de pruebas — el backend lo resuelve con la
+ *  misma huella que usa al certificar/regenerar; el frontend no la calcula.
+ *  Solo Supervisor/Administrador: el backend responde 403 al Técnico y
+ *  `callApi` trata cualquier 403 como sesión inválida, así que a un Técnico ni
+ *  siquiera se le consulta. Si la consulta falla NO se inventa ningún estado:
+ *  queda lo ya conocido (la guarda por firma de pruebas sigue aplicando) y la
+ *  recuperación de siempre (Certificar → `already_exists`). Solo re-renderiza si
+ *  el vigente conocido cambió, para no pisar el mensaje que acaba de mostrar
+ *  un manejador de certificar/regenerar. */
+var electricalStatusReq_ = 0;
+
+function refreshElectricalReportStatus_() {
+  if (state.role !== 'Supervisor' && state.role !== 'Administrador') return Promise.resolve();
+  var trfId = state.currentTransformerId;
+  if (!trfId) return Promise.resolve();
+  var sig = electricalCertifiedSignature_();
+  var reqId = ++electricalStatusReq_;
+  return callApi('getElectricalReportStatus', 'GET', { transformer_id: trfId })
+    .then(function (st) {
+      // Respuesta vieja (otra consulta posterior, otro equipo o pruebas que
+      // cambiaron mientras tanto): se descarta.
+      if (reqId !== electricalStatusReq_ || state.currentTransformerId !== trfId || sig !== electricalCertifiedSignature_()) return;
+      var prevId = electricalVigente_ ? electricalVigente_.report_id : null;
+      if (st && st.vigente && st.vigente.report_id) {
+        rememberElectricalVigente_(st.vigente, trfId, sig);
+      } else {
+        electricalVigente_ = null; // el backend confirma: no hay informe de este ciclo
+      }
+      var newId = electricalVigente_ ? electricalVigente_.report_id : null;
+      if (prevId !== newId) renderDetail();
+    })
+    .catch(function () { /* sin estado inventado: se conserva lo conocido */ });
+}
+
+/** La certificación ya quedó confirmada por el backend, pero no se pudo
+ *  refrescar la vista. Se conserva el estado de éxito y se avisa aparte. */
+function showCertifiedRefreshFailed_(statusEl, certifiedLabel) {
+  setStatus_(statusEl, certifiedLabel + '. No se pudo actualizar la pantalla: vuelve a abrir el equipo para ver el estado al día.', true);
+  showToast_(certifiedLabel + ', pero no se pudo actualizar la pantalla', 'warning', 6000);
 }
 
 function handleCertifyTest_(testId) {
@@ -2140,9 +2229,13 @@ function handleCertifyTest_(testId) {
   setCertifyButtonsDisabled_(true);
   setStatus_(status, 'Certificando prueba… se está generando el informe, puede tardar unos segundos.', false);
 
+  // `certified` se pone en true apenas el backend confirma la certificación:
+  // un fallo POSTERIOR (refresco de la vista) no es un fallo de certificación.
+  var certified = false;
   Promise.resolve()
     .then(function () { return callApi('certifyTest', 'POST', { id: testId }); })
     .then(function () {
+      certified = true;
       return callApi('listTests', 'GET', { transformer_id: state.currentTransformerId });
     })
     .then(function (tests) {
@@ -2152,6 +2245,12 @@ function handleCertifyTest_(testId) {
       showToast_('Prueba certificada', 'success');
     })
     .catch(function (err) {
+      if (certified) {
+        // Los botones quedan deshabilitados: la vista sigue desactualizada y
+        // no debe ofrecer certificar de nuevo algo que ya se certificó.
+        showCertifiedRefreshFailed_(status, 'Prueba certificada');
+        return;
+      }
       setCertifyButtonsDisabled_(false);
       if (err && (err.status === 402 || err.status === 403)) { setStatus_(status, '', false); return; }
       var msg = (err && err.message) || 'No se pudo certificar la prueba.';
@@ -2178,23 +2277,160 @@ function handleCertifyElectricalReport_() {
   setCertifyButtonsDisabled_(true);
   setStatus_(status, 'Certificando… generando el informe consolidado, puede tardar unos segundos.', false);
 
+  // Ver nota en handleCertifyTest_: separa fallo real de certificación de un
+  // fallo posterior al refrescar el equipo (`getTransformer`).
+  var certified = false;
+  // P1: el backend responde `already_exists` (200) cuando ya hay un informe
+  // vigente de esta misma operación — en ese caso NO se generó nada y no debe
+  // mostrarse un "informe generado".
+  var alreadyExists = false;
+  var certifiedTrfId = state.currentTransformerId;
+  var certifiedSig = electricalCertifiedSignature_();
   Promise.resolve()
     .then(function () { return callApi('certifyElectricalReport', 'POST', { transformer_id: state.currentTransformerId }); })
-    .then(function () {
+    .then(function (data) {
+      certified = true;
+      alreadyExists = !!(data && data.already_exists);
+      if (data && data.report_id) rememberElectricalVigente_(data, certifiedTrfId, certifiedSig);
       return callApi('getTransformer', 'GET', { id: state.currentTransformerId });
     })
     .then(function (transformer) {
       state.currentTransformer = transformer;
       saveDraft_('mya_cache_transformer_' + state.currentTransformerId, state.currentTransformer);
       renderDetail();
-      setStatus_(status, 'Pruebas Eléctricas certificadas — informe generado.', true);
-      showToast_('Informe eléctrico consolidado generado', 'success');
+      if (alreadyExists) {
+        setStatus_(status, 'Ya existe un informe vigente (' + electricalReportLabel_(knownElectricalVigente_()) + ') de estas pruebas — no se generó otro. Para uno nuevo usa "Regenerar informe eléctrico".', true);
+        showToast_('Ya existe un informe vigente — no se generó otro', 'warning');
+      } else {
+        setStatus_(status, 'Pruebas Eléctricas certificadas — informe generado.', true);
+        showToast_('Informe eléctrico consolidado generado', 'success');
+      }
+      refreshElectricalReportStatus_();
     })
     .catch(function (err) {
+      if (certified) {
+        showCertifiedRefreshFailed_(status, alreadyExists ? 'Ya existe un informe vigente de estas pruebas (no se generó otro)' : 'Pruebas Eléctricas certificadas — informe generado');
+        return;
+      }
       setCertifyButtonsDisabled_(false);
       if (err && (err.status === 402 || err.status === 403)) { setStatus_(status, '', false); return; }
       setStatus_(status, 'No se pudo certificar Pruebas Eléctricas: ' + ((err && err.message) || 'error desconocido'), false, true);
       showToast_('No se pudo certificar Pruebas Eléctricas', 'error');
+    })
+    .then(function () { certifyInFlight_ = false; });
+}
+
+/** Regeneración EXPLÍCITA del informe eléctrico (P1, 2026-10-12) — acción
+ *  separada de Certificar: genera un informe nuevo (consecutivo nuevo) y el
+ *  backend marca el anterior como Reemplazado. Solo se ofrece con un vigente
+ *  conocido de estas pruebas (`knownElectricalVigente_`), a Supervisor/
+ *  Administrador (el backend valida rol y motivo igual), y SIEMPRE con un
+ *  motivo no vacío. El backend lee el motivo de `reason`; se envía también
+ *  `regen_reason` (nombre de la columna en DOCUMENTOS). */
+function openRegenerateReportModal_() {
+  if (state.role === 'Tecnico') return;
+  var v = knownElectricalVigente_();
+  if (!v) {
+    setStatus_(document.getElementById('certifyElectricalStatus'), 'No hay un informe vigente de estas pruebas para regenerar — usa Certificar Pruebas Eléctricas.', false, true);
+    renderDetail();
+    return;
+  }
+  document.getElementById('regenerateReportInfo').textContent =
+    'Se generará un informe NUEVO (consecutivo nuevo) y el informe ' + electricalReportLabel_(v) + ' quedará como Reemplazado; no se borra. Indica por qué se regenera.';
+  document.getElementById('regenerateReason').value = '';
+  document.getElementById('regenerateReportSubmit').disabled = false;
+  setStatus_(document.getElementById('regenerateReportStatus'), '', false);
+  document.getElementById('regenerateReportModal').classList.add('open');
+  document.getElementById('regenerateReportModalBackdrop').classList.add('open');
+  document.getElementById('regenerateReason').focus();
+}
+
+function closeRegenerateReportModal_(force) {
+  // Mientras se genera el informe el modal no se cierra (el resultado lo
+  // muestra esta misma pantalla); `force` lo cierra al terminar o al perder sesión.
+  if (certifyInFlight_ && !force) return;
+  document.getElementById('regenerateReportModal').classList.remove('open');
+  document.getElementById('regenerateReportModalBackdrop').classList.remove('open');
+}
+
+function handleRegenerateReportSubmit_(e) {
+  e.preventDefault();
+  if (certifyInFlight_) return;
+  if (state.role === 'Tecnico') return;
+  var modalStatus = document.getElementById('regenerateReportStatus');
+  var pageStatus = document.getElementById('certifyElectricalStatus');
+  var submitBtn = document.getElementById('regenerateReportSubmit');
+  var reason = document.getElementById('regenerateReason').value.trim();
+  if (!reason) {
+    setStatus_(modalStatus, 'El motivo de la regeneración es obligatorio.', false, true);
+    return;
+  }
+  if (!knownElectricalVigente_()) {
+    closeRegenerateReportModal_(true);
+    setStatus_(pageStatus, 'No hay un informe vigente de estas pruebas para regenerar — usa Certificar Pruebas Eléctricas.', false, true);
+    renderDetail();
+    return;
+  }
+
+  certifyInFlight_ = true;
+  var trfId = state.currentTransformerId;
+  var sig = electricalCertifiedSignature_();
+  submitBtn.disabled = true;
+  setCertifyButtonsDisabled_(true);
+  setStatus_(modalStatus, 'Regenerando… se está generando el informe, puede tardar unos segundos.', false);
+
+  var regenerated = false;
+  var regenData = null;
+  callApi('certifyElectricalReport', 'POST', { transformer_id: trfId, regenerate: true, reason: reason, regen_reason: reason })
+    .then(function (data) {
+      regenerated = true;
+      regenData = data || {};
+      if (regenData.report_id) rememberElectricalVigente_(regenData, trfId, sig);
+      return callApi('getTransformer', 'GET', { id: trfId });
+    })
+    .then(function (transformer) {
+      closeRegenerateReportModal_(true);
+      if (state.currentTransformerId === trfId) {
+        state.currentTransformer = transformer;
+        saveDraft_('mya_cache_transformer_' + trfId, transformer);
+        renderDetail();
+      }
+      setStatus_(pageStatus, 'Informe eléctrico regenerado' + (regenData.consecutivo ? ' — N° ' + regenData.consecutivo : '') + '. El anterior quedó como Reemplazado.', true);
+      showToast_('Informe eléctrico regenerado', 'success');
+      if (regenData.replace_warning) showToast_(regenData.replace_warning, 'warning', 7000);
+      refreshElectricalReportStatus_();
+    })
+    .catch(function (err) {
+      if (regenerated) {
+        // El informe nuevo ya existe; falló solo el refresco de la pantalla.
+        closeRegenerateReportModal_(true);
+        showCertifiedRefreshFailed_(pageStatus, 'Informe eléctrico regenerado');
+        if (regenData && regenData.replace_warning) showToast_(regenData.replace_warning, 'warning', 7000);
+        return;
+      }
+      submitBtn.disabled = false;
+      if (err && (err.status === 402 || err.status === 403)) {
+        // callApi ya devolvió al login (sesión) o mostró suspensión.
+        closeRegenerateReportModal_(true);
+        setStatus_(modalStatus, '', false);
+        return;
+      }
+      var msg = (err && err.message) || 'error desconocido';
+      if (err && err.status === 400 && /No hay un informe vigente/i.test(msg)) {
+        // El backend no reconoce un vigente de estas pruebas: se olvida el
+        // conocido y se indica el camino correcto (Certificar), con su texto real.
+        electricalVigente_ = null;
+        closeRegenerateReportModal_(true);
+        renderDetail();
+        setStatus_(pageStatus, msg, false, true);
+        showToast_('No hay un informe vigente para regenerar', 'error');
+        return;
+      }
+      // Error real del backend: se muestra tal cual y el modal sigue abierto
+      // para reintentar (el motivo escrito se conserva).
+      renderDetail();
+      setStatus_(modalStatus, 'No se pudo regenerar el informe: ' + msg, false, true);
+      showToast_('No se pudo regenerar el informe', 'error');
     })
     .then(function () { certifyInFlight_ = false; });
 }
@@ -3005,6 +3241,14 @@ function defaultWrSecondary_() {
  *  fórmula de veredicto cambia. */
 var WR_RESISTANCE_UNIT_FACTORS_ = { ohm: 1, milliohm: 0.001, microohm: 0.000001 };
 var WR_RESISTANCE_UNIT_LABELS_ = { ohm: 'Ω', milliohm: 'mΩ', microohm: 'µΩ' };
+/** Solo PRESENTACIÓN del valor ya convertido (Ω → unidad elegida): 12 cifras
+ *  significativas, que elimina el ruido de coma flotante (p. ej.
+ *  0.512 / 1e-6 = 512000.00000000006 → "512000") sin perder ninguna cifra real
+ *  de una lectura de instrumento. No cambia el valor guardado (siempre Ω). */
+function formatWrDisplayValue_(ohm, factor) {
+  var v = ohm / factor;
+  return isFinite(v) ? String(parseFloat(v.toPrecision(12))) : String(v);
+}
 /** `side` = 'Primary' | 'Secondary' — primario y secundario llevan su propia unidad. */
 function wrResistanceUnit_(side) {
   var u = state.wr['resistanceUnit' + side];
@@ -3016,6 +3260,7 @@ function wrResistanceUnitFactor_(side) {
 function updateWrResistanceUnit_(side, unit) {
   state.wr['resistanceUnit' + side] = WR_RESISTANCE_UNIT_FACTORS_[unit] ? unit : 'ohm';
   if (side === 'Primary') renderWrPhaseEntries(); else renderWrSecondaryPhaseEntries();
+  refreshWindingLight_(); // guarda el borrador con la unidad elegida
 }
 
 /** Punto 4 (2026-09-13): primario y secundario ahora son cada uno opcional
@@ -3033,6 +3278,10 @@ function resetWindingStateFromTransformer() {
     state.wr.secondary = draft.secondary || defaultWrSecondary_();
     state.wr.primario_realizado = draft.primario_realizado !== false;
     state.wr.secundario_realizado = draft.secundario_realizado !== false;
+    // Unidades guardadas con el borrador; un borrador antiguo (sin esos
+    // campos) o con un valor no reconocido cae en Ω, igual que antes.
+    state.wr.resistanceUnitPrimary = WR_RESISTANCE_UNIT_FACTORS_[draft.resistanceUnitPrimary] ? draft.resistanceUnitPrimary : 'ohm';
+    state.wr.resistanceUnitSecondary = WR_RESISTANCE_UNIT_FACTORS_[draft.resistanceUnitSecondary] ? draft.resistanceUnitSecondary : 'ohm';
     // Más de 1 TAP ya digitado en el borrador local = se venía trabajando en
     // modo "todas las posiciones" — se respeta para no esconder TAPs ya
     // hechos detrás del modo "solo la posición actual".
@@ -3142,7 +3391,7 @@ function renderWrPhaseEntries() {
     var r = tap.phases[k];
     return '<div class="phase-entry">' +
       '<div class="ph-name">' + phaseDisplayLabel_(k) + '</div>' +
-      '<div class="field"><label>Resistencia (' + unitLabel + ')</label><input class="mono" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*" value="' + (r.resistanceOhm / unitFactor) + '" oninput="updateWrPhase(\'' + k + '\',this.value)"></div>' +
+      '<div class="field"><label>Resistencia (' + unitLabel + ')</label><input class="mono" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*" value="' + formatWrDisplayValue_(r.resistanceOhm, unitFactor) + '" oninput="updateWrPhase(\'' + k + '\',this.value)"></div>' +
       renderRepeatToggle_('toggleWrRepeat_', 'updateWrNote_', k, r) +
       '</div>';
   }).join('');
@@ -3191,7 +3440,7 @@ function renderWrSecondaryPhaseEntries() {
     var r = state.wr.secondary.phases[k];
     return '<div class="phase-entry">' +
       '<div class="ph-name">' + phaseDisplayLabel_(k) + '</div>' +
-      '<div class="field"><label>Resistencia (' + unitLabel2 + ')</label><input class="mono" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*" value="' + (r.resistanceOhm / unitFactor2) + '" oninput="updateWrSecondaryPhase_(\'' + k + '\',this.value)"></div>' +
+      '<div class="field"><label>Resistencia (' + unitLabel2 + ')</label><input class="mono" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*" value="' + formatWrDisplayValue_(r.resistanceOhm, unitFactor2) + '" oninput="updateWrSecondaryPhase_(\'' + k + '\',this.value)"></div>' +
       renderRepeatToggle_('toggleWrSecondaryRepeat_', 'updateWrSecondaryNote_', k, r) +
       '</div>';
   }).join('');
@@ -3367,7 +3616,10 @@ function refreshWindingLight_() {
     readings: state.wr.readings,
     secondary: state.wr.secondary,
     primario_realizado: state.wr.primario_realizado,
-    secundario_realizado: state.wr.secundario_realizado
+    secundario_realizado: state.wr.secundario_realizado,
+    // Unidad de captura de cada lado (los valores van siempre en Ω).
+    resistanceUnitPrimary: state.wr.resistanceUnitPrimary,
+    resistanceUnitSecondary: state.wr.resistanceUnitSecondary
   });
 }
 
@@ -5038,6 +5290,7 @@ document.addEventListener('DOMContentLoaded', function () {
   document.getElementById('createTransformerForm').addEventListener('submit', handleCreateTransformerSubmit);
   document.getElementById('editSiteForm').addEventListener('submit', handleEditSiteSubmit);
   document.getElementById('editTransformerForm').addEventListener('submit', handleEditTransformerSubmit);
+  document.getElementById('regenerateReportForm').addEventListener('submit', handleRegenerateReportSubmit_);
   document.getElementById('operatorNameForm').addEventListener('submit', handleOperatorNameSubmit_);
 
   document.querySelectorAll('.nav-item[data-view], .bottom-nav-item[data-view], .action-sheet-item[data-view]').forEach(function (el) {
@@ -5051,6 +5304,7 @@ document.addEventListener('DOMContentLoaded', function () {
   document.getElementById('contextModalBackdrop').addEventListener('click', function () { closeContextModal_(); });
   document.getElementById('editSiteModalBackdrop').addEventListener('click', function () { closeEditSiteModal_(); });
   document.getElementById('editTransformerModalBackdrop').addEventListener('click', function () { closeEditTransformerModal_(); });
+  document.getElementById('regenerateReportModalBackdrop').addEventListener('click', function () { closeRegenerateReportModal_(); });
 
   buildOilDgaGrid_();
   buildOilPcbGrid_();

@@ -253,6 +253,13 @@
           </select>
         </div>
         <div class="field"><label>N&uacute;mero de serie</label><input class="mono" id="editTrfSerial" required></div>
+        <div class="field">
+          <label>Fases</label>
+          <select id="editTrfPhaseType">
+            <option value="TRIFASICO">Trif&aacute;sico</option>
+            <option value="MONOFASICO">Monof&aacute;sico</option>
+          </select>
+        </div>
         <div class="field"><label>Fabricante</label><input id="editTrfManufacturer"></div>
         <div class="field"><label>Grupo de conexi&oacute;n</label><input class="mono" id="editTrfVectorGroup"></div>
         <div class="field"><label>Potencia nominal (kVA)</label><input class="mono" id="editTrfPower" type="text" inputmode="decimal" pattern="[0-9]*[.,]?[0-9]*"></div>
@@ -315,6 +322,24 @@
         </div>
         <button class="btn primary" type="submit" style="width:100%;">Guardar cambios</button>
         <span class="status-line" id="editTransformerStatus" hidden></span>
+      </form>
+    </div>
+
+    <!-- Modal de regeneración del informe eléctrico (P1): acción explícita con motivo obligatorio -->
+    <div class="modal-backdrop" id="regenerateReportModalBackdrop"></div>
+    <div class="modal" id="regenerateReportModal" role="dialog" aria-modal="true" aria-labelledby="regenerateReportModalTitle">
+      <div class="modal-head">
+        <h3 id="regenerateReportModalTitle">Regenerar informe el&eacute;ctrico</h3>
+        <button type="button" class="modal-close" onclick="closeRegenerateReportModal_()" aria-label="Cerrar">&times;</button>
+      </div>
+      <form class="modal-body" id="regenerateReportForm">
+        <div class="field-note" id="regenerateReportInfo"></div>
+        <div class="field">
+          <label>Motivo de la regeneraci&oacute;n (obligatorio)</label>
+          <input id="regenerateReason" maxlength="200" autocomplete="off" placeholder="Ej.: correcci&oacute;n de datos de placa">
+        </div>
+        <button class="btn primary" type="submit" id="regenerateReportSubmit" style="width:100%;">Regenerar informe</button>
+        <span class="status-line" id="regenerateReportStatus" hidden></span>
       </form>
     </div>
 
@@ -508,6 +533,7 @@
             <button class="btn" onclick="showView('insulation-form')">Resistencia de aislamiento</button>
             <button class="btn primary" onclick="showView('ttr-form')">Registrar lectura TTR</button>
             <button class="btn success" id="certifyElectricalBtn" onclick="handleCertifyElectricalReport_()" hidden>Certificar Pruebas Eléctricas</button>
+            <button class="btn" id="regenerateElectricalBtn" onclick="openRegenerateReportModal_()" hidden>Regenerar informe eléctrico</button>
             <button class="btn" id="generateHistoryReportBtn" onclick="handleGenerateYearlyHistoryReport_()">Generar informe de historial</button>
           </div>
         </div>
